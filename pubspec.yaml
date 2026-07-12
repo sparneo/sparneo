@@ -1,0 +1,71 @@
+name: portfolio_tracker
+description: "Sparneo — suivi de patrimoine 100 % local et privé : PEA, CTO, assurance-vie, crypto et métaux précieux."
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.11.1
+
+dependencies:
+  decimal: ^3.2.4
+  file_picker: ^8.3.7
+  file_selector: ^1.1.0
+  fl_chart: ^1.2.0
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  http: ^1.6.0
+  intl: any
+  logger: ^2.7.0
+  path: ^1.9.0
+  path_provider: ^2.1.6
+  rational: ^2.2.3
+  share_plus: ^10.1.4
+  shared_preferences: ^2.5.4
+  sqflite: ^2.4.3
+  sqflite_common_ffi: ^2.4.2
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.8
+
+flutter:
+  uses-material-design: true
+  generate: true
+
+# Icône de lancement — identité Sparneo : « S hexagone », monogramme S Montserrat Black
+# dans un hexagone (pièce géométrique, clin d'œil à l'Hexagone), blanc sur dégradé bleu
+# confiance. assets/icon/*.png.
+flutter_launcher_icons:
+  android: "launcher_icon"
+  ios: true
+  remove_alpha_ios: true
+  web:
+    generate: true
+  macos:
+    generate: true
+  windows:
+    generate: true
+  image_path: "assets/icon/icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "assets/icon/icon_background.png"
+  adaptive_icon_foreground: "assets/icon/icon_foreground.png"
+  adaptive_icon_monochrome: "assets/icon/icon_foreground.png"
+
+# Splash screen natif — S hexagone blanc centré sur « bleu confiance », variante sombre.
+flutter_native_splash:
+  color: "#2743B0"
+  color_dark: "#0B0C11"
+  image: "assets/icon/splash_logo.png"
+  android_12:
+    color: "#2743B0"
+    color_dark: "#0B0C11"
+    image: "assets/icon/splash_logo.png"
+    icon_background_color: "#2743B0"
+    icon_background_color_dark: "#0B0C11"

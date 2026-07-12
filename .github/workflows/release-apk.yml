@@ -1,0 +1,76 @@
+name: Release APK
+
+on:
+  push:
+    tags:
+      # Déclenché sur les tags de version au format v* (ex. v0.1.0, v1.2.3)
+      - 'v*'
+  # Permet de lancer le workflow manuellement depuis l'onglet Actions
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    name: Build Android APK
+    runs-on: ubuntu-latest
+    # Autorise l'écriture pour créer/mettre à jour la GitHub Release
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Java 17 requis pour le build Gradle Android
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # APK séparés par ABI (fichiers plus légers, un par architecture)
+      - name: Build split APKs
+        run: flutter build apk --release --split-per-abi
+
+      # APK universel (fat APK) servant de fallback pour toutes les architectures
+      - name: Build universal APK
+        run: flutter build apk --release
+
+      # Note : les APK sont signés avec la clé debug (aucun keystore configuré).
+      # Ils restent installables. Une signature release pourra être ajoutée
+      # plus tard via des secrets (keystore + key.properties).
+
+      # Regroupe les APK produits dans un dossier dédié
+      - name: Collect APKs
+        run: |
+          mkdir -p release-apks
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk release-apks/
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk release-apks/
+          cp build/app/outputs/flutter-apk/app-x86_64-release.apk release-apks/
+          cp build/app/outputs/flutter-apk/app-release.apk release-apks/
+          ls -lh release-apks/
+
+      # Uploade les APK comme artifacts (utile notamment pour workflow_dispatch)
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-apks
+          path: release-apks/*.apk
+
+      # Crée/met à jour la GitHub Release et y attache les APK,
+      # uniquement lorsque le déclencheur est un tag
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release-apks/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

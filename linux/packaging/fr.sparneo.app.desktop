@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Sparneo
+GenericName=Suivi de patrimoine
+GenericName[en]=Wealth tracker
+Comment=Vos comptes, vos données, votre appareil — suivi de patrimoine 100 % local et privé
+Comment[en]=Your accounts, your data, your device — 100% local and private wealth tracking
+Exec=portfolio_tracker
+Icon=fr.sparneo.app
+Terminal=false
+Categories=Office;Finance;
+Keywords=patrimoine;épargne;PEA;CTO;assurance-vie;or;finance;
+Keywords[en]=wealth;savings;portfolio;stocks;gold;finance;
+StartupWMClass=fr.sparneo.app

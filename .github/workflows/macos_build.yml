@@ -1,0 +1,89 @@
+name: Build macOS Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version de la release (ex: 1.0.0)'
+        required: false
+        default: ''
+      create_release:
+        description: 'Créer une release GitHub ?'
+        required: true
+        default: 'true'
+        type: boolean
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          flutter-version: '3.x'
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Enable macOS platform
+        run: flutter config --enable-macos-desktop
+      
+      - name: Build macOS Release
+        run: flutter build macos --release --dart-define=FLAVOR=production
+
+      - name: Determine Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ -n "${{ github.event.inputs.version }}" ]; then
+              echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+            else
+              echo "tag=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Package macOS App
+        run: |
+          mkdir -p build/dmg
+          cp -R build/macos/Build/Products/Release/*.app build/dmg/
+          hdiutil create -volname "Sparneo" -srcfolder build/dmg -ov -format UDZO build/sparneo.dmg
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-${{ steps.version.outputs.tag }}
+          path: build/sparneo.dmg
+          retention-days: 7
+
+      - name: Create Release
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') }}
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.version.outputs.tag }}
+          release_name: Release v${{ steps.version.outputs.tag }}
+          draft: false
+          prerelease: false
+
+      - name: Upload Release Asset
+        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') }}
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: build/sparneo.dmg
+          asset_name: sparneo-v${{ steps.version.outputs.tag }}.dmg
+          asset_content_type: application/x-apple-diskimage

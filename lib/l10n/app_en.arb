@@ -1,0 +1,1548 @@
+{
+  "@@locale": "en",
+
+  "defaultWalletName": "My Wealth",
+  "@defaultWalletName": {
+    "description": "Default name used for the automatically created wallet"
+  },
+
+  "totalValue": "Total Value",
+  "@totalValue": {
+    "description": "Label for the total portfolio value (wallet view)"
+  },
+
+  "totalValueAccount": "Total value",
+  "@totalValueAccount": {
+    "description": "Label for the total value of an account / position"
+  },
+
+  "variationOverPeriod": "Variation over {period}",
+  "@variationOverPeriod": {
+    "description": "Variation of the value over the selected period",
+    "placeholders": {
+      "period": {
+        "type": "String",
+        "example": "1M"
+      }
+    }
+  },
+
+  "chartPeriod1D": "1D",
+  "@chartPeriod1D": {
+    "description": "Chart period selector chip: 1 day"
+  },
+
+  "chartPeriod1M": "1M",
+  "@chartPeriod1M": {
+    "description": "Chart period selector chip: 1 month"
+  },
+
+  "chartPeriod3M": "3M",
+  "@chartPeriod3M": {
+    "description": "Chart period selector chip: 3 months"
+  },
+
+  "chartPeriod1Y": "1Y",
+  "@chartPeriod1Y": {
+    "description": "Chart period selector chip: 1 year"
+  },
+
+  "chartPeriod5Y": "5Y",
+  "@chartPeriod5Y": {
+    "description": "Chart period selector chip: 5 years"
+  },
+
+  "chartPeriodMax": "Max",
+  "@chartPeriodMax": {
+    "description": "Chart period selector chip: maximum history"
+  },
+
+  "notAvailable": "N/A",
+
+  "errorNetwork": "No connection. Check your internet access and try again.",
+  "errorRateLimit": "Too many requests. Please wait a moment before retrying.",
+  "errorInvalidSymbol": "Symbol not found. Check the ticker you entered.",
+  "errorServer": "The quote service is temporarily unavailable.",
+  "errorGeneric": "Something went wrong. Please try again.",
+
+  "emptyAccountsTitle": "No accounts yet",
+  "emptyAccountsBody": "Create your first account to track your wealth. Your data stays on your device.",
+  "emptyAccountsCta": "Create an account",
+  "emptyPositionsTitle": "No positions",
+  "emptyPositionsBody": "Add your first holding to this account to track its value.",
+  "emptyPositionsCta": "Add a position",
+  "undoAction": "Undo",
+  "quoteAsOf": "Quote from {date}",
+  "@quoteAsOf": {
+    "description": "Badge shown on a position when its price comes from cache (stale)",
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "@notAvailable": {
+    "description": "Shown when a value is not available"
+  },
+
+  "noData": "No data",
+  "@noData": {
+    "description": "Shown when there is no chart data"
+  },
+
+  "chartOthers": "Others",
+  "@chartOthers": {
+    "description": "Aggregated slice grouping the smallest items in an allocation chart"
+  },
+
+  "noHistoricalData": "No historical data",
+  "@noHistoricalData": {
+    "description": "Shown when there is no historical chart data"
+  },
+
+  "noHistoricalDataAvailable": "No historical data available",
+  "@noHistoricalDataAvailable": {
+    "description": "Shown when no historical data is available at all"
+  },
+
+  "noHistoricalDataForPositions": "No historical data available for {count} position(s)",
+  "@noHistoricalDataForPositions": {
+    "description": "Shown when there is no historical data for the account positions",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "3"
+      }
+    }
+  },
+
+  "myAccounts": "My Accounts",
+  "@myAccounts": {
+    "description": "Section title listing the accounts"
+  },
+
+  "myPositions": "My positions",
+  "@myPositions": {
+    "description": "Section title listing the positions"
+  },
+
+
+  "addAccountTooltip": "Add an account",
+  "@addAccountTooltip": {
+    "description": "Tooltip for the add account button"
+  },
+
+  "addPositionTooltip": "Add a position",
+  "@addPositionTooltip": {
+    "description": "Tooltip for the add position button"
+  },
+
+  "backTooltip": "Back",
+  "@backTooltip": {
+    "description": "Tooltip for the back button"
+  },
+
+  "editTooltip": "Edit",
+  "@editTooltip": {
+    "description": "Tooltip for the edit button"
+  },
+
+  "deleteTooltip": "Delete",
+  "@deleteTooltip": {
+    "description": "Tooltip for the delete button"
+  },
+
+  "cancel": "Cancel",
+  "@cancel": {
+    "description": "Cancel button label"
+  },
+
+  "create": "Create",
+  "@create": {
+    "description": "Create button label"
+  },
+
+  "validate": "Confirm",
+  "@validate": {
+    "description": "Confirm/validate button label"
+  },
+
+  "delete": "Delete",
+  "@delete": {
+    "description": "Delete button label"
+  },
+
+  "add": "Add",
+  "@add": {
+    "description": "Add button label"
+  },
+
+  "save": "Save",
+  "@save": {
+    "description": "Save button label"
+  },
+
+  "reset": "Reset",
+  "@reset": {
+    "description": "Reset button label"
+  },
+
+  "retry": "Retry",
+  "@retry": {
+    "description": "Retry button label"
+  },
+
+  "errorWithMessage": "Error: {message}",
+  "@errorWithMessage": {
+    "description": "Generic error message with details",
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+
+  "loadingError": "Loading error: {message}",
+  "@loadingError": {
+    "description": "Loading error message with details",
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+
+  "accountsLoadingError": "Error loading accounts: {message}",
+  "@accountsLoadingError": {
+    "description": "Error message shown when accounts fail to load",
+    "placeholders": {
+      "message": {
+        "type": "String"
+      }
+    }
+  },
+
+  "newAccount": "New Account",
+  "@newAccount": {
+    "description": "Title of the new account dialog"
+  },
+
+  "accountName": "Account name",
+  "@accountName": {
+    "description": "Label for the account name field"
+  },
+
+  "accountType": "Account type",
+  "@accountType": {
+    "description": "Label for the account type field"
+  },
+
+  "initialBalance": "Initial balance",
+  "@initialBalance": {
+    "description": "Label for the initial balance field"
+  },
+
+  "accountTypeInvestment": "Investment",
+  "@accountTypeInvestment": {
+    "description": "Label for the investment account type"
+  },
+
+  "accountTypeCash": "Cash-Savings",
+  "@accountTypeCash": {
+    "description": "Label for the cash account type"
+  },
+
+  "accountTypePreciousMetal": "Gold & precious metals",
+  "@accountTypePreciousMetal": {
+    "description": "Label for the precious metal account type"
+  },
+
+  "accountKindAutre": "Other / unspecified",
+  "@accountKindAutre": {
+    "description": "Account kind: securities account, tax wrapper unspecified"
+  },
+  "accountKindCto": "Securities account (CTO)",
+  "@accountKindCto": {
+    "description": "Account kind: ordinary securities account (compte-titres ordinaire)"
+  },
+  "accountKindPea": "PEA",
+  "@accountKindPea": {
+    "description": "Account kind: French equity savings plan (PEA)"
+  },
+  "accountKindPeaPme": "PEA-PME",
+  "@accountKindPeaPme": {
+    "description": "Account kind: French SME equity savings plan (PEA-PME)"
+  },
+  "accountKindAssuranceVie": "Life insurance",
+  "@accountKindAssuranceVie": {
+    "description": "Account kind: life insurance (assurance-vie)"
+  },
+  "accountKindPee": "Employee savings plan (PEE)",
+  "@accountKindPee": {
+    "description": "Account kind: company savings plan (plan d'épargne entreprise)"
+  },
+  "accountKindPer": "Retirement savings plan (PER)",
+  "@accountKindPer": {
+    "description": "Account kind: retirement savings plan (plan d'épargne retraite)"
+  },
+  "accountKindCrypto": "Crypto assets",
+  "@accountKindCrypto": {
+    "description": "Account kind: crypto assets account"
+  },
+  "accountKindUpdatedSuccess": "Account type updated",
+  "@accountKindUpdatedSuccess": {
+    "description": "Snackbar shown after the kind (nature) of an account is changed"
+  },
+
+  "accountCreationError": "Error while creating the account",
+  "@accountCreationError": {
+    "description": "Snackbar shown when account creation fails"
+  },
+
+  "cashBalanceLabel": "Cash Balance",
+  "@cashBalanceLabel": {
+    "description": "Subtitle for a cash account"
+  },
+
+  "cashBalanceWithAmount": "Cash Balance · {amount} {currency}",
+  "@cashBalanceWithAmount": {
+    "description": "Subtitle for a cash account in a non-EUR currency",
+    "placeholders": {
+      "amount": {
+        "type": "String",
+        "example": "1000.00"
+      },
+      "currency": {
+        "type": "String",
+        "example": "USD"
+      }
+    }
+  },
+
+  "accountDeletionError": "Error while deleting account \"{name}\"",
+  "@accountDeletionError": {
+    "description": "Shown when an account fails to delete",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+
+  "cannotDeleteLastAccount": "Cannot delete the last account",
+  "@cannotDeleteLastAccount": {
+    "description": "Shown when trying to delete the last account"
+  },
+
+  "deleteAccountTitle": "Delete account",
+  "@deleteAccountTitle": {
+    "description": "Title of the delete account dialog"
+  },
+
+  "deleteAccountConfirm": "Are you sure you want to delete \"{name}\"?\n\nAll associated positions will be lost.",
+  "@deleteAccountConfirm": {
+    "description": "Confirmation message for deleting an account",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+
+  "accountDeleted": "Account \"{name}\" deleted",
+  "@accountDeleted": {
+    "description": "Snackbar shown when an account is deleted",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+
+  "addPositionTitle": "Add a Position",
+  "@addPositionTitle": {
+    "description": "Title of the add position dialog"
+  },
+
+  "symbolLabel": "Symbol (ticker)",
+  "@symbolLabel": {
+    "description": "Label for the symbol field"
+  },
+
+  "close": "Close",
+  "@close": {
+    "description": "Generic close button label"
+  },
+
+  "symbolHelpTooltip": "How to find the symbol?",
+  "@symbolHelpTooltip": {
+    "description": "Tooltip of the info icon next to the symbol field"
+  },
+
+  "symbolHelpTitle": "Finding the symbol (ticker)",
+  "@symbolHelpTitle": {
+    "description": "Title of the help dialog explaining how to find an asset symbol"
+  },
+
+  "symbolHelpBody": "The symbol (or \"ticker\") identifies an asset with our price source, Yahoo Finance.\n\nTo find it: search your asset on finance.yahoo.com and copy the symbol shown.\n\nEuropean stocks include an exchange suffix:\n•  AIR.PA — Airbus (Euronext Paris)\n•  MC.PA — LVMH (Paris)\n•  BMW.DE — BMW (Frankfurt)\n\nUS stocks and crypto (no suffix):\n•  AAPL — Apple\n•  MSFT — Microsoft\n•  BTC-USD — Bitcoin",
+  "@symbolHelpBody": {
+    "description": "Body of the help dialog explaining how to find an asset symbol on Yahoo Finance"
+  },
+
+  "quantityLabel": "Quantity",
+  "@quantityLabel": {
+    "description": "Label for the quantity field"
+  },
+
+  "averageBuyPriceLabel": "Average buy price (ABP)",
+  "@averageBuyPriceLabel": {
+    "description": "Label for the average buy price field"
+  },
+
+  "optionalHint": "Optional",
+  "@optionalHint": {
+    "description": "Hint for optional fields"
+  },
+
+  "noActiveAccount": "No active account",
+  "@noActiveAccount": {
+    "description": "Shown when there is no active account"
+  },
+
+  "invalidQuantity": "Invalid quantity",
+  "@invalidQuantity": {
+    "description": "Shown when an invalid quantity is entered"
+  },
+
+  "assetNotFound": "Asset \"{symbol}\" not found or API error",
+  "@assetNotFound": {
+    "description": "Shown when an asset cannot be found",
+    "placeholders": {
+      "symbol": {
+        "type": "String"
+      }
+    }
+  },
+
+  "deletePositionTitle": "Delete position",
+  "@deletePositionTitle": {
+    "description": "Title of the delete position dialog"
+  },
+
+  "deletePositionTooltip": "Delete this position",
+  "@deletePositionTooltip": {
+    "description": "Label of the delete item in the position detail overflow menu"
+  },
+
+  "refreshTooltip": "Refresh",
+  "@refreshTooltip": {
+    "description": "Tooltip of the refresh button in the account app bar"
+  },
+
+  "deletePositionConfirm": "Delete {symbol}?",
+  "@deletePositionConfirm": {
+    "description": "Confirmation message for deleting a position",
+    "placeholders": {
+      "symbol": {
+        "type": "String"
+      }
+    }
+  },
+
+  "deletePositionWithJournalConfirm": "This position has {count} movement(s) that will also be deleted.",
+  "@deletePositionWithJournalConfirm": {
+    "description": "Confirmation message when deleting a position that has a non-empty journal",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+
+  "positionDeletionError": "Error while deleting {symbol}",
+  "@positionDeletionError": {
+    "description": "Shown when a position fails to delete",
+    "placeholders": {
+      "symbol": {
+        "type": "String"
+      }
+    }
+  },
+
+  "editNameTitle": "Edit name",
+  "@editNameTitle": {
+    "description": "Title of the edit name dialog"
+  },
+
+  "newNameHint": "New name",
+  "@newNameHint": {
+    "description": "Hint for a new name field"
+  },
+
+  "customNameHint": "New custom name",
+  "@customNameHint": {
+    "description": "Hint for a custom name field"
+  },
+
+  "nameUpdatedSuccess": "Name updated successfully",
+  "@nameUpdatedSuccess": {
+    "description": "Snackbar when a name is updated successfully"
+  },
+
+  "nameModified": "Name updated",
+  "@nameModified": {
+    "description": "Snackbar when a name is modified"
+  },
+
+  "nameReset": "Name reset",
+  "@nameReset": {
+    "description": "Snackbar when a name is reset"
+  },
+
+  "modificationError": "Error while editing",
+  "@modificationError": {
+    "description": "Generic error when an edit fails"
+  },
+
+  "modificationSaved": "Change saved",
+  "@modificationSaved": {
+    "description": "Generic confirmation after a successful edit"
+  },
+
+  "invalidValue": "Enter a valid value",
+  "@invalidValue": {
+    "description": "Generic error for an invalid numeric field"
+  },
+
+  "adjustQuantityAction": "Adjust quantity…",
+  "@adjustQuantityAction": {
+    "description": "Action label (button/menu) opening the adjust-quantity dialog on a reconciled position with a non-empty journal"
+  },
+
+  "adjustQuantityTitle": "Adjust quantity",
+  "@adjustQuantityTitle": {
+    "description": "Title of the adjust-quantity dialog"
+  },
+
+  "setInitialPositionAction": "Set initial position…",
+  "@setInitialPositionAction": {
+    "description": "Action label (button/menu) opening the initial-position dialog on a reconciled position with an empty journal"
+  },
+
+  "setInitialPositionTitle": "Set initial position",
+  "@setInitialPositionTitle": {
+    "description": "Title of the initial-position dialog"
+  },
+
+  "projectedQuantityLabel": "In portfolio: {quantity}",
+  "@projectedQuantityLabel": {
+    "description": "Read-only display of the projected quantity in the adjust-quantity dialog",
+    "placeholders": {
+      "quantity": {
+        "type": "String"
+      }
+    }
+  },
+
+  "observedQuantityLabel": "Observed quantity",
+  "@observedQuantityLabel": {
+    "description": "Label for the target-quantity field in the adjust-quantity dialog (user enters the counted quantity, not the delta)"
+  },
+
+  "adjustmentDeltaPreview": "→ an adjustment of {delta} will be added to the journal on {date}",
+  "@adjustmentDeltaPreview": {
+    "description": "Live preview of the signed delta that will be journalled as an adjustment",
+    "placeholders": {
+      "delta": {
+        "type": "String"
+      },
+      "date": {
+        "type": "String"
+      }
+    }
+  },
+
+  "optionalNoteLabel": "Note (optional)",
+  "@optionalNoteLabel": {
+    "description": "Label for the optional note field on the adjust/initial-position dialogs"
+  },
+
+  "addAdjustmentButton": "Add adjustment",
+  "@addAdjustmentButton": {
+    "description": "Confirm button of the adjust-quantity dialog"
+  },
+
+  "adjustmentAddedToJournal": "Adjustment added to the journal",
+  "@adjustmentAddedToJournal": {
+    "description": "Snackbar after an adjustment movement is journalled from the adjust-quantity dialog"
+  },
+
+  "initialPositionDeclared": "Initial position declared",
+  "@initialPositionDeclared": {
+    "description": "Snackbar after an opening-balance movement is journalled from the initial-position dialog"
+  },
+
+  "adjustmentSellNudge": "If you sold these shares, record a sale instead: an adjustment does not compute any capital gain.",
+  "@adjustmentSellNudge": {
+    "description": "Fiscal warning shown in the adjust dialog when the delta is negative"
+  },
+
+  "adjustmentBuyNudge": "If this is a purchase, record a buy instead.",
+  "@adjustmentBuyNudge": {
+    "description": "Light nudge shown in the adjust dialog when the delta is positive"
+  },
+
+  "recordSaleInstead": "Record a sale",
+  "@recordSaleInstead": {
+    "description": "Button/link that closes the adjust dialog and opens the movement dialog preset to sell"
+  },
+
+  "derivedFromJournal": "{count, plural, =1{Derived from the journal (1 movement)} other{Derived from the journal ({count} movements)}}",
+  "@derivedFromJournal": {
+    "description": "Tooltip on the read-only quantity explaining it is projected from the journal",
+    "placeholders": {
+      "count": {
+        "type": "int"
+      }
+    }
+  },
+
+  "positionUnreconciledBadge": "Not reconciled",
+  "@positionUnreconciledBadge": {
+    "description": "Discreet badge shown on a legacy position whose quantity/ABP are not yet derived from a journal"
+  },
+
+  "reconcilePosition": "Reconcile",
+  "@reconcilePosition": {
+    "description": "Button label to reconcile a legacy position from its journal"
+  },
+
+  "setInitialCashBalanceAction": "Set initial cash balance…",
+  "@setInitialCashBalanceAction": {
+    "description": "Action label (button/menu) opening the initial-cash-balance dialog on a securities account (cash-ledger lot)"
+  },
+
+  "setInitialCashBalanceTitle": "Set initial cash balance",
+  "@setInitialCashBalanceTitle": {
+    "description": "Title of the initial-cash-balance dialog"
+  },
+
+  "adjustCashBalanceAction": "Adjust cash balance…",
+  "@adjustCashBalanceAction": {
+    "description": "Action label (button/menu) opening the adjust-cash-balance dialog on a securities account (cash-ledger lot)"
+  },
+
+  "adjustCashBalanceTitle": "Adjust cash balance",
+  "@adjustCashBalanceTitle": {
+    "description": "Title of the adjust-cash-balance dialog"
+  },
+
+  "cashOpeningBalanceAmountLabel": "Initial balance",
+  "@cashOpeningBalanceAmountLabel": {
+    "description": "Label for the amount field in the initial-cash-balance dialog"
+  },
+
+  "observedCashBalanceLabel": "Observed balance",
+  "@observedCashBalanceLabel": {
+    "description": "Label for the target-balance field in the adjust-cash-balance dialog (user enters the counted balance, not the delta)"
+  },
+
+  "projectedCashBalanceLabel": "Current cash balance: {balance}",
+  "@projectedCashBalanceLabel": {
+    "description": "Read-only display of the derived cash balance in the adjust-cash-balance dialog",
+    "placeholders": {
+      "balance": {
+        "type": "String"
+      }
+    }
+  },
+
+  "cashOpeningBalanceDeclared": "Initial cash balance declared",
+  "@cashOpeningBalanceDeclared": {
+    "description": "Snackbar after an opening-balance cash movement is journalled from the initial-cash-balance dialog"
+  },
+
+  "cashAdjustmentAdded": "Cash balance adjustment added to the journal",
+  "@cashAdjustmentAdded": {
+    "description": "Snackbar after an adjustment cash movement is journalled from the adjust-cash-balance dialog"
+  },
+
+  "cashDerivedLabel": "Cash: {amount}",
+  "@cashDerivedLabel": {
+    "description": "Read-only display of the derived cash balance on a securities account header, shown only when the journal contains a cash anchor movement (opt-in)",
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+
+  "cashNotTrackedLabel": "Cash not tracked",
+  "@cashNotTrackedLabel": {
+    "description": "Shown in place of the derived cash balance on a securities account header when the journal has no cash anchor movement yet"
+  },
+
+  "reconcileConfirmTitle": "Reconcile position?",
+  "@reconcileConfirmTitle": {
+    "description": "Title of the confirmation dialog before reconciling a position"
+  },
+
+  "reconcileConfirmBody": "Quantity and average buy price will be recomputed from the movements journal. No entered data is lost.",
+  "@reconcileConfirmBody": {
+    "description": "Body of the confirmation dialog before reconciling a position"
+  },
+
+  "assetInfo": "Asset: {symbol} ({type})",
+  "@assetInfo": {
+    "description": "Helper text describing the asset in the rename dialog",
+    "placeholders": {
+      "symbol": {
+        "type": "String"
+      },
+      "type": {
+        "type": "String"
+      }
+    }
+  },
+
+  "valueEvolutionTitle": "Evolution of your shares' value",
+  "@valueEvolutionTitle": {
+    "description": "Title for the position value evolution chart"
+  },
+
+  "unitPrice": "Unit price",
+  "@unitPrice": {
+    "description": "Label for the unit price"
+  },
+
+  "startValue": "Start: {value}",
+  "@startValue": {
+    "description": "Start value of the period",
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+
+  "endValue": "End: {value}",
+  "@endValue": {
+    "description": "End value of the period",
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+
+  "unrealizedGain": "Unrealized gain",
+  "@unrealizedGain": {
+    "description": "Label for the unrealized gain block"
+  },
+
+  "averageBuyPriceShort": "ABP: {value}",
+  "@averageBuyPriceShort": {
+    "description": "Short ABP label with value",
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+
+  "additionalDetails": "Additional details",
+  "@additionalDetails": {
+    "description": "Title for the additional details card"
+  },
+
+  "detailSymbol": "Symbol",
+  "@detailSymbol": {
+    "description": "Detail row label: symbol"
+  },
+
+  "detailType": "Type",
+  "@detailType": {
+    "description": "Detail row label: type"
+  },
+
+  "detailCurrency": "Currency",
+  "@detailCurrency": {
+    "description": "Detail row label: currency"
+  },
+
+  "detailExchange": "Exchange",
+  "@detailExchange": {
+    "description": "Detail row label: exchange"
+  },
+
+  "averageBuyPriceDetail": "Average buy price",
+  "@averageBuyPriceDetail": {
+    "description": "Detail row label: average buy price"
+  },
+
+  "undefined": "Not set",
+  "@undefined": {
+    "description": "Shown when a value is not set"
+  },
+
+  "unrealizedGainShort": "UG {value}",
+  "@unrealizedGainShort": {
+    "description": "Short unrealized gain percentage on a position card",
+    "placeholders": {
+      "value": {
+        "type": "String"
+      }
+    }
+  },
+
+  "manageWalletsTitle": "Manage Wealth",
+  "@manageWalletsTitle": {
+    "description": "Title of the manage wallets page"
+  },
+
+  "newWalletTitle": "New Wealth",
+  "@newWalletTitle": {
+    "description": "Title of the new wallet dialog"
+  },
+
+  "walletNameLabel": "Wealth name",
+  "@walletNameLabel": {
+    "description": "Label for the wallet name field"
+  },
+
+  "editWalletTitle": "Edit wealth",
+  "@editWalletTitle": {
+    "description": "Title of the edit wallet dialog"
+  },
+
+  "walletModified": "Wealth updated",
+  "@walletModified": {
+    "description": "Snackbar when a wallet is modified"
+  },
+
+  "cannotDeleteLastWallet": "Cannot delete the last wealth",
+  "@cannotDeleteLastWallet": {
+    "description": "Shown when trying to delete the last wallet"
+  },
+
+  "deleteWalletTitle": "Delete wealth",
+  "@deleteWalletTitle": {
+    "description": "Title of the delete wallet dialog"
+  },
+
+  "deleteWalletConfirm": "Are you sure you want to delete \"{name}\"?\n\nAll associated accounts and positions will be lost.",
+  "@deleteWalletConfirm": {
+    "description": "Confirmation message for deleting a wallet",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+
+
+  "walletDeleted": "Wealth \"{name}\" deleted",
+  "@walletDeleted": {
+    "description": "Snackbar when a wallet is deleted",
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
+
+  "createdOn": "Created on {date}",
+  "@createdOn": {
+    "description": "Subtitle showing the creation date of a wallet",
+    "placeholders": {
+      "date": {
+        "type": "String",
+        "example": "21/6/2026"
+      }
+    }
+  },
+
+  "editBalanceTitle": "Edit balance",
+  "@editBalanceTitle": {
+    "description": "Title of the edit cash balance dialog"
+  },
+
+  "invalidAmount": "Invalid amount",
+  "@invalidAmount": {
+    "description": "Shown when an invalid amount is entered"
+  },
+
+  "assetTypeEtf": "ETF",
+  "@assetTypeEtf": {
+    "description": "Asset type: ETF"
+  },
+
+  "assetTypeStock": "Stock",
+  "@assetTypeStock": {
+    "description": "Asset type: stock"
+  },
+
+  "assetTypeBond": "Bond",
+  "@assetTypeBond": {
+    "description": "Asset type: bond"
+  },
+
+  "assetTypeCrypto": "Crypto",
+  "@assetTypeCrypto": {
+    "description": "Asset type: crypto"
+  },
+
+  "assetTypeFund": "Fund",
+  "@assetTypeFund": {
+    "description": "Asset type: fund"
+  },
+
+  "assetTypeRealEstate": "Real estate",
+  "@assetTypeRealEstate": {
+    "description": "Asset type: real estate (listed REITs / SCPI, manual-only)"
+  },
+
+  "assetTypeOther": "Other",
+  "@assetTypeOther": {
+    "description": "Asset type: other"
+  },
+
+  "assetTypeAuto": "Automatic (auto-detected)",
+  "@assetTypeAuto": {
+    "description": "Asset type selector: revert to Yahoo auto-detection (unlocks manual override)"
+  },
+
+  "assetTypePreciousMetal": "Precious metal",
+  "@assetTypePreciousMetal": {
+    "description": "Asset type: precious metal (investment coins / bullion)"
+  },
+
+  "addPreciousMetalTitle": "Add a precious metal",
+  "@addPreciousMetalTitle": {
+    "description": "Title of the add precious metal dialog"
+  },
+
+  "preciousMetalNameLabel": "Name",
+  "@preciousMetalNameLabel": {
+    "description": "Label for the precious metal item name field"
+  },
+
+  "preciousMetalNameHint": "e.g. Napoleon 20F",
+  "@preciousMetalNameHint": {
+    "description": "Hint for the precious metal name field"
+  },
+
+  "coinPresetLabel": "Preset",
+  "@coinPresetLabel": {
+    "description": "Label for the coin preset dropdown"
+  },
+
+  "coinPresetCustom": "Custom",
+  "@coinPresetCustom": {
+    "description": "Custom (no preset) entry in the coin preset dropdown"
+  },
+
+  "referenceSymbolLabel": "Spot reference symbol",
+  "@referenceSymbolLabel": {
+    "description": "Label for the Yahoo reference symbol used to fetch the spot price"
+  },
+
+  "fineWeightLabel": "Fine weight (g)",
+  "@fineWeightLabel": {
+    "description": "Label for the fine metal weight field, in grams"
+  },
+
+  "premiumLabel": "Premium (%)",
+  "@premiumLabel": {
+    "description": "Label for the premium over melt value field, in percent"
+  },
+
+  "quoteUnitLabel": "Quote unit",
+  "@quoteUnitLabel": {
+    "description": "Label for the reference quote unit selector"
+  },
+
+  "quoteUnitOunce": "Per troy ounce",
+  "@quoteUnitOunce": {
+    "description": "Reference quote unit option: per troy ounce"
+  },
+
+  "quoteUnitGram": "Per gram",
+  "@quoteUnitGram": {
+    "description": "Reference quote unit option: per gram"
+  },
+
+  "invalidFineWeight": "Enter a valid fine weight in grams",
+  "@invalidFineWeight": {
+    "description": "Error when the fine weight is missing or invalid"
+  },
+
+  "preciousMetalHelp": "Value = spot price × fine weight × (1 + premium), converted to EUR.",
+  "@preciousMetalHelp": {
+    "description": "Helper text explaining how a precious metal value is computed"
+  },
+
+  "backupTooltip": "Backup",
+  "@backupTooltip": {
+    "description": "Tooltip for the backup menu in the app bar"
+  },
+
+  "backupSaveFile": "Save to file",
+  "@backupSaveFile": {
+    "description": "Backup menu item: save data to a local file"
+  },
+
+  "backupShare": "Share backup",
+  "@backupShare": {
+    "description": "Backup menu item: share the backup file"
+  },
+
+  "backupImportRestore": "Import / Restore",
+  "@backupImportRestore": {
+    "description": "Backup menu item: import and restore data from a file"
+  },
+
+  "backupSaved": "Backup saved.",
+  "@backupSaved": {
+    "description": "Snackbar shown after the backup file is saved"
+  },
+
+  "backupSaveError": "Save failed: {error}",
+  "@backupSaveError": {
+    "description": "Snackbar shown when saving the backup file fails",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+
+  "backupShareError": "Share failed: {error}",
+  "@backupShareError": {
+    "description": "Snackbar shown when sharing the backup fails",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+
+  "backupImportTitle": "Import a backup",
+  "@backupImportTitle": {
+    "description": "Title of the confirmation dialog before importing a backup"
+  },
+
+  "backupImportWarning": "This will replace all current data (wealth, accounts and positions). Continue?",
+  "@backupImportWarning": {
+    "description": "Warning shown before importing a backup that overwrites data"
+  },
+
+  "backupReplace": "Replace",
+  "@backupReplace": {
+    "description": "Confirm button to replace existing data with the imported backup"
+  },
+
+  "backupRestoreSuccess": "Data restored successfully.",
+  "@backupRestoreSuccess": {
+    "description": "Snackbar shown after data is restored from a backup"
+  },
+
+  "backupImportError": "Import failed: {error}",
+  "@backupImportError": {
+    "description": "Snackbar shown when importing a backup fails",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+
+  "fiscalExport": "Fiscal export",
+  "@fiscalExport": {
+    "description": "Menu item and dialog title for the fiscal export feature"
+  },
+
+  "fiscalExportSaveFile": "Save fiscal export",
+  "@fiscalExportSaveFile": {
+    "description": "Fiscal export menu item: save the fiscal export to a local file"
+  },
+
+  "fiscalExportSaved": "Fiscal export saved.",
+  "@fiscalExportSaved": {
+    "description": "Snackbar shown after the fiscal export file is saved"
+  },
+
+  "fiscalExportSubject": "Sparneo fiscal export",
+  "@fiscalExportSubject": {
+    "description": "Subject line used when sharing the fiscal export file"
+  },
+
+  "fiscalExportYearTitle": "Tax year",
+  "@fiscalExportYearTitle": {
+    "description": "Title of the tax year picker dialog shown before generating a fiscal export"
+  },
+
+  "fiscalExportDone": "Fiscal export generated",
+  "@fiscalExportDone": {
+    "description": "Snackbar shown after a fiscal export file has been generated and shared"
+  },
+
+  "fiscalExportError": "Fiscal export failed: {error}",
+  "@fiscalExportError": {
+    "description": "Snackbar shown when generating the fiscal export fails",
+    "placeholders": {
+      "error": {
+        "type": "String"
+      }
+    }
+  },
+
+  "realValueSeriesLabel": "Recorded value",
+  "@realValueSeriesLabel": {
+    "description": "Legend label for the snapshot-based real historical value series on the evolution chart"
+  },
+
+  "allocationTargetTitle": "Target allocation",
+  "@allocationTargetTitle": {
+    "description": "Section title for the target allocation feature"
+  },
+
+  "allocationTargetEditTooltip": "Edit allocation targets",
+  "@allocationTargetEditTooltip": {
+    "description": "Tooltip for the button that opens the allocation target editor"
+  },
+
+  "allocationTargetDialogTitle": "Allocation targets",
+  "@allocationTargetDialogTitle": {
+    "description": "Title of the allocation target editor dialog"
+  },
+
+  "allocationTargetDialogSubtitle": "Set a target percentage per asset type (sum ≤ 100%).",
+  "@allocationTargetDialogSubtitle": {
+    "description": "Subtitle / helper text inside the allocation target editor dialog"
+  },
+
+  "allocationTargetSumError": "The sum of targets exceeds 100%.",
+  "@allocationTargetSumError": {
+    "description": "Validation error shown when the sum of target percentages exceeds 100"
+  },
+
+  "positionDeleted": "{symbol} deleted",
+  "@positionDeleted": {
+    "description": "Snackbar shown when a position is deleted (with undo)",
+    "placeholders": {
+      "symbol": { "type": "String" }
+    }
+  },
+
+  "allocationTargetSum": "Sum: {value}%",
+  "@allocationTargetSum": {
+    "description": "Live running sum of allocation target percentages",
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+
+  "allocationTargetSumOverflow": "Sum: {value}% — exceeds 100%",
+  "@allocationTargetSumOverflow": {
+    "description": "Live running sum when it exceeds 100%",
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+
+  "allocationTargetCurrent": "current: {value}%",
+  "@allocationTargetCurrent": {
+    "description": "Currently-held percentage shown next to a target input field",
+    "placeholders": {
+      "value": { "type": "String" }
+    }
+  },
+
+  "allocationTargetClearConfirmTitle": "Clear targets",
+  "@allocationTargetClearConfirmTitle": {
+    "description": "Title of the confirmation dialog for clearing all allocation targets"
+  },
+
+  "allocationTargetClearConfirmContent": "Delete all allocation targets for this portfolio?",
+  "@allocationTargetClearConfirmContent": {
+    "description": "Body of the confirmation dialog for clearing all allocation targets"
+  },
+
+  "allocationTargetCleared": "Targets cleared.",
+  "@allocationTargetCleared": {
+    "description": "Snackbar shown after all allocation targets have been cleared"
+  },
+
+  "allocationTargetSaved": "Targets saved.",
+  "@allocationTargetSaved": {
+    "description": "Snackbar shown after allocation targets have been saved"
+  },
+
+  "allocationGapsSectionTitle": "Gaps vs targets",
+  "@allocationGapsSectionTitle": {
+    "description": "Section title for the allocation gaps table"
+  },
+
+  "allocationTargetsEmptyHint": "No allocation targets set. Tap the icon in the top right to define them and track your gaps.",
+  "@allocationTargetsEmptyHint": {
+    "description": "Empty-state hint shown in the targets/gaps section when no allocation target is defined yet"
+  },
+
+  "allocationGapReal": "Actual",
+  "@allocationGapReal": {
+    "description": "Column header: actual allocation percentage"
+  },
+
+  "allocationGapTarget": "Target",
+  "@allocationGapTarget": {
+    "description": "Column header: target allocation percentage"
+  },
+
+  "allocationGapDelta": "Gap",
+  "@allocationGapDelta": {
+    "description": "Column header: delta between actual and target allocation"
+  },
+
+  "allocationByAccount": "By account",
+  "@allocationByAccount": {
+    "description": "Section title for the allocation pie chart broken down by account"
+  },
+
+  "allocationByType": "By asset type",
+  "@allocationByType": {
+    "description": "Section title for the allocation pie chart broken down by asset type (cash included)"
+  },
+
+  "allocationByTypeHelp": "Each asset's type is detected automatically from Yahoo Finance. You can correct it by hand on a position's detail page — handy for bonds, real estate or metals, which Yahoo doesn't tell apart.",
+  "@allocationByTypeHelp": {
+    "description": "Help tooltip on the 'by asset type' allocation header, explaining auto-detection and manual override"
+  },
+
+  "allocationCashCategory": "Cash",
+  "@allocationCashCategory": {
+    "description": "Label for the synthetic cash (liquidity) category in allocation charts, gaps and target editor"
+  },
+
+  "transactionsSectionTitle": "Transactions",
+  "@transactionsSectionTitle": {
+    "description": "Section title for the transactions list on the position detail page"
+  },
+
+  "addTransaction": "Add a transaction",
+  "@addTransaction": {
+    "description": "Tooltip / button label for adding a new transaction"
+  },
+
+  "addCashTransaction": "Add a cash transaction",
+  "@addCashTransaction": {
+    "description": "Tooltip / button label for adding a cash movement (deposit/withdrawal/interest/charge) from the account journal page"
+  },
+
+  "editTransactionTitle": "Edit transaction",
+  "@editTransactionTitle": {
+    "description": "Title of the dialog when editing an existing transaction"
+  },
+
+  "transactionKindBuy": "Buy",
+  "@transactionKindBuy": {
+    "description": "Transaction kind: buy"
+  },
+
+  "transactionKindSell": "Sell",
+  "@transactionKindSell": {
+    "description": "Transaction kind: sell"
+  },
+
+  "transactionKindDividend": "Dividend",
+  "@transactionKindDividend": {
+    "description": "Transaction kind: dividend"
+  },
+
+  "transactionKindDeposit": "Deposit",
+  "@transactionKindDeposit": {
+    "description": "Transaction kind: cash deposit"
+  },
+
+  "transactionKindWithdrawal": "Withdrawal",
+  "@transactionKindWithdrawal": {
+    "description": "Transaction kind: cash withdrawal"
+  },
+
+  "transactionKindOpeningBalance": "Opening balance",
+  "@transactionKindOpeningBalance": {
+    "description": "Transaction kind: opening balance movement emitted on direct position entry"
+  },
+
+  "transactionKindAdjustment": "Adjustment",
+  "@transactionKindAdjustment": {
+    "description": "Transaction kind: inventory adjustment movement emitted on position edit"
+  },
+
+  "transactionKindInterest": "Interest",
+  "@transactionKindInterest": {
+    "description": "Transaction kind: interest earned on cash (cash movement)"
+  },
+
+  "transactionKindCharge": "Charge",
+  "@transactionKindCharge": {
+    "description": "Transaction kind: standalone fee/charge not tied to a trade (custody fees, account fees, isolated tax line)"
+  },
+
+  "dividendAmountHint": "Optional if quantity and unit price are filled in",
+  "@dividendAmountHint": {
+    "description": "Helper text on the dividend amount field, explaining it is optional when quantity/unit price are provided instead"
+  },
+
+  "chargeSignFeeLabel": "Fee",
+  "@chargeSignFeeLabel": {
+    "description": "Choice chip label: the charge amount is a fee (negative), the default"
+  },
+
+  "chargeSignRebateLabel": "Rebate",
+  "@chargeSignRebateLabel": {
+    "description": "Choice chip label: the charge amount is a rebate/refund (positive)"
+  },
+
+  "settlementAmountLabel": "Net settled amount ({currency})",
+  "@settlementAmountLabel": {
+    "description": "Label for the net settled amount field in the account currency (cross-currency)",
+    "placeholders": {
+      "currency": { "type": "String" }
+    }
+  },
+
+  "settlementAmountHint": "Amount actually debited/credited on the account, in its currency",
+  "@settlementAmountHint": {
+    "description": "Helper for the net settled amount field (cross-currency)"
+  },
+
+  "chargeOrderFeeHint": "For order fees, use the fee field of the buy or sell instead: only those count toward the cost basis.",
+  "@chargeOrderFeeHint": {
+    "description": "Preventive nudge shown under the type selector when kind=charge is entered from a position screen (widget.symbol non-null): a brokerage fee entered as a charge instead of a buy/sell fee field understates the cost basis"
+  },
+
+  "cashForeignExcludedNote": "{count, plural, =1{excluding 1 movement in a foreign currency} other{excluding {count} movements in a foreign currency}}",
+  "@cashForeignExcludedNote": {
+    "description": "Cash row annotation: movements in a foreign currency excluded from the derived balance",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+
+  "transactionQuantity": "Quantity",
+  "@transactionQuantity": {
+    "description": "Label for the transaction quantity field"
+  },
+
+  "transactionUnitPrice": "Unit price",
+  "@transactionUnitPrice": {
+    "description": "Label for the transaction unit price field"
+  },
+
+  "transactionFee": "Fee (optional)",
+  "@transactionFee": {
+    "description": "Label for the transaction fee field"
+  },
+
+  "transactionNote": "Note (optional)",
+  "@transactionNote": {
+    "description": "Label for the transaction note field"
+  },
+
+  "transactionDate": "Date",
+  "@transactionDate": {
+    "description": "Label for the transaction date field"
+  },
+
+  "transactionAmount": "Total amount",
+  "@transactionAmount": {
+    "description": "Label for the calculated transaction amount (read-only recap)"
+  },
+
+  "transactionSaved": "Transaction saved",
+  "@transactionSaved": {
+    "description": "Snackbar shown after a transaction is saved"
+  },
+
+  "transactionDeleted": "Transaction deleted",
+  "@transactionDeleted": {
+    "description": "Snackbar shown after a transaction is deleted"
+  },
+
+  "noTransactionsYet": "No transactions yet",
+  "@noTransactionsYet": {
+    "description": "Shown when the transactions list is empty"
+  },
+
+  "deleteTransactionConfirm": "Delete this transaction?",
+  "@deleteTransactionConfirm": {
+    "description": "Confirmation message for deleting a transaction"
+  },
+
+  "journalAnalysisTitle": "Journal analysis",
+  "@journalAnalysisTitle": {
+    "description": "Title of the card showing analytics derived from the transaction journal"
+  },
+
+  "realizedGainLabel": "Realized gain: {value}",
+  "@realizedGainLabel": {
+    "description": "Cumulative realized gain derived from the transaction journal",
+    "placeholders": {
+      "value": {
+        "type": "String",
+        "example": "+200.00€"
+      }
+    }
+  },
+
+  "journalAnalysisCaption": "Derived from transactions. No automatic write.",
+  "@journalAnalysisCaption": {
+    "description": "Short disclaimer shown below the journal analysis card"
+  },
+
+  "journalPageTitle": "Journal — {account}",
+  "@journalPageTitle": {
+    "description": "Title of the account journal page",
+    "placeholders": {
+      "account": {
+        "type": "String",
+        "example": "PEA BNP"
+      }
+    }
+  },
+
+  "openJournalTooltip": "Transaction journal",
+  "@openJournalTooltip": {
+    "description": "Tooltip for the button that opens the account journal page"
+  },
+
+  "filterAllKinds": "All",
+  "@filterAllKinds": {
+    "description": "Filter chip label: show all transaction kinds"
+  },
+
+  "periodAll": "All time",
+  "@periodAll": {
+    "description": "Period filter preset: no date restriction"
+  },
+
+  "period30Days": "30 days",
+  "@period30Days": {
+    "description": "Period filter preset: last 30 days"
+  },
+
+  "period90Days": "90 days",
+  "@period90Days": {
+    "description": "Period filter preset: last 90 days"
+  },
+
+  "period1Year": "1 year",
+  "@period1Year": {
+    "description": "Period filter preset: last 1 year"
+  },
+
+  "cashLabel": "Cash",
+  "@cashLabel": {
+    "description": "Label shown in place of a symbol for cash-only transactions (deposit/withdrawal)"
+  },
+
+  "noJournalEntriesForFilter": "No transactions match the current filter",
+  "@noJournalEntriesForFilter": {
+    "description": "Shown in the account journal page when the filter returns no results but the account has transactions"
+  },
+
+  "settingsTooltip": "Settings",
+  "@settingsTooltip": {
+    "description": "Tooltip for the button that opens the settings page"
+  },
+
+  "settingsPageTitle": "Settings",
+  "@settingsPageTitle": {
+    "description": "Title of the settings page"
+  },
+
+  "settingsAppearanceSectionTitle": "Appearance",
+  "@settingsAppearanceSectionTitle": {
+    "description": "Title of the appearance (theme) section on the settings page"
+  },
+
+  "settingsThemeSystem": "System",
+  "@settingsThemeSystem": {
+    "description": "Theme option: follow the system light/dark setting"
+  },
+
+  "settingsThemeLight": "Light",
+  "@settingsThemeLight": {
+    "description": "Theme option: always use the light theme"
+  },
+
+  "settingsThemeDark": "Dark",
+  "@settingsThemeDark": {
+    "description": "Theme option: always use the dark theme"
+  },
+
+  "settingsDataSectionTitle": "Backup & export",
+  "@settingsDataSectionTitle": {
+    "description": "Title of the backup/restore/fiscal export section on the settings page"
+  },
+
+  "settingsPrivacySectionTitle": "Privacy",
+  "@settingsPrivacySectionTitle": {
+    "description": "Title of the privacy section on the settings page"
+  },
+
+  "settingsPrivacyBody": "Sparneo runs entirely on your device: no account, no Sparneo server, no telemetry, no advertising trackers.\n\nYour wealth data — accounts, positions, amounts, the transaction journal — never leaves your device.\n\nTo display quotes, the app queries Yahoo Finance (a public source): only the symbols you track are sent, never your quantities, amounts or balances. Exchange rates come from Frankfurter (currency pairs only).\n\nBackup and export files are only created when YOU explicitly export them, and remain under your control.",
+  "@settingsPrivacyBody": {
+    "description": "Full privacy disclosure text shown in the settings page"
+  },
+
+  "settingsAboutSectionTitle": "About & license",
+  "@settingsAboutSectionTitle": {
+    "description": "Title of the about/license section on the settings page"
+  },
+
+  "settingsAppTagline": "100% local and private wealth tracking",
+  "@settingsAppTagline": {
+    "description": "Short tagline shown under the app name in the settings page"
+  },
+
+  "settingsAppVersion": "Version {version}",
+  "@settingsAppVersion": {
+    "description": "Version label shown in the settings page",
+    "placeholders": {
+      "version": {
+        "type": "String",
+        "example": "0.1.0"
+      }
+    }
+  },
+
+  "settingsLicenseNotice": "Free software — licensed under the GNU AGPL-3.0",
+  "@settingsLicenseNotice": {
+    "description": "Short license mention shown in the settings page"
+  },
+
+  "settingsThirdPartyLicenses": "Third-party licenses",
+  "@settingsThirdPartyLicenses": {
+    "description": "Button label opening the Flutter licenses page"
+  },
+
+  "settingsRepositoryLabel": "Source code",
+  "@settingsRepositoryLabel": {
+    "description": "Label shown above the repository URL in the settings page"
+  },
+
+  "walletSwitcherTitle": "Portfolios",
+  "@walletSwitcherTitle": {
+    "description": "Title of the wallet switcher bottom sheet"
+  },
+
+  "newWalletAction": "New portfolio",
+  "@newWalletAction": {
+    "description": "Action entry in the wallet switcher sheet to create a new wallet"
+  },
+
+  "switchWalletTooltip": "Switch portfolio",
+  "@switchWalletTooltip": {
+    "description": "Tooltip on the tappable wallet title in the app bar"
+  }
+}
