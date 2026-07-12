@@ -32,11 +32,32 @@ android {
         versionName = flutter.versionName
     }
 
+    // Signature de release : secrets dans android/key.properties (gitignoré),
+    // keystore hors du dépôt. Sans ce fichier, repli sur la clé debug pour
+    // que `flutter run --release` fonctionne chez les contributeurs.
+    val keystoreProperties = java.util.Properties().apply {
+        val f = rootProject.file("key.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+
+    signingConfigs {
+        if (keystoreProperties.isNotEmpty()) {
+            create("release") {
+                keyAlias = keystoreProperties["keyAlias"] as String
+                keyPassword = keystoreProperties["keyPassword"] as String
+                storeFile = file(keystoreProperties["storeFile"] as String)
+                storePassword = keystoreProperties["storePassword"] as String
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystoreProperties.isNotEmpty()) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 }
