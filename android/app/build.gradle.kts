@@ -1,8 +1,20 @@
+import java.io.FileInputStream
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("kotlin-android")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
+}
+
+// Signature de release : secrets dans android/key.properties (gitignoré),
+// keystore hors du dépôt. Sans ce fichier, repli sur la clé debug pour
+// que les contributeurs puissent builder en release.
+val keystoreProperties = Properties()
+val keystorePropertiesFile = rootProject.file("key.properties")
+if (keystorePropertiesFile.exists()) {
+    FileInputStream(keystorePropertiesFile).use { keystoreProperties.load(it) }
 }
 
 android {
@@ -32,21 +44,13 @@ android {
         versionName = flutter.versionName
     }
 
-    // Signature de release : secrets dans android/key.properties (gitignoré),
-    // keystore hors du dépôt. Sans ce fichier, repli sur la clé debug pour
-    // que `flutter run --release` fonctionne chez les contributeurs.
-    val keystoreProperties = java.util.Properties().apply {
-        val f = rootProject.file("key.properties")
-        if (f.exists()) f.inputStream().use { load(it) }
-    }
-
     signingConfigs {
         if (keystoreProperties.isNotEmpty()) {
             create("release") {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
             }
         }
     }
