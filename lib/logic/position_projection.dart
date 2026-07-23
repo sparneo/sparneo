@@ -135,13 +135,72 @@ Decimal _parseDecimal(String? s) {
   return Decimal.tryParse(normalized) ?? Decimal.zero;
 }
 
+/// Point de rupture du rejeu du journal — état APRÈS UN mouvement, dans
+/// l'ordre chronologique (cf. [replayLedger], paramètre `onStep`).
+///
+/// Sert de brique pure aux timelines en escalier (mode 2 « évolution réelle
+/// du patrimoine », B7) : ne réimplémente AUCUNE arithmétique, ne fait que
+/// RESTITUER l'état déjà calculé par le fold unique de [replayLedger] (cf.
+/// design §11.3 — l'émission est ajoutée SANS toucher au switch ni aux
+/// clamps, invariant « un seul rejeu » préservé).
+class LedgerStep {
+  final DateTime date;
+  final String? symbol;
+  final TransactionKind kind;
+
+  /// Delta de quantité EFFECTIVEMENT appliqué par ce mouvement, APRÈS clamp
+  /// (= `runningQty` après − `runningQty` avant CE mouvement). Une survente
+  /// (ex. `transferOut` de 10 alors que 6 sont détenus) émet `-6`, PAS `-10` —
+  /// c'est l'effet réel sur le patrimoine, pas la déclaration brute (design
+  /// §11.2 M2).
+  final Decimal deltaQty;
+
+  /// Quantité détenue après ce mouvement (post-clamp).
+  final Decimal qtyAfter;
+
+  /// Devise de RÈGLEMENT de ce mouvement (`settlementCurrency ?? currency` —
+  /// cf. [AssetTransaction.settlementCurrency]).
+  final String settlementCurrency;
+
+  /// Effet net signé sur le cash de [settlementCurrency] pour CE mouvement
+  /// (= `amount` parsé ; `0` si `amount` absent/vide).
+  final Decimal deltaCash;
+
+  /// État cash par devise après ce mouvement — COPIE DÉFENSIVE immuable. La
+  /// map interne du fold ([replayLedger]) est mutée en place à chaque
+  /// itération : sans cette copie, tous les steps émis aliaseraient l'état
+  /// FINAL du rejeu (piège §11.3 m2).
+  final Map<String, Decimal> cashAfter;
+
+  const LedgerStep({
+    required this.date,
+    required this.symbol,
+    required this.kind,
+    required this.deltaQty,
+    required this.qtyAfter,
+    required this.settlementCurrency,
+    required this.deltaCash,
+    required this.cashAfter,
+  });
+}
+
 /// Rejoue le journal EN UN SEUL passage (unique switch sur [TransactionKind]).
 ///
 /// Maintient simultanément : la quantité exacte ([Decimal]), la base de coût
 /// exacte ([Rational], division WAC comprise) et la plus-value réalisée
 /// (`double`). C'est le cœur anti-divergence : tout autre calcul dérivé
 /// (projection de position, analytics d'affichage) passe par ici.
-LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
+///
+/// [onStep], si fourni, est appelé UNE FOIS PAR MOUVEMENT rejoué (ordre
+/// chronologique), APRÈS application au running state — [LedgerStep.qtyAfter]
+/// et [LedgerStep.cashAfter] reflètent donc le clamp déjà appliqué. Callback
+/// pur d'observation : ne modifie NI le switch NI les clamps existants, donc
+/// `onStep == null` laisse le comportement et la valeur de retour STRICTEMENT
+/// identiques à avant son introduction (aucune régression — cf. design §11.3).
+LedgerReplayResult replayLedger(
+  List<AssetTransaction> txs, {
+  void Function(LedgerStep step)? onStep,
+}) {
   var runningQty = Decimal.zero; // quantité détenue courante (exacte)
   var runningCost = Rational.zero; // base de coût totale (exacte)
   var realized = 0.0; // plus-value réalisée cumulée
@@ -168,15 +227,21 @@ LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
     // son amount signé, buy/sell/dividend/deposit/withdrawal/interest/charge
     // portent leur effet net. Ne JAMAIS soustraire fee ici (déjà inclus).
     final amt = _parseDecimal(tx.amount);
+    // Bucket = devise de RÈGLEMENT (settlementCurrency), pas de cotation :
+    // `amount` porte l'effet net sur les espèces DU COMPTE (design §8, option
+    // A). Fallback `?? currency` = mono-devise legacy (règlement == cotation).
+    // Le taux de change est un fait passé DÉJÀ figé dans `amount` — jamais
+    // recalculé ici (rejeu déterministe, zéro réseau). Calculé
+    // inconditionnellement (coût négligeable) pour être réutilisable par
+    // [onStep] même sur un mouvement sans `amount` (ex. buy/sell titre).
+    final settlement = tx.settlementCurrency ?? tx.currency;
     if (tx.amount != null && tx.amount!.trim().isNotEmpty) {
-      // Bucket = devise de RÈGLEMENT (settlementCurrency), pas de cotation :
-      // `amount` porte l'effet net sur les espèces DU COMPTE (design §8, option
-      // A). Fallback `?? currency` = mono-devise legacy (règlement == cotation).
-      // Le taux de change est un fait passé DÉJÀ figé dans `amount` — jamais
-      // recalculé ici (rejeu déterministe, zéro réseau).
-      final settlement = tx.settlementCurrency ?? tx.currency;
       cash[settlement] = (cash[settlement] ?? Decimal.zero) + amt;
     }
+
+    // Capture AVANT le switch — sert uniquement à calculer le delta EFFECTIF
+    // (post-clamp) pour [onStep] ; ne participe à AUCUN calcul du switch.
+    final qtyBeforeStep = runningQty;
 
     switch (tx.kind) {
       case TransactionKind.buy:
@@ -261,6 +326,20 @@ LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
         // `default` : ajouter un kind force sa prise en compte explicite ici.
         break;
     }
+
+    if (onStep != null) {
+      final hasAmount = tx.amount != null && tx.amount!.trim().isNotEmpty;
+      onStep(LedgerStep(
+        date: tx.date,
+        symbol: tx.symbol,
+        kind: tx.kind,
+        deltaQty: runningQty - qtyBeforeStep,
+        qtyAfter: runningQty,
+        settlementCurrency: settlement,
+        deltaCash: hasAmount ? amt : Decimal.zero,
+        cashAfter: Map<String, Decimal>.unmodifiable(cash),
+      ));
+    }
   }
 
   return LedgerReplayResult(
@@ -278,6 +357,105 @@ LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
 PositionProjection projectPosition(List<AssetTransaction> txs) {
   final r = replayLedger(txs);
   return PositionProjection(r.quantity, r.averagePrice);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// TIMELINES EN ESCALIER (mode 2 « évolution réelle du patrimoine », B7 —
+// design doc 18 §2/§11.3) : constructeurs PURS bâtis SUR [replayLedger] +
+// `onStep`, ZÉRO logique arithmétique par kind ajoutée ici. Un seul rejeu du
+// journal (invariant de tête de fichier) alimente ces deux escaliers.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Normalise une [DateTime] en DATE-ONLY UTC (tronque heure/minute/seconde et
+/// fuseau) — indispensable pour coalescer les breakpoints du journal (horaire
+/// variable) avec des séries de prix journalières (design §11.5 m3 : sans
+/// cette normalisation, des décalages ±1 jour apparaissent aux frontières).
+DateTime _dateOnlyUtc(DateTime d) => DateTime.utc(d.year, d.month, d.day);
+
+/// Recherche dichotomique du dernier index `i` tel que `dateAt(i) <= target`
+/// (les dates doivent être triées croissantes). `-1` si [target] est
+/// antérieur à toutes ([length] == 0 y compris).
+int _lastIndexAtOrBefore(
+  int length,
+  DateTime Function(int i) dateAt,
+  DateTime target,
+) {
+  var lo = 0;
+  var hi = length - 1;
+  var ans = -1;
+  while (lo <= hi) {
+    final mid = (lo + hi) >> 1;
+    if (!dateAt(mid).isAfter(target)) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans;
+}
+
+/// Escalier de quantité détenue, COALESCÉ PAR DATE (date-only UTC — dernier
+/// état de clôture du jour). Trié par date croissante. Vide si [txs] est vide.
+///
+/// Coalescence : [replayLedger] appelle `onStep` dans l'ordre chronologique
+/// canonique ([AssetTransaction.compareChronological]) — pour une même date,
+/// la dernière écriture dans la map l'emporte, ce qui restitue exactement le
+/// bon état de clôture (un aller-retour intraday se referme, cf. design §11.3).
+List<({DateTime date, Decimal qtyAfter})> buildQuantityTimeline(
+  List<AssetTransaction> txs,
+) {
+  if (txs.isEmpty) return const [];
+  final byDate = <DateTime, Decimal>{};
+  replayLedger(
+    txs,
+    onStep: (step) => byDate[_dateOnlyUtc(step.date)] = step.qtyAfter,
+  );
+  final dates = byDate.keys.toList()..sort();
+  return [for (final d in dates) (date: d, qtyAfter: byDate[d]!)];
+}
+
+/// Escalier de cash PAR DEVISE DE RÈGLEMENT, coalescé par date (mêmes règles
+/// que [buildQuantityTimeline]). Rejoue TOUT le journal fourni (typiquement le
+/// journal complet d'un COMPTE — le cash n'a de sens qu'à cette granularité,
+/// cf. tête de fichier [LedgerReplayResult.cashByCurrency]).
+List<({DateTime date, Map<String, Decimal> cashAfter})> buildCashTimeline(
+  List<AssetTransaction> txs,
+) {
+  if (txs.isEmpty) return const [];
+  final byDate = <DateTime, Map<String, Decimal>>{};
+  replayLedger(
+    txs,
+    onStep: (step) => byDate[_dateOnlyUtc(step.date)] = step.cashAfter,
+  );
+  final dates = byDate.keys.toList()..sort();
+  return [for (final d in dates) (date: d, cashAfter: byDate[d]!)];
+}
+
+/// Quantité détenue à la date [d] selon l'escalier [timeline] (recherche
+/// dichotomique du dernier palier ≤ [d], en date-only UTC). [Decimal.zero]
+/// avant le premier palier ou si [timeline] est vide.
+Decimal quantityAt(
+  List<({DateTime date, Decimal qtyAfter})> timeline,
+  DateTime d,
+) {
+  final target = _dateOnlyUtc(d);
+  final idx =
+      _lastIndexAtOrBefore(timeline.length, (i) => timeline[i].date, target);
+  return idx < 0 ? Decimal.zero : timeline[idx].qtyAfter;
+}
+
+/// Cash par devise à la date [d] selon l'escalier [timeline] (même recherche
+/// que [quantityAt]). Map VIDE avant le premier palier ou si [timeline] est
+/// vide (aucun mouvement cash connu à cette date ≡ toutes devises à 0).
+Map<String, Decimal> cashAt(
+  List<({DateTime date, Map<String, Decimal> cashAfter})> timeline,
+  DateTime d,
+) {
+  final target = _dateOnlyUtc(d);
+  final idx =
+      _lastIndexAtOrBefore(timeline.length, (i) => timeline[i].date, target);
+  return idx < 0 ? const {} : timeline[idx].cashAfter;
 }
 
 /// Vrai si le journal [txs] contient au moins un mouvement d'ANCRAGE ESPÈCES.

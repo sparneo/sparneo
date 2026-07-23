@@ -2,8 +2,12 @@
 
 import 'dart:math';
 
+import 'package:decimal/decimal.dart';
+import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/model/account.dart';
+import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
+import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
 
@@ -190,6 +194,111 @@ class HistoryAggregator {
       periodChange: periodChange,
       periodChangePercent: periodChangePercent,
     );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reconstruction réelle (mode 2 — B7, design doc 18) : PURE, sans I/O.
+  // ---------------------------------------------------------------------------
+
+  /// Reconstruit la valeur du patrimoine (EUR) DATE PAR DATE depuis le journal
+  /// — mode 2 « évolution réelle », par opposition à [aggregateGlobalHistoricalData]
+  /// (mode 1) qui rétroprojette les quantités et le cash ACTUELS sur le passé.
+  ///
+  /// Pour chaque date de [gridDates] : `Σ_symbole qtyDétenue(sym,D) × prix(sym,D)
+  /// × fx + Σ_compte cashProjeté(compte,D) × fx` (design §1). Les timelines
+  /// ([buildQuantityTimeline]/[buildCashTimeline]) sont bâties UNE SEULE FOIS
+  /// hors de la boucle des dates (perf — O(dates × symboles × log n)).
+  ///
+  /// - [txsBySymbol] : journal PAR SYMBOLE, positions JOURNALISÉES uniquement
+  ///   (`derived_at` non NULL) — les positions legacy (journal garanti vide,
+  ///   cf. `position_projection.dart`) s'évaporeraient silencieusement du
+  ///   calcul ; leur exclusion est actée en amont par l'appelant (design §11.1
+  ///   / §11.6, décision produit B1 : mode 2 les exclut explicitement).
+  /// - [txsByAccount] : journal COMPLET par compte (tous symboles + cash pur),
+  ///   nécessaire pour projeter le cash — un symbole seul ne suffit pas (le
+  ///   cash n'a de sens qu'à la granularité du compte, cf.
+  ///   `position_projection.dart:100-102`).
+  /// - Gating [journalHasCashAnchor] (design §11.2 M1) : le cash d'un compte
+  ///   n'est injecté QUE s'il porte un mouvement d'ancrage — sinon un compte
+  ///   ne portant que des `buy` produirait un cash négatif FICTIF.
+  /// - Un symbole sans donnée de prix (`symbolToData[sym]` null/vide) contribue
+  ///   `0` pour l'instant : le repli « dernier cours connu » (titres délistés)
+  ///   est le Lot 2 (design §4), PAS ce lot — point d'extension volontairement
+  ///   laissé ici (voir le commentaire dans la boucle).
+  /// - Change : taux COURANT (v1 assumée, design §6) — USD converti via
+  ///   [usdToEurRate], toute autre devise non-EUR inchangée (même compromis
+  ///   que le mode 1, qui ne gère que l'USD).
+  static ({List<DateTime> dates, List<double> values}) reconstructRealNetWorth({
+    required Map<String, List<AssetTransaction>> txsBySymbol,
+    required Map<String, List<AssetTransaction>> txsByAccount,
+    required Map<String, AssetHistoricalData?> symbolToData,
+    required Map<String, Asset> assetBySymbol,
+    required double usdToEurRate,
+    required List<DateTime> gridDates,
+  }) {
+    if (gridDates.isEmpty) {
+      return (dates: <DateTime>[], values: <double>[]);
+    }
+
+    // Timelines titres : une par symbole, pré-construites hors boucle.
+    final qtyTimelines = <String, List<({DateTime date, Decimal qtyAfter})>>{};
+    for (final entry in txsBySymbol.entries) {
+      qtyTimelines[entry.key] = buildQuantityTimeline(entry.value);
+    }
+
+    // Timelines cash : une par compte ANCRÉ seulement (gating M1) — un compte
+    // non ancré est simplement absent de la map, donc ignoré dans la boucle.
+    final cashTimelines =
+        <String, List<({DateTime date, Map<String, Decimal> cashAfter})>>{};
+    for (final entry in txsByAccount.entries) {
+      if (journalHasCashAnchor(entry.value)) {
+        cashTimelines[entry.key] = buildCashTimeline(entry.value);
+      }
+    }
+
+    final values = <double>[];
+    for (final d in gridDates) {
+      double totalEur = 0;
+
+      // Titres.
+      for (final symbol in txsBySymbol.keys) {
+        final qty = quantityAt(qtyTimelines[symbol]!, d);
+        if (qty <= Decimal.zero) continue; // soldé à cette date (§8.5)
+
+        final data = symbolToData[symbol];
+        if (data == null || data.isEmpty) {
+          // Pas d'historique de prix (titre délisté/irrésolu) : contribue 0
+          // pour l'instant. Repli « dernier cours connu » = Lot 2 (design §4),
+          // PAS ce lot — point d'extension volontairement laissé ici.
+          continue;
+        }
+
+        final idx = findNearestIndexBounded(data.dates, d);
+        if (idx == -1) continue;
+        var price = data.prices[idx].toDouble();
+
+        final asset = assetBySymbol[symbol];
+        if (asset != null && asset.isUsd) {
+          price *= usdToEurRate;
+        }
+
+        totalEur += price * qty.toDouble();
+      }
+
+      // Cash (gating M1 déjà appliqué à la construction des timelines).
+      for (final cashTimeline in cashTimelines.values) {
+        final byCurrency = cashAt(cashTimeline, d);
+        for (final entry in byCurrency.entries) {
+          final amount = entry.value.toDouble();
+          totalEur +=
+              entry.key.toUpperCase() == 'USD' ? amount * usdToEurRate : amount;
+        }
+      }
+
+      values.add(totalEur);
+    }
+
+    return (dates: gridDates, values: values);
   }
 
   // ---------------------------------------------------------------------------

@@ -584,4 +584,121 @@ void main() {
       );
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // LedgerStep / onStep / timelines en escalier (B7 — design doc 18, Lot 1)
+  //
+  // Le cœur (replayLedger + onStep) reste l'UNIQUE rejeu du journal ; ces
+  // tests couvrent l'émission des breakpoints et les deux constructeurs de
+  // timeline bâtis PAR-DESSUS (buildQuantityTimeline / buildCashTimeline),
+  // ainsi que la non-régression stricte de replayLedger quand onStep == null.
+  // ---------------------------------------------------------------------------
+  group('LedgerStep / onStep — timelines en escalier (B7 Lot 1)', () {
+    test('escalier exact (§8.2) : achat J1 +10, vente J3 -4, achat J5 +2', () {
+      final txs = [
+        _tx(id: '1', kind: TransactionKind.buy, quantity: '10', unitPrice: '100', date: DateTime(2024, 1, 1)),
+        _tx(id: '2', kind: TransactionKind.sell, quantity: '4', unitPrice: '120', date: DateTime(2024, 1, 3)),
+        _tx(id: '3', kind: TransactionKind.buy, quantity: '2', unitPrice: '110', date: DateTime(2024, 1, 5)),
+      ];
+      final timeline = buildQuantityTimeline(txs);
+
+      expect(quantityAt(timeline, DateTime(2023, 12, 31)).toString(), '0');
+      expect(quantityAt(timeline, DateTime(2024, 1, 1)).toString(), '10');
+      expect(quantityAt(timeline, DateTime(2024, 1, 2)).toString(), '10');
+      expect(quantityAt(timeline, DateTime(2024, 1, 3)).toString(), '6');
+      expect(quantityAt(timeline, DateTime(2024, 1, 4)).toString(), '6');
+      expect(quantityAt(timeline, DateTime(2024, 1, 5)).toString(), '8');
+      expect(quantityAt(timeline, DateTime(2024, 1, 30)).toString(), '8');
+    });
+
+    test('quantityAt / buildQuantityTimeline sur journal vide → vide, zéro partout', () {
+      expect(buildQuantityTimeline([]), isEmpty);
+      expect(quantityAt(buildQuantityTimeline([]), DateTime(2024, 1, 1)), Decimal.zero);
+    });
+
+    test('titre soldé mi-période (§8.5) : contribue tant que détenu, 0 après la vente totale (pas de fantôme)', () {
+      final txs = [
+        _tx(id: '1', kind: TransactionKind.buy, quantity: '10', unitPrice: '100', date: DateTime(2024, 1, 1)),
+        _tx(id: '2', kind: TransactionKind.sell, quantity: '10', unitPrice: '120', date: DateTime(2024, 1, 5)),
+      ];
+      final timeline = buildQuantityTimeline(txs);
+
+      expect(quantityAt(timeline, DateTime(2024, 1, 2)).toString(), '10');
+      expect(quantityAt(timeline, DateTime(2024, 1, 5)).toString(), '0');
+      expect(quantityAt(timeline, DateTime(2024, 2, 1)).toString(), '0');
+    });
+
+    test('cash projeté : cashAt == Σ amount (date ≤ D) par devise, cohérent avec replayLedger', () {
+      final txs = [
+        cashTx(id: '1', kind: TransactionKind.deposit, amount: '1000', date: DateTime(2024, 1, 1)),
+        cashTx(id: '2', kind: TransactionKind.buy, symbol: 'AAPL', amount: '-500', quantity: '5', unitPrice: '100', date: DateTime(2024, 1, 3)),
+        cashTx(id: '3', kind: TransactionKind.interest, amount: '2.5', date: DateTime(2024, 1, 10)),
+      ];
+      final timeline = buildCashTimeline(txs);
+
+      expect(cashAt(timeline, DateTime(2023, 12, 31)), isEmpty);
+      expect(cashAt(timeline, DateTime(2024, 1, 2))['EUR'].toString(), '1000');
+      expect(cashAt(timeline, DateTime(2024, 1, 5))['EUR'].toString(), '500');
+
+      // Après le dernier mouvement, doit coïncider avec le total replayLedger.
+      final full = replayLedger(txs);
+      expect(
+        cashAt(timeline, DateTime(2024, 6, 1))['EUR'].toString(),
+        full.cashByCurrency['EUR'].toString(),
+      );
+    });
+
+    test('deltaQty effectif POST-CLAMP (M2) : transferOut 10 alors que 6 détenus → deltaQty == -6, pas -10', () {
+      final txs = [
+        _tx(id: '1', kind: TransactionKind.buy, quantity: '6', unitPrice: '100', date: DateTime(2024, 1, 1)),
+        _tx(id: '2', kind: TransactionKind.transferOut, quantity: '10', date: DateTime(2024, 1, 5)),
+      ];
+      final steps = <LedgerStep>[];
+      replayLedger(txs, onStep: steps.add);
+
+      expect(steps, hasLength(2));
+      expect(steps[0].deltaQty.toString(), '6');
+      expect(steps[0].qtyAfter.toString(), '6');
+      expect(steps[1].kind, TransactionKind.transferOut);
+      expect(steps[1].deltaQty.toString(), '-6',
+          reason: 'effet CLAMPÉ (6 détenus), pas le -10 brut déclaré');
+      expect(steps[1].qtyAfter.toString(), '0');
+    });
+
+    test('cashAfter émis est une COPIE DÉFENSIVE (m2) : n\'aliase PAS l\'état final', () {
+      final txs = [
+        cashTx(id: '1', kind: TransactionKind.deposit, amount: '100', date: DateTime(2024, 1, 1)),
+        cashTx(id: '2', kind: TransactionKind.deposit, amount: '50', date: DateTime(2024, 1, 2)),
+      ];
+      final steps = <LedgerStep>[];
+      replayLedger(txs, onStep: steps.add);
+
+      expect(steps[0].cashAfter['EUR'].toString(), '100',
+          reason: 'le 1er step ne doit PAS voir le 2e dépôt (piège d\'aliasing)');
+      expect(steps[1].cashAfter['EUR'].toString(), '150');
+    });
+
+    test('non-régression : replayLedger(txs) donne le MÊME résultat avec ou sans onStep (journal mixte)', () {
+      final txs = [
+        _tx(id: '1', kind: TransactionKind.buy, quantity: '10', unitPrice: '100', date: DateTime(2024, 1, 1)),
+        cashTx(id: '2', kind: TransactionKind.deposit, amount: '500', date: DateTime(2024, 1, 1)),
+        _tx(id: '3', kind: TransactionKind.sell, quantity: '4', unitPrice: '150', date: DateTime(2024, 1, 3)),
+        _tx(id: '4', kind: TransactionKind.transferOut, quantity: '2', date: DateTime(2024, 1, 4)),
+        cashTx(id: '5', kind: TransactionKind.charge, amount: '-3', date: DateTime(2024, 1, 5)),
+      ];
+
+      final without = replayLedger(txs);
+      var stepCount = 0;
+      final withOnStep = replayLedger(txs, onStep: (_) => stepCount++);
+
+      expect(withOnStep.quantity, without.quantity);
+      expect(withOnStep.cost, without.cost);
+      expect(withOnStep.realizedGain, without.realizedGain);
+      expect(withOnStep.cashByCurrency.keys.toSet(), without.cashByCurrency.keys.toSet());
+      for (final k in without.cashByCurrency.keys) {
+        expect(withOnStep.cashByCurrency[k], without.cashByCurrency[k]);
+      }
+      expect(stepCount, txs.length, reason: 'un step par mouvement rejoué');
+    });
+  });
 }
