@@ -182,6 +182,15 @@ class PositionCard extends StatelessWidget {
                         ),
                       ],
                     ),
+                    // Badge « non coté » : actif en repli ISIN (titre délisté),
+                    // jamais interrogé sur la source de marché.
+                    if (!position.asset.quotable) ...[
+                      const SizedBox(height: 4),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: _NotQuotedBadge(),
+                      ),
+                    ],
                     if (lastUpdated != null) ...[
                       const SizedBox(height: 4),
                       Align(
@@ -204,6 +213,39 @@ class PositionCard extends StatelessWidget {
       price,
       position.asset.currency,
       usdToEurRate,
+    );
+  }
+}
+
+/// Petite puce « Non coté » signalant un actif en repli ISIN (titre délisté),
+/// jamais interrogé sur la source de marché. Même gabarit visuel discret que
+/// [StaleDataBadge].
+class _NotQuotedBadge extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: scheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.cloud_off_outlined, size: 12, color: scheme.onSurfaceVariant),
+          const SizedBox(width: 4),
+          Text(
+            l10n.positionNotQuotedBadge,
+            style: TextStyle(
+              fontSize: 11,
+              color: scheme.onSurfaceVariant,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

@@ -145,7 +145,13 @@ void main() {
         .expand((accId) => journalOf(accId as String))
         .toList();
 
-    for (final kind in TransactionKind.values) {
+    // `transferOut` est une primitive PRODUITE À L'IMPORT de relevé (sortie de
+    // titres sans cession) : elle solderait une position et n'a pas sa place
+    // dans le jeu de démo curé pour les captures d'écran (saisie manuelle). On
+    // l'exclut donc de la vitrine « tous les kinds » — sa couverture vit dans
+    // corporate_actions_import_test.dart / ledger_import_movements_test.dart.
+    for (final kind in TransactionKind.values
+        .where((k) => k != TransactionKind.transferOut)) {
       expect(allTxs.any((t) => t.kind == kind), isTrue,
           reason: 'kind ${kind.wire} absent du jeu de démo');
     }

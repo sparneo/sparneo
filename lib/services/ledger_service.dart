@@ -31,11 +31,15 @@
 // LedgerService reste ainsi l'unique écrivain des colonnes dérivées, y
 // compris à l'import.
 
+import 'dart:convert';
+
 import 'package:decimal/decimal.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseExecutor;
 
 import 'package:portfolio_tracker/logic/position_projection.dart';
+import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/import_result.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
@@ -396,5 +400,305 @@ class LedgerService {
       );
       await reprojectCashWithin(txn, accountId);
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Import ADDITIF d'un relevé (append au journal, jamais destructif)
+  // ---------------------------------------------------------------------------
+
+  /// Ajoute [movements] au journal du compte [accountId] SANS rien effacer, en
+  /// UNE SEULE transaction SQL. ATOMICITÉ GLOBALE : une exception à n'importe
+  /// quelle étape ROLLBACK tout — aucun import partiel ne subsiste.
+  ///
+  /// [newAssets] : les [Asset] à matérialiser en lignes `positions` pour les
+  /// symboles encore ABSENTS du compte (ils portent l'ISIN résolu par la couche
+  /// appelante). La clé effective d'un actif est son `symbol` ; un [Asset] dont
+  /// le symbole existe déjà est ignoré (jamais de recréation).
+  ///
+  /// ORDRE IMPOSÉ (I3) : la ligne `positions` d'un symbole nouveau est créée
+  /// AVANT toute journalisation, car [reprojectSymbolWithin] est un UPDATE ciblé
+  /// qui SKIP si la position n'existe pas — journaliser d'abord laisserait sa
+  /// projection ignorée en silence.
+  ///
+  /// POLITIQUE DE REPROJECTION TITRE (anti-écrasement d'une déclaration legacy —
+  /// invariant central de cette méthode) : un symbole titre touché n'est
+  /// reprojeté que lorsque c'est SÛR —
+  ///   - symbole NOUVEAU (créé ici) ou DÉJÀ PROJETÉ (`derived_at` non NULL) :
+  ///     reprojection sûre (le journal complet du symbole fait foi, elle englobe
+  ///     l'ancien et le nouveau) ;
+  ///   - symbole LEGACY DÉCLARÉ (`derived_at` NULL : quantité / PRU saisis à la
+  ///     main, aucun journal adopté) : reprojeter écraserait la déclaration par
+  ///     une projection PARTIELLE fausse (un relevé ne couvre qu'une période,
+  ///     pas tout l'historique). On ne le fait donc PAS — SAUF si les mouvements
+  ///     entrants portent une ancre `openingBalance` dont la projection REPRODUIT
+  ///     la déclaration ([declaredMatchesProjection]) : l'antériorité est alors
+  ///     prouvée capturée, l'adoption est non-destructive. Sans cette preuve, la
+  ///     position reste legacy INTACTE (le contrôleur a averti l'utilisateur en
+  ///     amont) et seul le cash bouge.
+  ///
+  /// Le SOLDE ESPÈCES est TOUJOURS reprojeté (Σ amount de tout le journal, tous
+  /// kinds) : le cash n'est jamais « legacy », c'est une pure projection.
+  ///
+  /// PERFORMANCE : chaque symbole est reprojeté UNE seule fois et le cash UNE
+  /// seule fois, à la fin — jamais en bouclant [recordTransaction] (qui
+  /// rouvrirait une transaction et reprojetterait tout le cash à chaque
+  /// mouvement : O(N²)).
+  ///
+  /// Les colonnes dérivées ne sont écrites QUE via [reprojectSymbolWithin] /
+  /// [reprojectCashWithin] — LedgerService reste l'unique écrivain (invariant).
+  ///
+  /// [importBatchId] (OPTIONNEL, défaut null → comportement historique INCHANGÉ)
+  /// estampille chaque mouvement écrit avec `meta['importBatch'] =
+  /// importBatchId`, EN FUSION avec le meta existant (jamais d'écrasement de
+  /// `meta['importKey']` ni de `meta['seq']`). Cette estampille identifie le LOT
+  /// d'import et rend l'annulation ciblée possible ([removeImportBatch]) : elle
+  /// n'a AUCUN autre effet (ni sur la projection titre, ni sur le cash).
+  Future<ImportResult> importMovements({
+    required String accountId,
+    required List<AssetTransaction> movements,
+    required List<Asset> newAssets,
+    String? importBatchId,
+  }) async {
+    final db = await _db.database;
+
+    var written = 0;
+    final created = <String>[];
+    final reprojected = <String>[];
+    final leftLegacy = <String>[];
+
+    await db.transaction((txn) async {
+      // Instantané PRÉ-IMPORT des positions du compte (symbol → état), lu UNE
+      // fois et AVANT toute création/reprojection : c'est ce qui distingue sans
+      // ambiguïté un symbole nouveau, un symbole déjà projeté (derived_at non
+      // NULL) et un symbole legacy déclaré (derived_at NULL). Capturé ici car
+      // l'étape 1 va poser de nouvelles lignes (à derived_at NULL elles aussi) —
+      // seul cet instantané permet de ne pas les confondre avec du legacy.
+      final pre = <String, ({int? derivedAt, String? qty, double? pru})>{};
+      final preRows = await txn.query(
+        'positions',
+        columns: ['symbol', 'quantity', 'average_buy_price', 'derived_at'],
+        where: 'account_id = ?',
+        whereArgs: [accountId],
+      );
+      for (final r in preRows) {
+        pre[r['symbol'] as String] = (
+          derivedAt: (r['derived_at'] as num?)?.toInt(),
+          qty: r['quantity'] as String?,
+          pru: (r['average_buy_price'] as num?)?.toDouble(),
+        );
+      }
+
+      // 1. Créer les positions MANQUANTES (ordre I3). Même SQL que
+      // `AccountStorage.savePosition` (asset_json = définition complète). Le
+      // garde `pre.containsKey` / `createdSet` assure qu'AUCUNE ligne existante
+      // n'est jamais atteinte par ce INSERT OR REPLACE — donc aucun effacement
+      // de métadonnées ni de cascade. quantity/PRU sont des valeurs d'amorçage
+      // (« 0 » / null) : l'étape 3 les remplacera par la projection du journal.
+      final createdSet = <String>{};
+      for (final asset in newAssets) {
+        final sym = asset.symbol;
+        if (sym.isEmpty || pre.containsKey(sym) || createdSet.contains(sym)) {
+          continue;
+        }
+        await txn.rawInsert(
+          '''
+          INSERT OR REPLACE INTO positions
+            (account_id, symbol, quantity, average_buy_price, custom_name, asset_json)
+          VALUES (?, ?, ?, ?, ?, ?)
+          ''',
+          [accountId, sym, '0', null, null, jsonEncode(asset.toJson())],
+        );
+        createdSet.add(sym);
+        created.add(sym);
+      }
+
+      // 2. Upsert de chaque mouvement, en regroupant les mouvements titres par
+      // symbole (pour la vérification d'ancre à l'étape 3). L'accountId est
+      // FORCÉ à celui de l'import — comme `importRawData` impose la clé de la map
+      // plutôt que le champ interne : un candidat malformé pointant un autre
+      // compte serait sinon journalisé hors de portée de la reprojection
+      // ci-dessous (corruption silencieuse d'un solde).
+      final incomingBySymbol = <String, List<AssetTransaction>>{};
+      for (final m in movements) {
+        var tx =
+            m.accountId == accountId ? m : m.copyWith(accountId: accountId);
+        // Estampille de LOT (support de l'annulation d'import) : fusion de
+        // meta['importBatch'] SANS écraser meta['importKey']/['seq'] ni aucune
+        // autre clé existante. Null → meta laissé tel quel (legacy).
+        if (importBatchId != null) {
+          tx = tx.copyWith(meta: {...?tx.meta, 'importBatch': importBatchId});
+        }
+        await _txStorage.upsert(tx, executor: txn);
+        written++;
+        final s = tx.symbol;
+        if (s != null && s.isNotEmpty) {
+          (incomingBySymbol[s] ??= <AssetTransaction>[]).add(tx);
+        }
+      }
+
+      // 3. Reprojection titre — chaque symbole touché exactement une fois.
+      for (final entry in incomingBySymbol.entries) {
+        final sym = entry.key;
+        final isNew = createdSet.contains(sym);
+        final ex = pre[sym];
+
+        if (isNew || (ex != null && ex.derivedAt != null)) {
+          // Nouveau, ou position déjà projetée → reprojection sûre.
+          await reprojectSymbolWithin(txn, accountId, sym);
+          reprojected.add(sym);
+        } else if (ex != null) {
+          // Legacy déclaré (derived_at NULL) : adopter UNIQUEMENT si une ancre
+          // openingBalance entrante REPRODUIT la déclaration — preuve que
+          // l'antériorité est capturée et que la reprojection ne détruira rien.
+          final anchors = entry.value
+              .where((t) =>
+                  t.kind == TransactionKind.openingBalance &&
+                  t.symbol != null &&
+                  t.symbol!.isNotEmpty)
+              .toList();
+          final coherent = anchors.isNotEmpty &&
+              declaredMatchesProjection(
+                projectPosition(anchors),
+                declaredQuantity: ex.qty,
+                declaredAveragePrice: ex.pru,
+              );
+          if (coherent) {
+            await reprojectSymbolWithin(txn, accountId, sym);
+            reprojected.add(sym);
+          } else {
+            leftLegacy.add(sym);
+          }
+        }
+        // ex == null && !isNew : le mouvement porte un symbole sans position ni
+        // Asset fourni par l'appelant. Il est journalisé, mais aucune ligne
+        // `positions` n'existe à projeter (le UPDATE ciblé skiperait de toute
+        // façon). On ne fabrique pas de position incomplète — cohérent avec
+        // recordTransaction sur un symbole absent ; à l'appelant de fournir le
+        // newAssets correspondant.
+      }
+
+      // 4. Cash : TOUJOURS reprojeté (pure projection du journal, tous kinds).
+      await reprojectCashWithin(txn, accountId);
+    });
+
+    // Ordres déterministes (feedback UI reproductible).
+    created.sort();
+    reprojected.sort();
+    leftLegacy.sort();
+    return ImportResult(
+      movementsWritten: written,
+      createdSymbols: created,
+      reprojectedSymbols: reprojected,
+      legacySymbols: leftLegacy,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Annulation ciblée d'un LOT d'import (inverse de importMovements)
+  // ---------------------------------------------------------------------------
+
+  /// Supprime ATOMIQUEMENT du journal du compte [accountId] TOUS les mouvements
+  /// estampillés `meta['importBatch'] == batchId` (posés par [importMovements]),
+  /// puis reprojette — dans la MÊME transaction SQL — les symboles titres touchés
+  /// et le solde espèces. Retourne le NOMBRE de mouvements supprimés (0 si le lot
+  /// est vide / inconnu — no-op sans effet de bord).
+  ///
+  /// ATOMICITÉ : suppression + reprojections dans un unique `db.transaction` —
+  /// toute exception ROLLBACK l'ensemble (aucune suppression partielle, aucune
+  /// projection périmée). C'est l'inverse strict de [importMovements] : seuls les
+  /// mouvements DU LOT sont effacés ; ceux d'un AUTRE lot ou saisis à la main
+  /// (sans `importBatch`, ou avec un autre `importBatch`) ne sont JAMAIS touchés.
+  ///
+  /// POLITIQUE DE REPROJECTION TITRE (miroir EXACT de la garde anti-écrasement de
+  /// [importMovements], appliquée sur l'état PRÉ-suppression) : un symbole touché
+  /// n'est reprojeté que si sa position était DÉJÀ PROJETÉE avant l'annulation
+  /// (`derived_at` non NULL) — la reprojection englobe alors le journal RESTANT
+  /// (l'import n'y figure plus). Un symbole dont la position est restée LEGACY
+  /// (`derived_at` NULL : jamais adoptée par l'import — cf. sa garde) n'est PAS
+  /// reprojeté : la déclaration manuelle demeure INTACTE (elle n'a jamais été
+  /// modifiée par l'import, l'annulation n'a donc rien à y défaire).
+  ///
+  /// POSITION VIDÉE (symbole créé par le lot, ou legacy adopté par le lot) : si
+  /// l'annulation vide entièrement le journal d'un symbole DÉJÀ PROJETÉ, la
+  /// reprojection le ramène à quantité 0 / PRU null (la ligne `positions`
+  /// SUBSISTE). CHOIX ASSUMÉ : on ne supprime PAS la ligne devenue orpheline.
+  /// Raisons : (1) au moment de l'annulation on ne peut PAS distinguer de façon
+  /// sûre un symbole CRÉÉ par ce lot d'une position legacy ADOPTÉE par ce lot
+  /// (les deux ont `derived_at` non NULL) — supprimer détruirait alors
+  /// `asset_json`/`custom_name` d'une position PRÉEXISTANTE à l'import (bien pire
+  /// qu'un résidu à 0) ; (2) laisser à 0 est non destructif et récupérable (la
+  /// suppression d'une position à 0 reste une action utilisateur explicite via
+  /// [deletePositionWithJournal]). Le léger résidu (position neuve importée puis
+  /// annulée, laissée à 0) est accepté au profit de la sûreté des données.
+  ///
+  /// LIMITE V1 (legacy ADOPTÉ) : si l'import avait adopté une position legacy
+  /// (ancre openingBalance cohérente → `derived_at` posé, déclaration remplacée
+  /// par la projection), l'annulation ne peut PAS restaurer la déclaration
+  /// manuelle d'origine (quantité/PRU + `derived_at` NULL) : l'adoption a écrasé
+  /// ces valeurs à l'import et aucun instantané pré-import n'est conservé. La
+  /// position reste alors PROJETÉE sur le journal restant (0 si vidé). Inverse
+  /// imparfait assumé pour la V1.
+  Future<int> removeImportBatch(String accountId, String batchId) async {
+    final db = await _db.database;
+    var removed = 0;
+
+    await db.transaction((txn) async {
+      // 1. Journal complet du compte, lu DANS la transaction (atomicité).
+      final all = await _txStorage.getByAccount(accountId, executor: txn);
+      // 2. Mouvements du LOT — filtre STRICT sur meta['importBatch'].
+      final batch =
+          all.where((t) => t.meta?['importBatch'] == batchId).toList();
+      if (batch.isEmpty) return; // lot inconnu/vide → no-op, rien à reprojeter.
+
+      // 3. Symboles titres touchés par le lot (les mouvements cash purs ne
+      //    portent pas de symbole : seul le cash, reprojeté en 5, les concerne).
+      final touchedSymbols = <String>{
+        for (final t in batch)
+          if (t.symbol != null && t.symbol!.isNotEmpty) t.symbol!,
+      };
+
+      // 4. Instantané PRÉ-suppression des `derived_at` des symboles touchés :
+      //    c'est lui qui pilote la garde anti-écrasement (une position legacy,
+      //    derived_at NULL, ne doit PAS être reprojetée). Lu AVANT toute
+      //    suppression (identique en esprit à l'instantané pré-import).
+      final preDerivedAt = <String, int?>{};
+      if (touchedSymbols.isNotEmpty) {
+        final rows = await txn.query(
+          'positions',
+          columns: ['symbol', 'derived_at'],
+          where: 'account_id = ?',
+          whereArgs: [accountId],
+        );
+        for (final r in rows) {
+          final sym = r['symbol'] as String;
+          if (touchedSymbols.contains(sym)) {
+            preDerivedAt[sym] = (r['derived_at'] as num?)?.toInt();
+          }
+        }
+      }
+
+      // 5. Suppression des mouvements du lot (par id — ciblage exact).
+      for (final t in batch) {
+        await _txStorage.deleteById(t.id, executor: txn);
+        removed++;
+      }
+
+      // 6. Reprojection titre : chaque symbole touché exactement une fois, mais
+      //    UNIQUEMENT si sa position était déjà projetée (derived_at non NULL).
+      //    - null (legacy jamais adopté, OU aucune ligne positions) : on SKIP —
+      //      la déclaration legacy reste intacte, et reprojectSymbolWithin
+      //      skiperait de toute façon une position absente.
+      //    - non null : reprojection sûre sur le journal RESTANT (0 si vidé ;
+      //      la ligne positions subsiste, cf. doc « POSITION VIDÉE »).
+      for (final sym in touchedSymbols) {
+        if (preDerivedAt[sym] == null) continue;
+        await reprojectSymbolWithin(txn, accountId, sym);
+      }
+
+      // 7. Cash : TOUJOURS reprojeté (pure projection du journal restant).
+      await reprojectCashWithin(txn, accountId);
+    });
+
+    return removed;
   }
 }

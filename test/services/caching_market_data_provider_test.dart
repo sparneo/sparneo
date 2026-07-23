@@ -11,6 +11,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
 import 'package:portfolio_tracker/services/caching_market_data_provider.dart';
 import 'package:portfolio_tracker/services/last_price_storage.dart';
@@ -39,6 +40,10 @@ class _FakeProvider implements MarketDataProvider {
     lastHistoricalDays = days;
     return historicalToReturn;
   }
+
+  @override
+  Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async =>
+      const [];
 }
 
 void main() {

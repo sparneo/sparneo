@@ -19,6 +19,7 @@ import 'package:portfolio_tracker/theme/app_colors.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
+import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 import 'package:portfolio_tracker/logic/transaction_analytics.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
@@ -759,6 +760,76 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     }
   }
 
+  /// Vrai si l'action « Corriger le PRU… » doit être proposée (activée).
+  /// Décision pure déléguée à [canEditPru] (logic/position_projection.dart,
+  /// testée indépendamment) — cf. son doc-commentaire pour le détail des deux
+  /// natures de position. Pendant le chargement du journal, on ne tranche pas
+  /// (évite un flash de l'action sur un état encore incomplet).
+  bool get _canEditPru {
+    if (_isLoadingTransactions) return false;
+    return canEditPru(isLegacy: _derivedAt == null, txs: _transactions);
+  }
+
+  /// « Corriger le PRU… » — branche selon la nature de la position
+  /// ([_canEditPru] garantit qu'on n'arrive jamais ici sur un journal à vrais
+  /// trades) :
+  ///   - LEGACY (`derived_at` NULL) : réécrit directement le PRU stocké sur la
+  ///     ligne position via `savePosition` (quantité/actif/nom inchangés),
+  ///     SANS créer de mouvement — la position reste legacy (`derived_at`
+  ///     reste NULL, `savePosition` ne le renseigne jamais).
+  ///   - JOURNALISÉE déclarative (uniquement un `openingBalance`, pas de vrai
+  ///     trade) : édite le `unitPrice` de ce mouvement, puis laisse le ledger
+  ///     reprojeter (WAC recalculé depuis l'ensemble du journal).
+  Future<void> _openEditPru() async {
+    final l10n = AppLocalizations.of(context)!;
+
+    final outcome = await showDialog<_EditPruOutcome>(
+      context: context,
+      builder: (_) => _EditPruDialog(
+        currentPru: _currentPosition.averageBuyPrice,
+        currency: _currentPosition.currency,
+      ),
+    );
+    if (outcome == null || !mounted) return;
+
+    try {
+      if (_derivedAt == null) {
+        final newPru =
+            outcome.pru != null ? double.tryParse(outcome.pru!) : null;
+        final updated = _currentPosition.copyWith(averageBuyPrice: newPru);
+        await _storage.savePosition(_currentPosition.accountId, updated);
+        if (mounted) {
+          setState(() => _currentPosition = updated);
+        }
+      } else {
+        final openingTx = _transactions.firstWhere(
+          (t) => t.kind == TransactionKind.openingBalance,
+        );
+        await _ledger.recordTransaction(
+          openingTx.copyWith(unitPrice: outcome.pru),
+        );
+        await _reloadProjection();
+      }
+      if (mounted) {
+        widget.onPositionModified?.call();
+        showAppSnackBar(
+          context,
+          l10n.modificationSaved,
+          type: SnackType.success,
+        );
+      }
+    } catch (e) {
+      AppLogger.error('Erreur correction du PRU', e);
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          AppLocalizations.of(context)!.modificationError,
+          type: SnackType.error,
+        );
+      }
+    }
+  }
+
   /// Demande confirmation (dialogue D2 partagé, avertissant du nombre de
   /// mouvements du journal emportés) puis, si l'utilisateur confirme, dépile la
   /// page en renvoyant [PositionDetailPage.resultDeleted]. C'est AccountView
@@ -813,32 +884,43 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         actions: [
           // Suppression reléguée dans un overflow ⋮ : action d'exception, hors
           // de la rangée d'icônes fréquentes (critère « fréquence » de Material,
-          // pas « destructivité »). Premier PopupMenuButton de l'app — motif à
-          // reprendre pour les futures actions rares (cf. audit UI/UX 13). La
+          // pas « destructivité »). Premier PopupMenuButton de l'app. La
           // suppression différée + Annuler reste portée par le parent : on lui
           // signale l'intention via le résultat du pop.
+          //
+          // « Corriger le PRU… » a quitté ce menu (cf. audit UI/UX 13) : l'action
+          // est désormais inline, au contact de la valeur (cf.
+          // _buildAdditionalDetails / _buildInfoCard), via _openEditPru /
+          // _canEditPru inchangés.
           PopupMenuButton<String>(
-            onSelected: (_) => _confirmAndDeletePosition(),
-            itemBuilder: (context) => [
-              PopupMenuItem<String>(
-                value: 'delete',
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.delete_outline,
-                      color: Theme.of(context).colorScheme.error,
-                    ),
-                    const SizedBox(width: 12),
-                    Text(
-                      l10n.deletePositionTooltip,
-                      style: TextStyle(
+            onSelected: (value) {
+              switch (value) {
+                case 'delete':
+                  _confirmAndDeletePosition();
+              }
+            },
+            itemBuilder: (context) {
+              return [
+                PopupMenuItem<String>(
+                  value: 'delete',
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.delete_outline,
                         color: Theme.of(context).colorScheme.error,
                       ),
-                    ),
-                  ],
+                      const SizedBox(width: 12),
+                      Text(
+                        l10n.deletePositionTooltip,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-            ],
+              ];
+            },
           ),
         ],
       ),
@@ -923,6 +1005,8 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         return Icons.savings_outlined;
       case TransactionKind.charge:
         return Icons.receipt_long_outlined;
+      case TransactionKind.transferOut:
+        return Icons.swap_horiz;
     }
   }
 
@@ -946,6 +1030,8 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         return l10n.transactionKindInterest;
       case TransactionKind.charge:
         return l10n.transactionKindCharge;
+      case TransactionKind.transferOut:
+        return l10n.transactionKindTransferOut;
     }
   }
 
@@ -1127,6 +1213,10 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     }
     final gainPositive = (unrealizedGainEur ?? 0) >= 0;
     final gainColor = AppColors.gainLoss(context, gainPositive);
+    // Découvrabilité de l'édition du PRU depuis le libellé « PRU : X » du
+    // bloc plus-value latente (cf. plus bas) : tappable uniquement quand
+    // l'édition est permise ([_canEditPru], identique à la ligne détail).
+    final canEditPruTap = _canEditPru;
 
     return Card(
       child: Padding(
@@ -1413,15 +1503,25 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          l10n.averageBuyPriceShort(
-                            _formatPriceDisplay(pru, isUsd),
-                          ),
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
+                        // Découvrabilité : tap → _openEditPru (même action que
+                        // la ligne détail éditable), uniquement si permis.
+                        // Sinon inerte, aspect inchangé (InkWell avec onTap
+                        // null ne réagit pas au tap).
+                        InkWell(
+                          onTap: canEditPruTap ? _openEditPru : null,
+                          borderRadius: BorderRadius.circular(4),
+                          child: Text(
+                            l10n.averageBuyPriceShort(
+                              _formatPriceDisplay(pru, isUsd),
+                            ),
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: canEditPruTap
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(
+                                      context,
+                                    ).colorScheme.onSurfaceVariant,
+                            ),
                           ),
                         ),
                         Column(
@@ -1726,16 +1826,37 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                 ),
               ),
             ],
-            // PRU en LECTURE SEULE (D1) : dérivé du journal, non éditable.
-            _buildDetailRow(
-              l10n.averageBuyPriceDetail,
-              position.averageBuyPrice != null
-                  ? Formatters.formatCurrency(
-                      position.averageBuyPrice!,
-                      position.currency,
-                    )
-                  : l10n.undefined,
-            ),
+            // PRU : éditable inline (crayon, motif partagé avec type/poids
+            // fin/prime ci-dessus) quand la nature de la position le permet
+            // ([_canEditPru] — legacy, ou journalisée purement déclarative).
+            // Sinon lecture seule, avec un tooltip expliquant que le PRU est
+            // dérivé des mouvements d'achat/vente — symétrique du tooltip
+            // « Dérivé du journal » de la quantité (_buildQuantityInfoItem).
+            if (_canEditPru)
+              _buildEditableDetailRow(
+                l10n.averageBuyPriceDetail,
+                position.averageBuyPrice != null
+                    ? Formatters.formatCurrency(
+                        position.averageBuyPrice!,
+                        position.currency,
+                      )
+                    : l10n.undefined,
+                _openEditPru,
+              )
+            else
+              Tooltip(
+                message: l10n.correctPruUnavailableReason,
+                triggerMode: TooltipTriggerMode.tap,
+                child: _buildDetailRow(
+                  l10n.averageBuyPriceDetail,
+                  position.averageBuyPrice != null
+                      ? Formatters.formatCurrency(
+                          position.averageBuyPrice!,
+                          position.currency,
+                        )
+                      : l10n.undefined,
+                ),
+              ),
           ],
         ),
       ),
@@ -2208,6 +2329,101 @@ class _InitialPositionDialogState extends State<_InitialPositionDialog> {
               ],
             ),
           ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: Text(l10n.cancel),
+        ),
+        FilledButton(
+          onPressed: _submit,
+          child: Text(l10n.validate),
+        ),
+      ],
+    );
+  }
+}
+
+// =============================================================================
+// Dialogue « Corriger le PRU » (legacy, ou journalisée purement déclarative)
+// =============================================================================
+
+/// Résultat du dialogue de correction du PRU : [pru] normalisé (point
+/// décimal), ou `null` si l'utilisateur a vidé le champ (base de coût
+/// effacée/inconnue).
+class _EditPruOutcome {
+  final String? pru;
+
+  const _EditPruOutcome(this.pru);
+}
+
+class _EditPruDialog extends StatefulWidget {
+  /// PRU courant (legacy : stocké sur la position ; journalisée : projeté
+  /// depuis le mouvement d'ouverture), ou null si aucune base de coût connue.
+  final double? currentPru;
+  final String currency;
+
+  const _EditPruDialog({required this.currentPru, required this.currency});
+
+  @override
+  State<_EditPruDialog> createState() => _EditPruDialogState();
+}
+
+class _EditPruDialogState extends State<_EditPruDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _pruCtrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _pruCtrl = TextEditingController(
+      text: widget.currentPru?.toString() ?? '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _pruCtrl.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!_formKey.currentState!.validate()) return;
+    final t = _pruCtrl.text.trim();
+    Navigator.of(context).pop(
+      _EditPruOutcome(t.isEmpty ? null : t.replaceAll(',', '.')),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+
+    return AlertDialog(
+      title: Text(l10n.correctPruTitle),
+      content: Form(
+        key: _formKey,
+        child: TextFormField(
+          controller: _pruCtrl,
+          autofocus: true,
+          decoration: InputDecoration(
+            labelText: l10n.averageBuyPriceLabel,
+            isDense: true,
+            border: const OutlineInputBorder(),
+            helperText: l10n.optionalHint,
+            suffixText: Formatters.formatCurrencySymbol(widget.currency),
+          ),
+          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+          validator: (v) {
+            final t = (v ?? '').trim();
+            if (t.isEmpty) return null; // PRU facultatif (base de coût effacée)
+            if (double.tryParse(t.replaceAll(',', '.')) == null) {
+              return l10n.invalidValue;
+            }
+            return null;
+          },
+          onFieldSubmitted: (_) => _submit(),
         ),
       ),
       actions: [

@@ -68,7 +68,7 @@ variante :
 ```json
 {
   "format": "sparneo-fiscal-export",
-  "version": 3,
+  "version": 4,
   "exportedAt": "2026-04-15T10:00:00.000Z",
   "taxYear": 2025,
   "source": { "app": "Sparneo", "appVersion": "0.1.0" },
@@ -92,7 +92,7 @@ variante :
 | Champ        | Type    | Description |
 |--------------|---------|-------------|
 | `format`     | string  | Toujours `"sparneo-fiscal-export"`. |
-| `version`    | int     | Version du format (`3`). |
+| `version`    | int     | Version du format (`4`). |
 | `exportedAt` | string  | Horodatage ISO-8601 (UTC) de la génération. |
 | `taxYear`    | int     | Année de déclaration ciblée. **Métadonnée, pas un filtre** : l'export contient l'historique complet (les acquisitions antérieures sont nécessaires à la reconstitution des lots). |
 | `source`     | object  | `{ app, appVersion }`. |
@@ -138,7 +138,7 @@ Triées par `date` croissante puis `id` croissant.
 | `id`        | string  | Identifiant de la transaction. |
 | `accountId` | string  | Compte de rattachement. |
 | `symbol`    | string? | Actif concerné ; `null` pour un mouvement d'espèces (`deposit`/`withdrawal`/`interest`/`charge`, et variante espèces d'`openingBalance`/`adjustment`). |
-| `kind`      | string  | `buy`, `sell`, `dividend`, `deposit`, `withdrawal`, `interest`, `charge`, `openingBalance`, `adjustment`. |
+| `kind`      | string  | `buy`, `sell`, `dividend`, `deposit`, `withdrawal`, `interest`, `charge`, `openingBalance`, `adjustment`, `transferOut`. |
 | `date`      | string  | Date ISO-8601. |
 | `quantity`  | string? | Quantité (décimal exact), `null` pour un mouvement d'espèces. Peut être **négatif** pour un `adjustment` titre (delta signé). |
 | `unitPrice` | string? | Prix unitaire (décimal exact), `null` pour un mouvement d'espèces. |
@@ -170,6 +170,15 @@ Triées par `date` croissante puis `id` croissant.
   compte, ligne de taxe isolée). Mouvement d'espèces ; `amount` **signé** (typiquement négatif,
   **positif** pour un rebate). Le montant est porté par `amount` ; `fee` reste `null` sur une ligne
   `charge`.
+
+**`kind` — nouveau type (v4) :**
+
+- `transferOut` : **sortie de titres SANS cession** — transfert des titres hors du compte (ex.
+  PEA→CTO, virement de titres sortant), **pas** une vente de marché. Réduit la quantité détenue en
+  emportant la base de coût **au prorata** (le PRU des titres restants est **inchangé**), **sans**
+  plus-value réalisée (aucun produit imposable de cession) et **sans** effet cash (`amount`
+  absent/null). À **ne pas confondre** avec un `sell`. `symbol`/`quantity` non null ; `unitPrice`
+  généralement null (la base de coût retirée est proportionnelle, pas `q×p`).
 
 **`meta`** (v2, optionnel) : objet libre de métadonnées propagé tel quel depuis Sparneo, émis
 uniquement s'il est non vide. Clé documentée : `declarative` (bool) — `true` marque un lot dont la

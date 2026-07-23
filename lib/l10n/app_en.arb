@@ -615,6 +615,16 @@
     "description": "Button label to reconcile a legacy position from its journal"
   },
 
+  "correctPruTitle": "Correct cost basis",
+  "@correctPruTitle": {
+    "description": "Title of the cost-basis correction dialog"
+  },
+
+  "correctPruUnavailableReason": "The cost basis is computed from your buy/sell movements",
+  "@correctPruUnavailableReason": {
+    "description": "Tooltip on the read-only cost-basis detail row when it cannot be edited inline (position has real buy/sell movements)"
+  },
+
   "setInitialCashBalanceAction": "Set initial cash balance…",
   "@setInitialCashBalanceAction": {
     "description": "Action label (button/menu) opening the initial-cash-balance dialog on a securities account (cash-ledger lot)"
@@ -1286,6 +1296,10 @@
   "@transactionKindCharge": {
     "description": "Transaction kind: standalone fee/charge not tied to a trade (custody fees, account fees, isolated tax line)"
   },
+  "transactionKindTransferOut": "Securities transfer (out)",
+  "@transactionKindTransferOut": {
+    "description": "Transaction kind: securities transferred out of the account (e.g. PEA to CTO), not a market sale — reduces quantity at cost basis, no realized gain, no cash"
+  },
 
   "dividendAmountHint": "Optional if quantity and unit price are filled in",
   "@dividendAmountHint": {
@@ -1544,5 +1558,517 @@
   "switchWalletTooltip": "Switch portfolio",
   "@switchWalletTooltip": {
     "description": "Tooltip on the tappable wallet title in the app bar"
+  },
+
+  "importStatementAction": "Import a statement…",
+  "@importStatementAction": {
+    "description": "Entry in the account overflow menu opening the statement import wizard"
+  },
+  "importPageTitle": "Statement import — {account}",
+  "@importPageTitle": {
+    "description": "AppBar title of the statement import wizard",
+    "placeholders": {
+      "account": { "type": "String" }
+    }
+  },
+  "importFileUnreadable": "This file could not be read.",
+  "@importFileUnreadable": {
+    "description": "Error shown when the picked file has no readable bytes"
+  },
+
+  "importStepIndicator": "Step {current} of {total}",
+  "@importStepIndicator": {
+    "description": "Progress indicator shown above each wizard step, computed from the actual path (Bourse Direct skips the configuration step)",
+    "placeholders": {
+      "current": { "type": "int" },
+      "total": { "type": "int" }
+    }
+  },
+  "importStep1Heading": "Select the file",
+  "@importStep1Heading": {
+    "description": "Heading of the file selection step"
+  },
+  "importPickFileButton": "Choose a file",
+  "@importPickFileButton": {
+    "description": "Button opening the file picker"
+  },
+  "importPickFileHint": "Select your broker's CSV export (generic / manual profile).",
+  "@importPickFileHint": {
+    "description": "Hint shown on the file selection step, generic/manual profile"
+  },
+  "importPickFileHintBourseDirect": "Select the \"Extraction de compte\" .xlsx export from your Bourse Direct account.",
+  "@importPickFileHintBourseDirect": {
+    "description": "Hint shown on the file selection step, Bourse Direct profile"
+  },
+  "importProfileSectionTitle": "Broker profile",
+  "@importProfileSectionTitle": {
+    "description": "Section title of the broker profile selector on the file selection step"
+  },
+  "importProfileGenericLabel": "Generic (manual)",
+  "@importProfileGenericLabel": {
+    "description": "Segment label for the generic/manual profile choice"
+  },
+  "importProfileBourseDirectLabel": "Bourse Direct",
+  "@importProfileBourseDirectLabel": {
+    "description": "Segment label for the Bourse Direct broker profile choice"
+  },
+
+  "importStep2Heading": "Configure the file format",
+  "@importStep2Heading": {
+    "description": "Heading of the profile configuration step"
+  },
+  "importFileFormatSectionTitle": "File format",
+  "@importFileFormatSectionTitle": {
+    "description": "Section title for delimiter/encoding/header settings"
+  },
+  "importDelimiterLabel": "Delimiter",
+  "@importDelimiterLabel": {
+    "description": "Label of the CSV delimiter dropdown"
+  },
+  "importDelimiterSemicolon": "Semicolon (;)",
+  "@importDelimiterSemicolon": {
+    "description": "Delimiter option"
+  },
+  "importDelimiterComma": "Comma (,)",
+  "@importDelimiterComma": {
+    "description": "Delimiter option"
+  },
+  "importDelimiterTab": "Tab",
+  "@importDelimiterTab": {
+    "description": "Delimiter option"
+  },
+  "importDelimiterPipe": "Pipe (|)",
+  "@importDelimiterPipe": {
+    "description": "Delimiter option"
+  },
+  "importEncodingLabel": "Encoding",
+  "@importEncodingLabel": {
+    "description": "Label of the text encoding dropdown"
+  },
+  "importEncodingUtf8": "UTF-8",
+  "@importEncodingUtf8": {
+    "description": "Encoding option"
+  },
+  "importEncodingLatin1": "Latin-1 (ISO-8859-1)",
+  "@importEncodingLatin1": {
+    "description": "Encoding option"
+  },
+  "importHasHeaderLabel": "The first row contains column headers",
+  "@importHasHeaderLabel": {
+    "description": "Checkbox toggling whether the first CSV row is a header row"
+  },
+  "importDateFormatSectionTitle": "Date format",
+  "@importDateFormatSectionTitle": {
+    "description": "Section title for the date parsing settings"
+  },
+  "importDateSeparatorLabel": "Date separator",
+  "@importDateSeparatorLabel": {
+    "description": "Label of the date separator dropdown"
+  },
+  "importDayFirstLabel": "Day first (DD/MM/YYYY)",
+  "@importDayFirstLabel": {
+    "description": "Switch toggling day-first vs month-first date order"
+  },
+  "importFourDigitYearLabel": "4-digit year",
+  "@importFourDigitYearLabel": {
+    "description": "Switch toggling 4-digit vs 2-digit year parsing"
+  },
+  "importDecimalSeparatorLabel": "Decimal separator",
+  "@importDecimalSeparatorLabel": {
+    "description": "Label of the decimal separator dropdown"
+  },
+  "importDecimalSeparatorComma": "Comma (,)",
+  "@importDecimalSeparatorComma": {
+    "description": "Decimal separator option"
+  },
+  "importDecimalSeparatorDot": "Dot (.)",
+  "@importDecimalSeparatorDot": {
+    "description": "Decimal separator option"
+  },
+  "importPreviewRowsTitle": "Preview of the first rows",
+  "@importPreviewRowsTitle": {
+    "description": "Title of the raw file preview table"
+  },
+  "importParseEmptyError": "No usable row — check the encoding and delimiter.",
+  "@importParseEmptyError": {
+    "description": "Error shown when the file could not be parsed into any row"
+  },
+  "importColumnMappingSectionTitle": "Column mapping",
+  "@importColumnMappingSectionTitle": {
+    "description": "Section title for the per-field column mapping dropdowns"
+  },
+  "importColumnNotMapped": "— Not mapped —",
+  "@importColumnNotMapped": {
+    "description": "Option meaning a target field is not mapped to any column"
+  },
+  "importColumnGeneric": "Column {index}",
+  "@importColumnGeneric": {
+    "description": "Fallback column name when there is no header row (or an empty header cell)",
+    "placeholders": {
+      "index": { "type": "int" }
+    }
+  },
+  "importFieldDate": "Date *",
+  "@importFieldDate": {
+    "description": "Target field label (required): trade date"
+  },
+  "importFieldKind": "Operation type *",
+  "@importFieldKind": {
+    "description": "Target field label (required): operation kind label"
+  },
+  "importFieldIsin": "ISIN",
+  "@importFieldIsin": {
+    "description": "Target field label: ISIN code"
+  },
+  "importFieldSymbol": "Symbol",
+  "@importFieldSymbol": {
+    "description": "Target field label: ticker symbol"
+  },
+  "importFieldLabel": "Label",
+  "@importFieldLabel": {
+    "description": "Target field label: instrument display label"
+  },
+  "importFieldQuantity": "Quantity",
+  "@importFieldQuantity": {
+    "description": "Target field label: quantity"
+  },
+  "importFieldUnitPrice": "Unit price",
+  "@importFieldUnitPrice": {
+    "description": "Target field label: unit price"
+  },
+  "importFieldFee": "Fee",
+  "@importFieldFee": {
+    "description": "Target field label: fee"
+  },
+  "importFieldAmount": "Net amount",
+  "@importFieldAmount": {
+    "description": "Target field label: net amount"
+  },
+  "importFieldCurrency": "Currency",
+  "@importFieldCurrency": {
+    "description": "Target field label: quote currency"
+  },
+  "importFieldTax": "Withholding tax",
+  "@importFieldTax": {
+    "description": "Target field label: withholding tax on dividends"
+  },
+  "importFieldOperationReference": "Operation reference",
+  "@importFieldOperationReference": {
+    "description": "Target field label: broker operation reference (dedup key)"
+  },
+  "importKindLexiconSectionTitle": "Operation types found",
+  "@importKindLexiconSectionTitle": {
+    "description": "Section title for the kind-label-to-TransactionKind vocabulary mapping"
+  },
+  "importKindLexiconHint": "Match each label found in the file to a movement kind. A label left unmatched will cause its rows to be rejected.",
+  "@importKindLexiconHint": {
+    "description": "Explanation of the kind vocabulary mapping section"
+  },
+  "importKindNotMapped": "— Ignore (reject rows) —",
+  "@importKindNotMapped": {
+    "description": "Option meaning an operation label is not mapped to any TransactionKind"
+  },
+  "importContinueToPreviewButton": "Preview the import",
+  "@importContinueToPreviewButton": {
+    "description": "Button moving from profile configuration to the preview step"
+  },
+
+  "importStep3Heading": "Import preview",
+  "@importStep3Heading": {
+    "description": "Heading of the preview step"
+  },
+  "importGroupToCreate": "To create ({count})",
+  "@importGroupToCreate": {
+    "description": "Section title for movements to be created",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importGroupDuplicates": "Ignored duplicates ({count})",
+  "@importGroupDuplicates": {
+    "description": "Section title for duplicate movements",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importGroupRejects": "Rejected rows ({count})",
+  "@importGroupRejects": {
+    "description": "Section title for rejected rows",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importGroupNewAssets": "New assets ({count})",
+  "@importGroupNewAssets": {
+    "description": "Section title for new asset candidates",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importNewAssetsHint": "Securities detected in the statement, to link to a listed quote before import.",
+  "@importNewAssetsHint": {
+    "description": "Explanatory line shown under the new-assets group title on the preview step"
+  },
+  "importGroupMore": "… and {count} more",
+  "@importGroupMore": {
+    "description": "Trailing row shown when a preview group is truncated to a display cap",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importSourceRowRef": "Row {n}",
+  "@importSourceRowRef": {
+    "description": "Compact reference to the source file row (1-based) shown under a preview/reject tile",
+    "placeholders": {
+      "n": { "type": "int" }
+    }
+  },
+  "importDeltaSectionTitle": "Impact on your positions and cash",
+  "@importDeltaSectionTitle": {
+    "description": "Title of the projected before/after delta section on the preview step"
+  },
+  "importLegacyWarning": "This statement does not cover the full history of {symbol}: the existing position is not reprojected.",
+  "@importLegacyWarning": {
+    "description": "Warning shown instead of the projected delta for a legacy (undeclared-history) position",
+    "placeholders": {
+      "symbol": { "type": "String" }
+    }
+  },
+  "importDeltaQuantity": "{symbol}: {before} → {after} shares",
+  "@importDeltaQuantity": {
+    "description": "Projected quantity delta for one position",
+    "placeholders": {
+      "symbol": { "type": "String" },
+      "before": { "type": "String" },
+      "after": { "type": "String" }
+    }
+  },
+  "importDeltaPru": "Avg. cost: {before} → {after}",
+  "@importDeltaPru": {
+    "description": "Projected average buy price (PRU) delta shown under a position's quantity delta",
+    "placeholders": {
+      "before": { "type": "String" },
+      "after": { "type": "String" }
+    }
+  },
+  "importDeltaNewAssetPru": "Avg. cost: {pru}",
+  "@importDeltaNewAssetPru": {
+    "description": "Average buy price (PRU) shown under a brand-new asset's projected quantity (no meaningful before value)",
+    "placeholders": {
+      "pru": { "type": "String" }
+    }
+  },
+  "importDeltaCash": "Cash: {before} → {after}",
+  "@importDeltaCash": {
+    "description": "Projected cash delta",
+    "placeholders": {
+      "before": { "type": "String" },
+      "after": { "type": "String" }
+    }
+  },
+  "importDeltaCorporateActionCaveat": "The quantities above do not include the corporate actions still to review.",
+  "@importDeltaCorporateActionCaveat": {
+    "description": "Caveat shown near the delta when there are corporate-action rejects not reflected in the projected quantities"
+  },
+  "importCorporateActionGroupTitle": "Corporate actions to review ({count})",
+  "@importCorporateActionGroupTitle": {
+    "description": "Section title for rejected corporate-action rows (splits/mergers) left for manual review",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importCorporateActionWarning": "These corporate actions (rights detachment, complex operations…) are not processed automatically by the import — re-enter them manually from the journal if they change your quantities.",
+  "@importCorporateActionWarning": {
+    "description": "Actionable warning shown inside the expanded corporate-action rejects group"
+  },
+  "importNoNewMovements": "No new movement: everything has already been imported.",
+  "@importNoNewMovements": {
+    "description": "Shown when every parsed movement is a duplicate"
+  },
+  "importNothingToImport": "No usable row in this statement.",
+  "@importNothingToImport": {
+    "description": "Shown when the preview has nothing to create, no duplicate and no reject"
+  },
+  "importNoMovementsButRejected": "No movement to import — {count} row(s) rejected below.",
+  "@importNoMovementsButRejected": {
+    "description": "Shown when the preview has nothing to create but some rows were rejected (technical rejects and/or corporate actions), which are listed below",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importContinueButton": "Continue",
+  "@importContinueButton": {
+    "description": "Button moving from the preview step to asset resolution or confirmation"
+  },
+  "importCloseButton": "Close",
+  "@importCloseButton": {
+    "description": "Button closing the wizard when there is nothing to import"
+  },
+  "importNewAssetPending": "Symbol to link",
+  "@importNewAssetPending": {
+    "description": "Placeholder shown for a new asset candidate without a resolved symbol yet"
+  },
+
+  "importRejectMissingKind": "Operation type missing on this row (the operation type column is empty)",
+  "@importRejectMissingKind": {
+    "description": "Reject reason label"
+  },
+  "importRejectUnknownKind": "Operation type not recognized — not matched to a known kind",
+  "@importRejectUnknownKind": {
+    "description": "Reject reason label"
+  },
+  "importRejectInvalidDate": "Invalid date",
+  "@importRejectInvalidDate": {
+    "description": "Reject reason label"
+  },
+  "importRejectInvalidQuantity": "Invalid quantity",
+  "@importRejectInvalidQuantity": {
+    "description": "Reject reason label"
+  },
+  "importRejectInvalidUnitPrice": "Invalid unit price",
+  "@importRejectInvalidUnitPrice": {
+    "description": "Reject reason label"
+  },
+  "importRejectInvalidFee": "Invalid fee",
+  "@importRejectInvalidFee": {
+    "description": "Reject reason label"
+  },
+  "importRejectInvalidAmount": "Invalid amount",
+  "@importRejectInvalidAmount": {
+    "description": "Reject reason label"
+  },
+  "importRejectMissingAssetIdentity": "Missing asset identity (ISIN/label/symbol)",
+  "@importRejectMissingAssetIdentity": {
+    "description": "Reject reason label"
+  },
+  "importRejectMissingAmount": "Missing amount",
+  "@importRejectMissingAmount": {
+    "description": "Reject reason label"
+  },
+  "importRejectCorporateActionReview": "Corporate action not processed automatically (rights, complex operations) — re-enter manually if it changes your quantities",
+  "@importRejectCorporateActionReview": {
+    "description": "Reject reason label for an ambiguous securities corporate action (e.g. rights detachment) left for manual review"
+  },
+  "importRejectGeneric": "Unknown reason",
+  "@importRejectGeneric": {
+    "description": "Fallback reject reason label for an unrecognized reason code"
+  },
+
+  "importStep4Heading": "Resolve new assets",
+  "@importStep4Heading": {
+    "description": "Heading of the asset resolution step"
+  },
+  "importResolveHint": "Check or complete the (Yahoo Finance) symbol of each new asset.",
+  "@importResolveHint": {
+    "description": "Explanation shown on the asset resolution step"
+  },
+  "importNewAssetSymbolLabel": "Yahoo Finance symbol",
+  "@importNewAssetSymbolLabel": {
+    "description": "Label of the symbol text field for a new asset candidate"
+  },
+  "importResolvingLabel": "Looking up symbol…",
+  "@importResolvingLabel": {
+    "description": "Shown while auto-resolving a new asset's symbol from its ISIN"
+  },
+  "importFallbackIsinLabel": "Security not found — create as non-listed (ISIN key)",
+  "@importFallbackIsinLabel": {
+    "description": "Toggle to create a delisted asset with its ISIN as key, non-listed"
+  },
+  "importFallbackIsinHint": "The security was not found on Yahoo Finance (often a delisted security). It will be created with the ISIN as identifier and will never be quoted live.",
+  "@importFallbackIsinHint": {
+    "description": "Explanation of the non-listed ISIN fallback"
+  },
+  "positionNotQuotedBadge": "Not listed",
+  "@positionNotQuotedBadge": {
+    "description": "Badge shown on a position whose asset is not quotable (non-listed)"
+  },
+  "importConfirmButton": "Confirm the import",
+  "@importConfirmButton": {
+    "description": "Button confirming the import, disabled until all new assets are resolved"
+  },
+  "importConfirmError": "Error confirming the import",
+  "@importConfirmError": {
+    "description": "Generic error shown when confirmStatementImport fails"
+  },
+
+  "importDoneHeading": "Import complete",
+  "@importDoneHeading": {
+    "description": "Heading of the final summary step"
+  },
+  "importSummaryMovementsAdded": "{count} movement(s) added to the journal",
+  "@importSummaryMovementsAdded": {
+    "description": "Summary line: number of movements written",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importSummaryPositionsCreated": "{count} new position(s) created",
+  "@importSummaryPositionsCreated": {
+    "description": "Summary line: number of new positions created",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importSummaryReprojected": "Reprojected positions: {symbols}",
+  "@importSummaryReprojected": {
+    "description": "Summary line: existing symbols whose position was reprojected",
+    "placeholders": {
+      "symbols": { "type": "String" }
+    }
+  },
+  "importSummaryLegacyKept": "Partial history, not reprojected: {symbols}",
+  "@importSummaryLegacyKept": {
+    "description": "Summary line: legacy symbols left untouched (undeclared history guard)",
+    "placeholders": {
+      "symbols": { "type": "String" }
+    }
+  },
+  "importDoneCloseButton": "Done",
+  "@importDoneCloseButton": {
+    "description": "Button closing the wizard from the final summary"
+  },
+
+  "importUndoExplanation": "You can remove these movements from the account if needed.",
+  "@importUndoExplanation": {
+    "description": "Reassuring note on the final step, before the undo button"
+  },
+  "importUndoButton": "Undo this import",
+  "@importUndoButton": {
+    "description": "Discreet button on the final step that reverts the import"
+  },
+  "importUndoDialogTitle": "Undo this import?",
+  "@importUndoDialogTitle": {
+    "description": "Title of the undo confirmation dialog"
+  },
+  "importUndoDialogMessage": "The {count} movement(s) added will be removed from the account.",
+  "@importUndoDialogMessage": {
+    "description": "Body of the undo confirmation dialog",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUndoConfirmButton": "Undo import",
+  "@importUndoConfirmButton": {
+    "description": "Confirming button of the undo dialog"
+  },
+  "importUndoSuccess": "{count} movement(s) removed from the account.",
+  "@importUndoSuccess": {
+    "description": "Snackbar shown after a successful undo",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUndoError": "Could not undo the import. Please try again.",
+  "@importUndoError": {
+    "description": "Snackbar shown when undoing the import fails"
+  },
+
+  "importSearchUnavailable": "Search unavailable — check your connection.",
+  "@importSearchUnavailable": {
+    "description": "Banner shown on the resolve step when an ISIN search failed (network error)"
+  },
+  "importSearchRetryButton": "Retry",
+  "@importSearchRetryButton": {
+    "description": "Button on the search-unavailable banner that re-runs failed ISIN searches"
   }
 }

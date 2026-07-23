@@ -16,6 +16,10 @@ import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
+import 'package:portfolio_tracker/model/broker_profile.dart';
+import 'package:portfolio_tracker/model/import_preview.dart';
+import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
@@ -24,6 +28,7 @@ import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
+import 'package:portfolio_tracker/services/statement_import_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
@@ -153,6 +158,12 @@ class AccountController extends ChangeNotifier {
   /// d'affichage pure — n'influe ni sur le cash dérivé ni sur sa persistance.
   int _foreignCashMovementCount = 0;
 
+  /// Identifiant du DERNIER lot d'import confirmé avec succès (posé par
+  /// [confirmStatementImport]), ou null tant qu'aucun import n'a été confirmé
+  /// dans la vie de ce contrôleur. L'UI le lit via [lastImportBatchId] pour
+  /// proposer « Annuler cet import » ([undoStatementImport]).
+  String? _lastImportBatchId;
+
   // ---------------------------------------------------------------------------
   // Getters publics
   // ---------------------------------------------------------------------------
@@ -177,6 +188,11 @@ class AccountController extends ChangeNotifier {
   String? get derivedCash => _derivedCash;
   bool get hasCashAnchor => _hasCashAnchor;
   int get foreignCashMovementCount => _foreignCashMovementCount;
+
+  /// Identifiant du dernier lot d'import confirmé (cf. [_lastImportBatchId]),
+  /// à passer à [undoStatementImport] pour annuler CET import précis. Null tant
+  /// qu'aucun import n'a été confirmé.
+  String? get lastImportBatchId => _lastImportBatchId;
 
   // ---------------------------------------------------------------------------
   // Initialisation
@@ -323,6 +339,17 @@ class AccountController extends ChangeNotifier {
     // (coter aussi les masquées) est accepté au profit de la correction.
     final results = await Future.wait(
       positions.map((position) async {
+        // Actif NON COTÉ (repli ISIN / titre délisté) : jamais interrogé sur la
+        // source de marché. Traité comme « sans cotation » — currentPrice null
+        // → valorisé 0 en aval (position soldée = 0 par construction) ; PAS
+        // d'errorMessage (ce n'est pas un échec, c'est un choix). Le badge
+        // « non coté » de l'UI se déduit directement de asset.quotable.
+        if (!position.asset.quotable) {
+          // currentPrice 0 (pas null) : valorisation 0 ET `isLoading == false`
+          // (l'actif n'est pas « en cours de chargement », il est délibérément
+          // sans cotation).
+          return PositionWithMarketData(position: position, currentPrice: 0);
+        }
         final quote = await _marketService.getQuoteForAsset(position.asset);
         if (quote == null || quote.hasError) {
           return PositionWithMarketData(
@@ -852,6 +879,379 @@ class AccountController extends ChangeNotifier {
     );
     await _loadDerivedCash();
     return null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Import de relevés courtiers (lot B4) — couche contrôleur
+  //
+  // Relie la couche de parsing PURE (StatementImportService, zéro I/O) à la
+  // couche d'écriture atomique (LedgerService.importMovements). Le contrôleur
+  // porte trois responsabilités que ni l'une ni l'autre couche ne peut
+  // assumer seule : la résolution d'actif (ISIN/symbole → position existante),
+  // la déduplication PAR COMPTE (lecture du journal existant) et le calcul du
+  // delta projeté (rejeu en mémoire, aucune écriture). [confirmStatementImport]
+  // ne fait QUE relayer à [LedgerService.importMovements] : la garde
+  // anti-écrasement d'une position legacy reste entièrement de son ressort —
+  // [previewStatementImport] ne fait qu'en SIGNALER le risque en amont
+  // (`ImportPreview.legacySymbols`), jamais ne la duplique ni ne la contourne.
+  // ---------------------------------------------------------------------------
+
+  /// Prévisualise l'import d'un relevé [bytes] selon [profile], pour le compte
+  /// [accountId] : AUCUNE écriture. Combine parsing/normalisation (couche
+  /// pure), résolution d'actif MANUELLE/DIRECTE (ISIN prioritaire, repli sur
+  /// le symbole mappé par le CSV), déduplication par compte et delta projeté
+  /// (quantité/PRU par symbole + cash), en rejouant le journal existant en
+  /// mémoire.
+  ///
+  /// Retourne un [ImportPreview] vide si [accountId] ne correspond à aucun
+  /// compte connu du contrôleur (pas de compte actif ni de compte du même
+  /// wallet portant cet id).
+  /// Recherche les places candidates pour un [isin] auprès de la source de
+  /// marché (relais vers [MarketDataService.searchByIsin]). Utilisé par
+  /// l'assistant d'import pour auto-résoudre un nouvel actif identifié par
+  /// ISIN. Retourne une liste VIDE en cas d'échec / ISIN introuvable (titre
+  /// délisté), ce qui déclenche le repli « non coté » côté UI. La
+  /// désambiguïsation (choix du symbole retenu) est faite par [IsinResolver].
+  Future<List<IsinSearchHit>> searchIsin(String isin, {int quotesCount = 8}) =>
+      _marketService.searchByIsin(isin, quotesCount: quotesCount);
+
+  Future<ImportPreview> previewStatementImport(
+    Uint8List bytes,
+    BrokerProfile profile, {
+    required String accountId,
+  }) async {
+    Account? account;
+    for (final a in _accounts) {
+      if (a.id == accountId) {
+        account = a;
+        break;
+      }
+    }
+    account ??= _activeAccount;
+    if (account == null) return const ImportPreview();
+
+    final parsed = StatementImportService.parseWithLineNumbers(bytes, profile);
+    final movements = StatementImportService.normalize(
+      parsed.rows,
+      profile,
+      accountCurrency: account.currency,
+      accountId: accountId,
+      sourceLines: parsed.sourceLines,
+    );
+
+    final rejects = <ImportedMovement>[];
+    final candidates = <ImportedMovement>[];
+    for (final m in movements) {
+      (m.isRejected ? rejects : candidates).add(m);
+    }
+
+    // ---- Déduplication PAR COMPTE (design §5) ----
+    final existingJournal = await _txStorage.getByAccount(accountId);
+    final existingImportKeys = existingJournal
+        .map((t) => t.meta?['importKey'])
+        .whereType<String>()
+        .toSet();
+
+    final duplicates = <ImportedMovement>[];
+    final nonDuplicates = <ImportedMovement>[];
+    for (final m in candidates) {
+      final isDuplicate =
+          m.importKey != null && existingImportKeys.contains(m.importKey);
+      (isDuplicate ? duplicates : nonDuplicates).add(m);
+    }
+
+    // ---- Résolution d'actif (§4, MVP manuel/direct) ----
+    final existingPositions = await _storage.getPositions(accountId);
+    final existingSymbols = <String>{};
+    final positionByIsin = <String, Position>{};
+    for (final p in existingPositions) {
+      existingSymbols.add(p.symbol);
+      final isin = p.asset.isin;
+      if (isin != null && isin.isNotEmpty) positionByIsin[isin] = p;
+    }
+
+    final newAssets = <NewAssetCandidate>[];
+    final newAssetSymbolsSeen = <String>{};
+    final unresolvedIdentitiesSeen = <String>{};
+    final resolved = <ImportedMovement>[];
+
+    // ---- Pré-passage : quantité nette par identité NEUVE non résolue ----
+    // Une identité neuve (aucune position dans le compte, symbole non mappé)
+    // dont les mouvements titres du relevé projettent une quantité nette ≤ 0
+    // est SOLDÉE : achetée puis intégralement revendue à l'intérieur du relevé.
+    // On la journalisera en actif NON COTÉ (symbole = ISIN) SANS jamais
+    // demander de symbole (elle se projette à 0 → masquée des positions
+    // détenues, et n'a pas de ligne de delta « 0 → 0 » bruyante). Le net doit
+    // être connu DÈS le premier mouvement de l'identité, d'où ce pré-passage
+    // agrégeant TOUS ses mouvements titres avant la boucle de résolution.
+    // Rejoue la même garde d'identité et la même résolution ISIN-first que la
+    // boucle ci-dessous pour n'agréger QUE les mouvements y atteignant la
+    // branche « non résolu » (finalSymbol == null).
+    final unresolvedTxByKey = <String, List<AssetTransaction>>{};
+    for (final m in nonDuplicates) {
+      final tx = m.transaction!;
+      final hasIdentity =
+          !tx.kind.isCashOnly && (m.isin != null || tx.symbol != null);
+      if (!hasIdentity) continue;
+      final matchByIsin = m.isin != null ? positionByIsin[m.isin] : null;
+      final finalSymbol = matchByIsin?.symbol ?? tx.symbol;
+      if (finalSymbol != null) continue;
+      final key = m.isin ?? m.label!;
+      (unresolvedTxByKey[key] ??= <AssetTransaction>[]).add(tx);
+    }
+    // Symboles (= ISIN) des identités soldées : leurs mouvements sont
+    // journalisés mais EXCLUS des deltas titres (pas de ligne « 0 → 0 »).
+    final soldeeSymbols = <String>{};
+
+    for (final m in nonDuplicates) {
+      final tx = m.transaction!;
+      // Un actif n'est requis que si le mouvement référence réellement un TITRE.
+      // Deux garde-fous :
+      //  - la NATURE d'abord : une opération d'espèces (dépôt, retrait, frais/
+      //    TTF, virement reçu, remise de chèque…) n'est JAMAIS un actif, même si
+      //    elle porte un ISIN (la TTF référence l'ISIN du titre taxé) ou un
+      //    libellé ;
+      //  - puis la présence d'une identité titre (ISIN ou symbole mappé). Le
+      //    libellé SEUL ne suffit pas (toutes les lignes en ont un désormais).
+      final hasIdentity =
+          !tx.kind.isCashOnly && (m.isin != null || tx.symbol != null);
+      if (!hasIdentity) {
+        // Mouvement cash pur (deposit/withdrawal/interest/charge) : aucune
+        // résolution d'actif requise.
+        resolved.add(m);
+        continue;
+      }
+
+      // Priorité ISIN (réutilise le symbole existant même si le CSV mappait
+      // un symbole différent), repli sur le symbole mappé directement.
+      final matchByIsin =
+          m.isin != null ? positionByIsin[m.isin] : null;
+      final finalSymbol = matchByIsin?.symbol ?? tx.symbol;
+
+      if (finalSymbol == null) {
+        final key = m.isin ?? m.label!;
+        // Identité SOLDÉE (net ≤ 0) ET porteuse d'un ISIN (seul symbole non
+        // coté STABLE — sans ISIN, aucune clé pérenne pour la position → on
+        // garde la résolution UI). On la crée en actif non coté (symbole =
+        // ISIN, quotable == false) avec un proposedSymbol renseigné : PLUS de
+        // prompt de résolution. Le mouvement est réémis avec symbol = ISIN
+        // (l'UI ne patchera plus ce mouvement — elle ne patche que les
+        // NewAssetCandidate à proposedSymbol == null), pour ne JAMAIS
+        // journaliser un titre orphelin.
+        final net =
+            projectPosition(unresolvedTxByKey[key] ?? const []).quantity;
+        if (m.isin != null && net <= Decimal.zero) {
+          final isin = m.isin!;
+          if (unresolvedIdentitiesSeen.add(key)) {
+            newAssets.add(NewAssetCandidate(
+              isin: isin,
+              label: m.label ?? key,
+              proposedSymbol: isin,
+              quotable: false,
+              closedLine: true,
+            ));
+          }
+          soldeeSymbols.add(isin);
+          resolved.add(ImportedMovement.candidate(
+            sourceRow: m.sourceRow,
+            sourceRowIndex: m.sourceRowIndex,
+            transaction: tx.copyWith(symbol: isin),
+            isin: m.isin,
+            label: m.label,
+            resolvedSymbol: isin,
+            importKey: m.importKey!,
+          ));
+          continue;
+        }
+
+        // Encore détenue (net > 0) ou identité sans ISIN : comportement
+        // inchangé — à charge de l'UI de faire confirmer/saisir un symbole
+        // avant confirmation (résolution en ligne hors MVP, cf. design §4.2).
+        if (unresolvedIdentitiesSeen.add(key)) {
+          newAssets.add(NewAssetCandidate(isin: m.isin, label: m.label ?? key));
+        }
+        resolved.add(m);
+        continue;
+      }
+
+      if (!existingSymbols.contains(finalSymbol) &&
+          newAssetSymbolsSeen.add(finalSymbol)) {
+        // Symbole encore absent du compte ET déjà mappé par le CSV : création
+        // directe d'un actif neuf portant l'ISIN (pas d'aller-retour UI ici).
+        newAssets.add(NewAssetCandidate(
+          isin: m.isin,
+          label: m.label ?? finalSymbol,
+          proposedSymbol: finalSymbol,
+        ));
+      }
+
+      resolved.add(finalSymbol == tx.symbol
+          ? m
+          : ImportedMovement.candidate(
+              sourceRow: m.sourceRow,
+              sourceRowIndex: m.sourceRowIndex,
+              transaction: tx.copyWith(symbol: finalSymbol),
+              isin: m.isin,
+              label: m.label,
+              resolvedSymbol: finalSymbol,
+              importKey: m.importKey!,
+            ));
+    }
+
+    // ---- Delta projeté (§3 étape 5) : rejeu en mémoire, lecture seule ----
+    final projectedDeltas = <ProjectedDelta>[];
+    final legacySymbols = <String>[];
+    final touchedSymbols = <String>{
+      for (final m in resolved)
+        if (m.transaction!.symbol != null) m.transaction!.symbol!,
+    };
+
+    for (final symbol in touchedSymbols) {
+      // Identité soldée (net ≤ 0) : journalisée, mais aucun delta titre — sa
+      // ligne « 0 → 0 » serait bruyante et trompeuse dans l'aperçu.
+      if (soldeeSymbols.contains(symbol)) continue;
+      final before =
+          existingJournal.where((t) => t.symbol == symbol).toList();
+      final incoming = resolved
+          .where((m) => m.transaction!.symbol == symbol)
+          .map((m) => m.transaction!)
+          .toList();
+
+      final beforeProj = projectPosition(before);
+      final afterProj = projectPosition([...before, ...incoming]);
+
+      projectedDeltas.add(ProjectedDelta(
+        symbol: symbol,
+        quantityBefore: beforeProj.quantity.toString(),
+        quantityAfter: afterProj.quantity.toString(),
+        averageBuyPriceBefore: beforeProj.averagePrice,
+        averageBuyPriceAfter: afterProj.averagePrice,
+      ));
+
+      // Garde-fou legacy (§8.1, miroir en LECTURE SEULE de la garde de
+      // LedgerService.importMovements) : position existante jamais projetée,
+      // sans le moindre mouvement en journal.
+      if (existingSymbols.contains(symbol) && before.isEmpty) {
+        final derivedAt = await _storage.getPositionDerivedAt(accountId, symbol);
+        if (derivedAt == null) legacySymbols.add(symbol);
+      }
+    }
+
+    // Delta cash (symbol == null), dans la devise du compte cible.
+    final cashCurrency = account.currency;
+    final incomingAll = resolved.map((m) => m.transaction!).toList();
+    final cashBefore =
+        replayLedger(existingJournal).cashByCurrency[cashCurrency] ??
+            Decimal.zero;
+    final cashAfter = replayLedger([...existingJournal, ...incomingAll])
+            .cashByCurrency[cashCurrency] ??
+        Decimal.zero;
+    projectedDeltas.add(ProjectedDelta(
+      cashBefore: cashBefore.toDouble(),
+      cashAfter: cashAfter.toDouble(),
+    ));
+
+    return ImportPreview(
+      toCreate: resolved,
+      duplicates: duplicates,
+      rejects: rejects,
+      newAssets: newAssets,
+      projectedDeltas: projectedDeltas,
+      legacySymbols: legacySymbols,
+    );
+  }
+
+  /// Confirme un [preview] préalablement établi par [previewStatementImport] :
+  /// écrit les mouvements retenus (`preview.toCreate`) et les actifs neufs déjà
+  /// résolus à un symbole (`preview.newAssets` dont `proposedSymbol` est
+  /// renseigné) via [LedgerService.importMovements], UNE SEULE fois, de façon
+  /// atomique. Un [NewAssetCandidate] encore sans symbole reste hors périmètre
+  /// du contrôleur (résolution UI non faite) : il est silencieusement ignoré
+  /// ici plutôt que de fabriquer un symbole arbitraire.
+  ///
+  /// Retourne null en cas de succès, ou un code d'erreur :
+  ///   - 'noActiveAccount' : pas de compte actif
+  Future<String?> confirmStatementImport(
+    ImportPreview preview, {
+    required String accountId,
+  }) async {
+    if (_activeAccount == null) return 'noActiveAccount';
+
+    final movements = preview.toCreate
+        .where((m) => !m.isRejected)
+        .map((m) => m.transaction!)
+        .toList();
+
+    final assetsToCreate = <String, Asset>{};
+    for (final candidate in preview.newAssets) {
+      final symbol = candidate.proposedSymbol;
+      if (symbol == null ||
+          symbol.isEmpty ||
+          assetsToCreate.containsKey(symbol)) {
+        continue;
+      }
+      // Devise de cotation reprise du premier mouvement rattaché à ce
+      // symbole (aucune cotation réseau au MVP manuel/direct) ; aucun
+      // mouvement rattaché → rien à créer (candidat orphelin).
+      AssetTransaction? sample;
+      for (final t in movements) {
+        if (t.symbol == symbol) {
+          sample = t;
+          break;
+        }
+      }
+      if (sample == null) continue;
+      assetsToCreate[symbol] = Asset(
+        symbol: symbol,
+        name: candidate.label,
+        currency: sample.currency,
+        isin: candidate.isin,
+        // Repli « non coté » (symbole == ISIN, titre délisté) : marqué non
+        // interrogeable pour ne jamais déclencher d'appel réseau au refresh.
+        quotable: candidate.quotable,
+      );
+    }
+
+    // Identifiant de LOT unique (support de l'annulation). Estampillé sur chaque
+    // mouvement écrit (meta['importBatch']) par le ledger. Généré ici et exposé
+    // via [lastImportBatchId] APRÈS succès : l'UI l'utilise pour « Annuler cet
+    // import » ([undoStatementImport]).
+    final batchId = 'imp-${DateTime.now().microsecondsSinceEpoch}';
+
+    await _ledger.importMovements(
+      accountId: accountId,
+      movements: movements,
+      newAssets: assetsToCreate.values.toList(),
+      importBatchId: batchId,
+    );
+    // Mémorisé seulement APRÈS le succès de l'écriture (une exception ci-dessus
+    // remonte sans laisser un batchId pointant sur un import qui n'a pas eu lieu).
+    _lastImportBatchId = batchId;
+
+    await _initService();
+    return null;
+  }
+
+  /// Annule l'import de relevé identifié par [batchId] sur le compte
+  /// [accountId] : supprime ATOMIQUEMENT du journal TOUS les mouvements de ce
+  /// lot (estampillés `meta['importBatch']`), reprojette titres et cash côté
+  /// ledger ([LedgerService.removeImportBatch]), puis rafraîchit l'état de la
+  /// vue. Retourne le NOMBRE de mouvements supprimés (0 si le lot est inconnu /
+  /// déjà annulé — no-op sûr).
+  ///
+  /// Seuls les mouvements du lot [batchId] sont retirés ; un mouvement d'un
+  /// autre import ou saisi à la main n'est jamais touché (cf. la garde de
+  /// [LedgerService.removeImportBatch]). Après une annulation qui a effacé le
+  /// dernier lot mémorisé, [lastImportBatchId] est remis à null (plus rien à
+  /// annuler pour ce batch).
+  Future<int> undoStatementImport({
+    required String accountId,
+    required String batchId,
+  }) async {
+    final removed = await _ledger.removeImportBatch(accountId, batchId);
+    if (_lastImportBatchId == batchId) _lastImportBatchId = null;
+    await _initService();
+    return removed;
   }
 
   // ---------------------------------------------------------------------------

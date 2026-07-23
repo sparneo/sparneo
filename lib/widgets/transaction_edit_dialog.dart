@@ -71,6 +71,7 @@ String? computeAmount({
         return settled.toString();
       case TransactionKind.openingBalance:
       case TransactionKind.adjustment:
+      case TransactionKind.transferOut:
         return null;
     }
   }
@@ -137,9 +138,10 @@ String? computeAmount({
 
     case TransactionKind.openingBalance:
     case TransactionKind.adjustment:
+    case TransactionKind.transferOut:
       // Mouvements système : non créés via ce dialogue. La sémantique de leur
       // montant relève du flux B* cœur ; ici on ne calcule rien (montant
-      // préservé tel quel côté appelant).
+      // préservé tel quel côté appelant). transferOut n'a AUCUN effet cash.
       return null;
   }
 }
@@ -542,6 +544,8 @@ class _TransactionEditDialogState extends State<TransactionEditDialog> {
         return l10n.transactionKindInterest;
       case TransactionKind.charge:
         return l10n.transactionKindCharge;
+      case TransactionKind.transferOut:
+        return l10n.transactionKindTransferOut;
     }
   }
 

@@ -228,7 +228,7 @@ void main() {
 
     final expected = {
       'format': 'sparneo-fiscal-export',
-      'version': 3,
+      'version': 4,
       'exportedAt': '2026-04-15T10:00:00.000Z',
       'taxYear': 2024,
       'source': {
@@ -589,7 +589,7 @@ void main() {
       exportedAt: exportedAt,
     );
 
-    expect(result['version'], 3);
+    expect(result['version'], 4);
 
     final txs = result['transactions'] as List;
     final ob = txs.firstWhere((t) => (t as Map)['id'] == 't-ob') as Map;
@@ -651,7 +651,7 @@ void main() {
       exportedAt: exportedAt,
     );
 
-    expect(result['version'], 3);
+    expect(result['version'], 4);
     final txs = result['transactions'] as List;
     final cross = txs.firstWhere((t) => (t as Map)['id'] == 't-cross') as Map;
     final mono = txs.firstWhere((t) => (t as Map)['id'] == 't-mono') as Map;

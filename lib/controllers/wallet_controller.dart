@@ -384,9 +384,13 @@ class WalletController extends ChangeNotifier {
       }
       final symbolsList = uniqueSymbols.toList();
       final quoteResults = await Future.wait(
-        symbolsList.map(
-          (s) => _marketService.getQuoteForAsset(assetBySymbol[s]!),
-        ),
+        symbolsList.map((s) {
+          final asset = assetBySymbol[s]!;
+          // Actif NON COTÉ (repli ISIN / titre délisté) : jamais interrogé sur
+          // la source de marché — on n'émet aucune requête pour ce symbole.
+          if (!asset.quotable) return Future<AssetQuoteData?>.value(null);
+          return _marketService.getQuoteForAsset(asset);
+        }),
       );
       final Map<String, AssetQuoteData?> quotesBySymbol = {};
       for (int i = 0; i < symbolsList.length; i++) {
@@ -407,6 +411,17 @@ class WalletController extends ChangeNotifier {
         List<PositionWithMarketData> accountPosList = [];
 
         for (var pos in positions) {
+          // Actif NON COTÉ : valorisé 0 (position soldée = 0 par construction),
+          // SANS dégrader marketDataComplete — un actif délibérément non coté
+          // n'est pas une donnée « manquante » et ne doit pas empêcher la
+          // persistance d'un snapshot journalier. Pas de badge « cours du … ».
+          if (!pos.asset.quotable) {
+            final posWithData =
+                PositionWithMarketData(position: pos, currentPrice: 0);
+            allPositions.add(posWithData);
+            accountPosList.add(posWithData);
+            continue;
+          }
           final quote = quotesBySymbol[pos.symbol];
           // Données de marché incomplètes : prix manquant → valeur sous-évaluée.
           if (quote == null || quote.price == null) marketDataComplete = false;

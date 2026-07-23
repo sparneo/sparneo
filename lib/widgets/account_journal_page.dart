@@ -157,6 +157,8 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
         return Icons.savings_outlined;
       case TransactionKind.charge:
         return Icons.receipt_long_outlined;
+      case TransactionKind.transferOut:
+        return Icons.swap_horiz;
     }
   }
 
@@ -180,6 +182,8 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
         return l10n.transactionKindInterest;
       case TransactionKind.charge:
         return l10n.transactionKindCharge;
+      case TransactionKind.transferOut:
+        return l10n.transactionKindTransferOut;
     }
   }
 

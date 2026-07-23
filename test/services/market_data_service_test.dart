@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/market_data_provider.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
@@ -56,6 +57,15 @@ class _FakeProvider implements MarketDataProvider {
     lastHistoricalDays = days;
     return historicalToReturn;
   }
+
+  List<IsinSearchHit> searchHitsToReturn = const [];
+  String? lastSearchIsin;
+
+  @override
+  Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async {
+    lastSearchIsin = isin;
+    return searchHitsToReturn;
+  }
 }
 
 void main() {
@@ -96,6 +106,65 @@ void main() {
       expect(fakeProvider.lastHistoricalSymbol, 'AAPL');
       expect(fakeProvider.lastHistoricalDays, 90);
       expect(result, same(fixedHistorical));
+    });
+
+    test('searchByIsin délègue au provider avec l\'ISIN transmis', () async {
+      final fakeProvider = _FakeProvider();
+      fakeProvider.searchHitsToReturn = const [
+        IsinSearchHit(symbol: 'AIR.PA', score: 10),
+      ];
+      final service = MarketDataService.forTesting(
+        _FakeExchangeRateService(),
+        provider: fakeProvider,
+      );
+
+      final hits = await service.searchByIsin('FR0000031122');
+
+      expect(fakeProvider.lastSearchIsin, 'FR0000031122');
+      expect(hits.single.symbol, 'AIR.PA');
+    });
+
+    test('getQuoteForAsset sur un actif NON COTÉ → null SANS toucher au provider',
+        () async {
+      final fakeProvider = _FakeProvider();
+      // Même si le provider avait une quote à servir, il ne doit PAS être appelé.
+      fakeProvider.quoteToReturn =
+          AssetQuoteData(symbol: 'X', price: 42.0, currency: 'EUR');
+      final service = MarketDataService.forTesting(
+        _FakeExchangeRateService(),
+        provider: fakeProvider,
+      );
+
+      final asset = Asset(
+        symbol: 'FR0000000000',
+        isin: 'FR0000000000',
+        quotable: false,
+      );
+      final result = await service.getQuoteForAsset(asset);
+
+      expect(result, isNull);
+      // AUCUN appel réseau : le provider n'a jamais été sollicité pour ce symbole.
+      expect(fakeProvider.lastQuoteSymbol, isNull);
+    });
+
+    test('getHistoricalDataForAsset sur un actif NON COTÉ → null SANS provider',
+        () async {
+      final fakeProvider = _FakeProvider();
+      fakeProvider.historicalToReturn = AssetHistoricalData(
+        symbol: 'X',
+        dates: [DateTime(2026, 1, 1)],
+        prices: [1.0],
+      );
+      final service = MarketDataService.forTesting(
+        _FakeExchangeRateService(),
+        provider: fakeProvider,
+      );
+
+      final asset = Asset(symbol: 'FR0000000000', quotable: false);
+      final result = await service.getHistoricalDataForAsset(asset);
+
+      expect(result, isNull);
+      expect(fakeProvider.lastHistoricalSymbol, isNull);
     });
 
     test('getQuoteForAsset sur un actif classique passe par quoteSymbol sans transformation', () async {

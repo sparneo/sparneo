@@ -15,8 +15,8 @@
 // qu'au tout dernier moment pour le PRU (contrat public `double?`).
 //
 // CAS TRAITÉS (projection TITRE, identiques à computeTransactionAnalytics) :
-// buy / sell / openingBalance / adjustment. dividend / deposit / withdrawal /
-// interest / charge sont ignorés par la projection titre.
+// buy / sell / openingBalance / adjustment / transferOut. dividend / deposit /
+// withdrawal / interest / charge sont ignorés par la projection titre.
 // TRI : date croissante puis id croissant. CLAMP : quantité et coût ne
 // descendent jamais sous zéro (survente / ajustement négatif au-delà du stock).
 //
@@ -151,14 +151,14 @@ LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
     return LedgerReplayResult(runningQty, runningCost, realized);
   }
 
-  // Tri chronologique stable : date croissante, puis id croissant (les id sont
-  // des timestamps microseconde — ordre de création). Identique à l'ancien
-  // computeTransactionAnalytics.
+  // Tri chronologique CANONIQUE : date croissante, puis séquence de fichier
+  // (`meta['seq']`) pour les mouvements importés — départage intraday FIABLE —,
+  // sinon repli sur id (saisies manuelles). Voir
+  // [AssetTransaction.compareChronological] : trier sur id SEUL rendait l'ordre
+  // intraday arbitraire (id aléatoire à l'import) et faisait disparaître des
+  // titres sur les allers-retours d'un même jour via le clamp anti-survente.
   final sorted = List<AssetTransaction>.from(txs)
-    ..sort((a, b) {
-      final cmp = a.date.compareTo(b.date);
-      return cmp != 0 ? cmp : a.id.compareTo(b.id);
-    });
+    ..sort(AssetTransaction.compareChronological);
 
   for (final tx in sorted) {
     // PROJECTION CASH (partition stricte : lit UNIQUEMENT amount). Kind-agnostic
@@ -227,6 +227,26 @@ LedgerReplayResult replayLedger(List<AssetTransaction> txs) {
         runningCost += (q * p).toRational();
         if (runningCost < Rational.zero) runningCost = Rational.zero;
 
+      case TransactionKind.transferOut:
+        // SORTIE DE TITRES SANS CESSION (transfert PEA→CTO, virement sortant).
+        // Emporte la base de coût AU PRORATA du WAC courant — donc le PRU des
+        // titres RESTANTS est inchangé (mêmes facteurs qty et coût), comme la
+        // jambe coût d'une vente — MAIS ne réalise AUCUNE plus-value (un
+        // transfert n'est pas une cession) et n'a AUCUN effet cash (amount=null,
+        // capté à 0 par la projection CASH ci-dessus). Clamp ≥ 0 identique à la
+        // survente : ni stock ni base de coût négatifs si le journal est partiel.
+        final q = _parseDecimal(tx.quantity);
+        var costBasisRemoved = Rational.zero;
+        if (runningQty > Decimal.zero) {
+          final qEff = q > runningQty ? runningQty : q;
+          costBasisRemoved =
+              runningCost * (qEff.toRational() / runningQty.toRational());
+        }
+        runningQty -= q;
+        if (runningQty < Decimal.zero) runningQty = Decimal.zero;
+        runningCost -= costBasisRemoved;
+        if (runningCost < Rational.zero) runningCost = Rational.zero;
+
       case TransactionKind.dividend:
         // Revenu de détention, pas une cession : n'affecte pas la position
         // titre (son effet cash est capté par la projection CASH ci-dessus).
@@ -290,10 +310,30 @@ bool journalHasCashAnchor(List<AssetTransaction> txs) {
       case TransactionKind.sell:
       case TransactionKind.dividend:
       case TransactionKind.adjustment:
+      case TransactionKind.transferOut:
         break;
     }
   }
   return false;
+}
+
+/// Vrai si le PRU (prix de revient unitaire) d'une position est éditable
+/// directement (action « Corriger le PRU… »), selon sa nature (modèle B*) :
+///
+///   - LEGACY ([isLegacy] vrai, `derived_at` NULL) : toujours éditable — un tel
+///     journal est garanti vide (tout mouvement journalisé aurait posé
+///     `derived_at` via la reprojection du ledger), donc rien à corrompre.
+///   - JOURNALISÉE (`derived_at` non NULL) : éditable seulement si son journal
+///     [txs] n'est PAS vide (un journal vide correspond à l'action « définir
+///     la position initiale », distincte) ET ne contient AUCUN vrai trade
+///     (`buy`/`sell`). Sur un vrai trade, le PRU est une moyenne pondérée
+///     dérivée : l'écraser à la main serait faux.
+bool canEditPru({required bool isLegacy, required List<AssetTransaction> txs}) {
+  if (isLegacy) return true;
+  if (txs.isEmpty) return false;
+  return !txs.any(
+    (t) => t.kind == TransactionKind.buy || t.kind == TransactionKind.sell,
+  );
 }
 
 /// Vrai si la (quantité, PRU) DÉCLARÉE correspond à la projection [proj] du

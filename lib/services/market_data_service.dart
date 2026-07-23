@@ -3,11 +3,39 @@ import 'package:flutter/foundation.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/caching_market_data_provider.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/last_price_storage.dart';
 import 'package:portfolio_tracker/services/market_data_provider.dart';
 import 'package:portfolio_tracker/services/yahoo_finance_provider.dart';
+
+/// Exception levée par [MarketDataService.searchByIsin] (et son
+/// [MarketDataProvider] sous-jacent, ex. [YahooFinanceProvider]) en cas
+/// d'échec de TRANSPORT/RÉSEAU (timeout, statut HTTP non-200 après retries,
+/// erreur socket...).
+///
+/// À distinguer SOIGNEUSEMENT d'une recherche ABOUTIE (HTTP 200) sans
+/// correspondance exploitable : dans ce second cas, [MarketDataService.
+/// searchByIsin] retourne toujours une liste vide, JAMAIS cette exception.
+/// L'assistant d'import doit réserver son repli « actif non coté » à ce
+/// second cas — sur cette exception, il n'y a aucune information sur
+/// l'existence du titre : l'UI doit le signaler comme une panne
+/// (bandeau + bouton « Réessayer »), pas conclure à tort à un titre non coté.
+class IsinSearchException implements Exception {
+  /// Message d'erreur, prêt à journaliser (l'UI reste libre de son propre
+  /// libellé utilisateur : ce message n'est pas forcément traduit/affichable).
+  final String message;
+
+  /// Cause d'origine (typiquement une `ApiError`), pour diagnostic.
+  final Object? cause;
+
+  IsinSearchException(this.message, {this.cause});
+
+  @override
+  String toString() =>
+      'IsinSearchException: $message${cause != null ? ' (cause: $cause)' : ''}';
+}
 
 /// Orchestrateur des cotations de marché.
 ///
@@ -43,6 +71,16 @@ class MarketDataService {
   Future<AssetHistoricalData?> getHistoricalData(String symbol, {int days = 30}) =>
       _provider.getHistoricalData(symbol, days: days);
 
+  /// Recherche les places candidates pour un [isin] (voir
+  /// [MarketDataProvider.searchByIsin]). Utilisée par l'assistant d'import
+  /// pour la résolution ISIN → symbole ; jamais appelée par le rafraîchissement.
+  ///
+  /// Pure délégation : peut lever [IsinSearchException] en cas d'échec de
+  /// transport/réseau (voir sa doc). Ne retourne `[]` que pour une recherche
+  /// aboutie sans correspondance.
+  Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) =>
+      _provider.searchByIsin(isin, quotesCount: quotesCount);
+
   // ==================== COTATIONS ORIENTÉES ACTIF ====================
   // Ces variantes prennent un [Asset] plutôt qu'un symbole brut. Pour un actif
   // classique elles délèguent simplement aux méthodes par symbole. Pour un
@@ -53,6 +91,12 @@ class MarketDataService {
 
   /// Cotation prête à l'emploi pour [asset].
   Future<AssetQuoteData?> getQuoteForAsset(Asset asset) async {
+    // Actif NON COTÉ (repli ISIN, titre délisté) : JAMAIS interrogé sur la
+    // source de marché — aucun appel réseau, aucune erreur récurrente. Traité
+    // comme « sans cotation » (retour null → prix null → 0 en aval). Garde
+    // défensive : les boucles de rafraîchissement sautent déjà ces actifs en
+    // amont, ce filet garantit l'invariant même si un appelant l'oublie.
+    if (!asset.quotable) return null;
     final quote = await getQuoteWithMetadata(asset.quoteSymbol);
     // Gate sur hasMetalPricing (présence d'un cours de référence), PAS sur le
     // seul type : un actif classé « métal » à la main mais sans refSymbol/poids
@@ -92,6 +136,9 @@ class MarketDataService {
 
   /// Historique prêt à l'emploi pour [asset] (mêmes règles que [getQuoteForAsset]).
   Future<AssetHistoricalData?> getHistoricalDataForAsset(Asset asset, {int days = 30}) async {
+    // Même garde que getQuoteForAsset : un actif non coté n'a pas d'historique
+    // interrogeable (jamais d'appel réseau).
+    if (!asset.quotable) return null;
     final data = await getHistoricalData(asset.quoteSymbol, days: days);
     // Même garde que getQuoteForAsset : seul un actif porteur d'un cours de
     // référence subit la transformation métal (cf. [Asset.hasMetalPricing]).

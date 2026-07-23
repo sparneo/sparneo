@@ -3,8 +3,10 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/api_error.dart';
 import 'package:portfolio_tracker/services/market_data_provider.dart';
+import 'package:portfolio_tracker/services/market_data_service.dart' show IsinSearchException;
 import 'package:portfolio_tracker/utils/logger.dart';
 
 /// Implémentation de [MarketDataProvider] adossée à l'endpoint public non
@@ -207,6 +209,72 @@ class YahooFinanceProvider implements MarketDataProvider {
       final apiError = ApiError.fromException(e);
       AppLogger.error('Erreur historique pour $symbol: $apiError');
       return null;
+    }
+  }
+
+  @override
+  Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async {
+    // Endpoint public non officiel `v1/finance/search` (mêmes en-têtes /
+    // retry que les cotations). `newsCount=0` : on ne veut que les titres.
+    final url = Uri.https(
+      'query1.finance.yahoo.com',
+      '/v1/finance/search',
+      {
+        'q': isin,
+        'quotesCount': '$quotesCount',
+        'newsCount': '0',
+      },
+    );
+
+    try {
+      return await retryWithBackoff<List<IsinSearchHit>>(
+        context: 'searchByIsin($isin)',
+        () async {
+          final response = await http
+              .get(url, headers: _headers)
+              .timeout(const Duration(seconds: 10));
+
+          if (response.statusCode != 200) {
+            throw ApiError.fromStatusCode(response.statusCode);
+          }
+
+          final data = jsonDecode(response.body);
+          final quotes = data['quotes'];
+          if (quotes is! List) return const <IsinSearchHit>[];
+
+          final hits = <IsinSearchHit>[];
+          for (final q in quotes) {
+            if (q is! Map) continue;
+            final symbol = q['symbol']?.toString();
+            if (symbol == null || symbol.isEmpty) continue;
+            hits.add(IsinSearchHit(
+              symbol: symbol,
+              exchange: q['exchange']?.toString(),
+              exchangeDisplay: q['exchDisp']?.toString(),
+              quoteType: q['quoteType']?.toString(),
+              shortName: q['shortname']?.toString(),
+              longName: q['longname']?.toString(),
+              // La devise n'est PAS toujours présente dans la réponse search :
+              // on ne s'y fie pas (aucune valorisation ici, juste le choix de
+              // place). Le score sert seulement de départage à rang égal.
+              score: (q['score'] as num?)?.toDouble(),
+            ));
+          }
+          return hits;
+        },
+      );
+    } catch (e) {
+      // Échec de TRANSPORT (après retries, ou erreur non réessayable) : on ne
+      // le confond PLUS avec « recherche aboutie sans résultat » (liste vide).
+      // On lève IsinSearchException pour que l'appelant (assistant d'import)
+      // puisse distinguer une panne réseau — où l'existence du titre est
+      // inconnue — d'un ISIN réellement introuvable. Cf. doc de la classe.
+      final apiError = ApiError.fromException(e);
+      AppLogger.error('Erreur recherche ISIN pour $isin: $apiError');
+      throw IsinSearchException(
+        'Recherche ISIN indisponible pour $isin: $apiError',
+        cause: apiError,
+      );
     }
   }
 }

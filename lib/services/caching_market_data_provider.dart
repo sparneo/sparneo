@@ -1,6 +1,7 @@
 // lib/services/caching_market_data_provider.dart
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/last_price_storage.dart';
 import 'package:portfolio_tracker/services/market_data_provider.dart';
 
@@ -41,4 +42,12 @@ class CachingMarketDataProvider implements MarketDataProvider {
   @override
   Future<AssetHistoricalData?> getHistoricalData(String symbol, {int days = 30}) =>
       _delegate.getHistoricalData(symbol, days: days);
+
+  // Recherche par ISIN : pure délégation, sans cache. La recherche n'est
+  // exercée qu'à l'import (rare, à la demande) et resservir un vieux résultat
+  // n'apporterait rien de plus qu'une passe réseau ponctuelle — on évite donc
+  // une couche de péremption superflue (cf. même parti pris que getHistoricalData).
+  @override
+  Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) =>
+      _delegate.searchByIsin(isin, quotesCount: quotesCount);
 }

@@ -21,8 +21,35 @@ import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/account_journal_page.dart';
 import 'package:portfolio_tracker/widgets/common/empty_state.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
+import 'package:portfolio_tracker/widgets/import/statement_import_page.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/utils/error_text.dart';
+
+/// Vrai si une position doit figurer dans la liste des AVOIRS DÉTENUS (et non
+/// être masquée). Prédicat pur, extrait pour être testable sans harnais widget.
+///
+/// Masquées :
+///   - position SOLDÉE (quantité nette ~0, issue p. ex. d'un import
+///     d'historique complet ou d'un transfert intégral) — elle reste en base
+///     (plus-value réalisée / export fiscal) mais n'est plus un avoir ;
+///   - RÉSIDU NON COTÉ SANS VALEUR : `quotable == false` (titre délisté / purgé
+///     de la source) dont la valeur de marché est nulle (aucun dernier cours).
+///
+/// TOUJOURS affichée : une position COTÉE de faible valeur (un titre à 25 €),
+/// ou une position non cotée valorisée par un dernier cours connu (> 0).
+bool isHeldPosition({
+  required String quantity,
+  required bool quotable,
+  required double? currentPrice,
+}) {
+  final qty = double.tryParse(quantity) ?? 0;
+  if (qty.abs() <= 1e-6) return false;
+  if (!quotable) {
+    final marketValue = (currentPrice ?? 0) * qty;
+    if (marketValue.abs() <= 1e-6) return false;
+  }
+  return true;
+}
 
 class AccountView extends StatefulWidget {
   final String? initialAccountId;
@@ -709,6 +736,27 @@ class _AccountViewState extends State<AccountView> {
     await _ctrl.initAccounts();
   }
 
+  /// Ouvre l'assistant d'import de relevé pour le compte actuellement ouvert
+  /// (décision produit actée : le compte cible de l'import est toujours celui
+  /// affiché, jamais un choix libre). Le contrôleur de cette vue est réutilisé
+  /// tel quel par l'assistant : sa propre reconstruction post-confirmation
+  /// (AccountController.confirmStatementImport → _initService()) suffit à
+  /// rafraîchir positions/cash/historique ici, sans étape supplémentaire.
+  Future<void> _openStatementImport() async {
+    final account = _ctrl.activeAccount;
+    if (account == null) return;
+    await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => StatementImportPage(
+          controller: _ctrl,
+          accountId: account.id,
+          accountName: account.name,
+        ),
+      ),
+    );
+  }
+
   /// Supprime le compte courant depuis la barre (affordance canonique des
   /// comptes d'investissement, miroir de la corbeille des positions). Demande
   /// confirmation (dialogue partagé + garde « dernier compte ») puis, si
@@ -792,6 +840,24 @@ class _AccountViewState extends State<AccountView> {
           return valueB.compareTo(valueA); // Décroissant
         });
 
+    // Positions ouvertes uniquement : les positions SOLDÉES (quantité nette 0,
+    // issues p. ex. d'un import d'historique complet) restent en base — elles
+    // sont nécessaires à la plus-value réalisée et à l'export fiscal — mais ne
+    // sont pas des avoirs détenus et n'ont pas à encombrer la liste. Sont AUSSI
+    // masqués les RÉSIDUS NON COTÉS SANS VALEUR : une position `quotable == false`
+    // (titre délisté / purgé de la source, souvent issu d'un transfert ou d'une
+    // cession partielle) dont la valeur de marché est nulle (aucun dernier cours
+    // connu). Elles restent en base (PV réalisée / historique) mais n'ont pas
+    // leur place dans les avoirs détenus. Une position COTÉE de faible valeur
+    // (un titre à 25 €) reste, elle, TOUJOURS affichée.
+    final openPositions = sortedPositions
+        .where((p) => isHeldPosition(
+              quantity: p.quantity,
+              quotable: p.asset.quotable,
+              currentPrice: p.currentPrice,
+            ))
+        .toList();
+
     // Rechargement non destructif en cours : refresh explicite (isRefreshing)
     // ou ré-initialisation avec du contenu déjà présent (retour de navigation).
     final busy =
@@ -873,8 +939,27 @@ class _AccountViewState extends State<AccountView> {
               onPressed: _ctrl.refresh,
             ),
           PopupMenuButton<String>(
-            onSelected: (_) => _confirmAndDeleteAccount(),
+            onSelected: (value) {
+              switch (value) {
+                case 'import':
+                  _openStatementImport();
+                  break;
+                case 'delete':
+                  _confirmAndDeleteAccount();
+                  break;
+              }
+            },
             itemBuilder: (context) => [
+              PopupMenuItem<String>(
+                value: 'import',
+                child: Row(
+                  children: [
+                    const Icon(Icons.upload_file),
+                    const SizedBox(width: 12),
+                    Text(l10n.importStatementAction),
+                  ],
+                ),
+              ),
               PopupMenuItem<String>(
                 value: 'delete',
                 child: Row(
@@ -951,8 +1036,9 @@ class _AccountViewState extends State<AccountView> {
                   ),
                 ),
 
-                // Liste des positions (ou état vide si le compte n'en a aucune)
-                if (_ctrl.positionsData.isEmpty)
+                // Liste des positions ouvertes (ou état vide si aucun avoir
+                // détenu — les soldées, filtrées plus haut, ne comptent pas).
+                if (openPositions.isEmpty)
                   EmptyState(
                     icon: Icons.inventory_2_outlined,
                     title: l10n.emptyPositionsTitle,
@@ -970,10 +1056,10 @@ class _AccountViewState extends State<AccountView> {
                     shrinkWrap: true,
                     physics: const NeverScrollableScrollPhysics(),
                     padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                    itemCount: sortedPositions.length,
+                    itemCount: openPositions.length,
                     separatorBuilder: (_, _) => const SizedBox(height: 8),
                     itemBuilder: (context, index) {
-                      final positionData = sortedPositions[index];
+                      final positionData = openPositions[index];
                       return Dismissible(
                         key: Key(positionData.symbol),
                         direction: DismissDirection.endToStart,

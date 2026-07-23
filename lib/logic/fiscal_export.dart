@@ -27,8 +27,16 @@ import 'package:portfolio_tracker/model/asset_transaction.dart';
 /// (absent = règlement identique à `currency`). Donne au consommateur la
 /// contre-valeur EUR à la date d'opération (design cash-ledger §8). Un lecteur
 /// qui l'ignore lit `amount` dans `currency` (comportement mono-devise legacy).
-/// Voir `docs/sparneo-fiscal-export.md`.
-const int fiscalExportFormatVersion = 3;
+///
+/// v4 (additif) : ajoute le kind `transferOut` — SORTIE DE TITRES SANS CESSION
+/// (transfert hors du compte, ex. PEA→CTO). Sémantique côté consommateur : réduit
+/// la quantité détenue en emportant la base de coût AU PRORATA (le PRU des titres
+/// restants est inchangé), SANS plus-value réalisée (ce n'est pas une cession) et
+/// SANS effet cash (`amount` absent/null). À NE PAS confondre avec un `sell`
+/// (aucun produit imposable). Un `kind` inconnu reste une erreur (jamais coercé) :
+/// une version lisant `transferOut` doit connaître ce format v4. Voir
+/// `docs/sparneo-fiscal-export.md`.
+const int fiscalExportFormatVersion = 4;
 
 /// Mapping [AccountKind] → enveloppe fiscale exposée dans l'export (§ table
 /// figée de `docs/sparneo-fiscal-export.md`). Toute nature non listée retombe
@@ -106,15 +114,15 @@ Map<String, dynamic> buildFiscalExport({
   required DateTime exportedAt,
 }) {
   // Toutes les transactions des comptes du périmètre, triées de façon
-  // déterministe (date ASC puis id ASC — cf. spec du format).
+  // déterministe : date ASC, puis séquence de fichier (`meta['seq']`, départage
+  // intraday réel) pour les mouvements importés, sinon repli id — comparateur
+  // CANONIQUE partagé avec le moteur de projection ([AssetTransaction.
+  // compareChronological]), pour que la reconstitution des lots en aval voie le
+  // MÊME ordre intraday que le PRU/PV de l'app.
   final transactions = <AssetTransaction>[
     for (final account in accounts)
       ...?transactionsByAccount[account.id],
-  ]..sort((a, b) {
-      final byDate = a.date.compareTo(b.date);
-      if (byDate != 0) return byDate;
-      return a.id.compareTo(b.id);
-    });
+  ]..sort(AssetTransaction.compareChronological);
 
   // Symboles distincts (non-null) présents dans le périmètre, triés pour un
   // ordre de sortie déterministe (indépendant de l'ordre des transactions).

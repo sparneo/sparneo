@@ -89,6 +89,26 @@ class Asset {
   /// Prime appliquée au-dessus de la valeur métal, en pourcentage (ex. 8.0).
   final double? premiumPercent;
 
+  /// Code ISIN (International Securities Identification Number) de l'actif,
+  /// s'il est connu. MÉTADONNÉE OPTIONNELLE, jamais clé ni contrainte
+  /// d'unicité — le [symbol] reste l'identifiant réel de la position ; l'ISIN
+  /// ne sert qu'au rapprochement avec les relevés externes qui identifient
+  /// par ISIN plutôt que par symbole. `null` pour les actifs sans ISIN connu
+  /// (métaux, cash, actifs saisis avant l'introduction du champ).
+  final String? isin;
+
+  /// `true` (défaut) = l'actif est coté et doit être interrogé auprès de la
+  /// source de marché pour obtenir un cours. `false` = actif NON COTÉ : il ne
+  /// doit JAMAIS être interrogé sur la source de marché (aucun appel réseau,
+  /// aucune erreur de rafraîchissement récurrente). C'est le cas des titres
+  /// délistés / purgés de la source (souvent soldés) créés en repli avec
+  /// `symbol == isin` : ils existent, sont journalisés et comptent dans la
+  /// plus-value réalisée, mais sont valorisés « sans cotation » (dernier prix
+  /// connu s'il existe, sinon 0 — cf. `valuation.dart`). MÉTADONNÉE tolérante,
+  /// exactement comme [isin] : clé absente → `true`, omise de l'export quand
+  /// elle vaut le défaut (round-trip bit-identique pour l'existant).
+  final bool quotable;
+
   Asset({
     required this.symbol,
     this.name,
@@ -101,6 +121,8 @@ class Asset {
     this.refQuoteUnit = MetalQuoteUnit.ounce,
     this.fineWeightGrams,
     this.premiumPercent,
+    this.isin,
+    this.quotable = true,
   });
 
   String get displayName => name ?? symbol;
@@ -164,6 +186,15 @@ class Asset {
           : MetalQuoteUnit.ounce,
       fineWeightGrams: (json['fineWeightGrams'] as num?)?.toDouble(),
       premiumPercent: (json['premiumPercent'] as num?)?.toDouble(),
+      // TOLÉRANT à l'absence (positions/backups antérieurs au champ) : clé
+      // manquante → null, sans exception. Aucune migration de schéma requise,
+      // `asset_json` étant une colonne TEXT opaque qui ignore déjà les clés
+      // inconnues côté lecture.
+      isin: json['isin'] as String?,
+      // TOLÉRANT à l'absence, même politique que `isin` : clé manquante →
+      // `true` (défaut coté), aucune migration. Seul un `false` explicite
+      // (écrit par le repli ISIN) rend l'actif non coté.
+      quotable: json['quotable'] as bool? ?? true,
     );
   }
 
@@ -183,6 +214,12 @@ class Asset {
       if (isPreciousMetal) 'refQuoteUnit': refQuoteUnit.name,
       if (fineWeightGrams != null) 'fineWeightGrams': fineWeightGrams,
       if (premiumPercent != null) 'premiumPercent': premiumPercent,
+      // Omis si absent (défaut) : les positions/backups sans ISIN restent
+      // bit-identiques au round-trip (même politique que refSymbol ci-dessus).
+      if (isin != null) 'isin': isin,
+      // Omis quand `true` (défaut) : les positions/backups d'actifs cotés
+      // restent bit-identiques au round-trip (même politique que `isin`).
+      if (!quotable) 'quotable': false,
     };
   }
 
@@ -198,6 +235,8 @@ class Asset {
     MetalQuoteUnit? refQuoteUnit,
     double? fineWeightGrams,
     double? premiumPercent,
+    String? isin,
+    bool? quotable,
   }) {
     return Asset(
       symbol: symbol ?? this.symbol,
@@ -211,6 +250,8 @@ class Asset {
       refQuoteUnit: refQuoteUnit ?? this.refQuoteUnit,
       fineWeightGrams: fineWeightGrams ?? this.fineWeightGrams,
       premiumPercent: premiumPercent ?? this.premiumPercent,
+      isin: isin ?? this.isin,
+      quotable: quotable ?? this.quotable,
     );
   }
 }

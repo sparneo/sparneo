@@ -55,7 +55,25 @@ enum TransactionKind {
   ///
   /// Wire = `'charge'` (et NON `'fee'`) : évite toute collision/confusion avec
   /// le CHAMP `fee` des lignes buy/sell. Saisie MANUELLE.
-  charge('charge');
+  charge('charge'),
+
+  /// SORTIE DE TITRES SANS CESSION : transfert de titres hors du compte
+  /// (ex. PEA→CTO, virement de titres sortant), PAS une vente de marché. Réduit
+  /// la quantité de la position en emportant sa base de coût AU PRORATA (le PRU
+  /// des titres restants est INCHANGÉ, comme la jambe coût d'une vente), MAIS
+  /// SANS booker aucune plus-value réalisée (un transfert n'est pas une cession)
+  /// et SANS aucun effet cash ([amount] `null`, invariant du modèle : partition
+  /// stricte des champs — cf. doc de classe). C'est la primitive « sortie de
+  /// titres à PRU, sans PV ni cash » qui manquait : `sell` réaliserait une PV et
+  /// crédite du cash ; `adjustment` applique un delta de coût FIXE (q×unitPrice),
+  /// incapable de réduire la base de coût AU PRORATA du WAC courant sans
+  /// connaître le PRU au moment de l'import — d'où un kind dédié.
+  ///
+  /// Généré à l'import de relevé (jamais saisi à la main) → [isSystemGenerated].
+  /// L'entrée symétrique (titres ENTRANTS à coût nul, ex. attribution gratuite)
+  /// reste couverte par un `adjustment` TITRE à `unitPrice` nul (coût 0, PRU en
+  /// baisse) — aucun `transferIn` n'est requis par les codes traités.
+  transferOut('transferOut');
 
   /// Valeur stable sérialisée en base (ne JAMAIS utiliser .name pour persister).
   final String wire;
@@ -65,7 +83,20 @@ enum TransactionKind {
   /// opération de marché) : à ne PAS proposer dans les sélecteurs de saisie /
   /// filtres. Affiché en lecture seule dans le journal.
   bool get isSystemGenerated =>
-      this == openingBalance || this == adjustment;
+      this == openingBalance || this == adjustment || this == transferOut;
+
+  /// Nature CASH PURE : mouvement d'espèces qui n'affecte JAMAIS une position
+  /// titre, même si la ligne source référence un instrument (ex. la TTF
+  /// `ODTTF` porte l'ISIN du titre taxé mais reste un frais ; un dépôt peut
+  /// être libellé « REM CHQ »/« VIRT RECU »). Sert à ne PAS prendre ces lignes
+  /// pour des actifs à résoudre. N'inclut PAS `adjustment`/`openingBalance`
+  /// (ambigus : cash SI `symbol` null, titre sinon) — trancher au cas par cas
+  /// via la présence d'un symbole/ISIN.
+  bool get isCashOnly =>
+      this == deposit ||
+      this == withdrawal ||
+      this == interest ||
+      this == charge;
 
   /// Désérialisation STRICTE non-levante : renvoie `null` si [w] n'est pas un
   /// wire connu. À utiliser pour toute donnée EXTERNE (import de backup) afin
@@ -294,6 +325,98 @@ class AssetTransaction {
 
   @override
   int get hashCode => id.hashCode;
+
+  // ---------------------------------------------------------------------------
+  // Séquence d'import (départage intraday) + comparateur chronologique canonique
+  // ---------------------------------------------------------------------------
+
+  /// Séquence MONOTONE d'un mouvement ISSU D'UN IMPORT de relevé, lue depuis
+  /// `meta['seq']` (tolérante : absente ou illisible → `null`). Elle reflète
+  /// l'ORDRE DU FICHIER source (donc l'ordre intraday réel, le relevé étant
+  /// chronologique ascendant strict) et sert de DÉPARTAGE des mouvements de MÊME
+  /// DATE — indispensable car [id] est généré aléatoirement à l'import
+  /// (timestamp+random) : trier sur [id] rendait l'ordre intraday arbitraire, ce
+  /// qui, via le clamp anti-survente, faisait disparaître des titres sur les
+  /// allers-retours d'un même jour (une vente ordonnée avant son achat). Les
+  /// mouvements saisis À LA MAIN n'en portent pas (`null`) → repli sur [id]
+  /// (comportement historique inchangé).
+  int? get importSeq {
+    final v = meta?['seq'];
+    return v is num ? v.toInt() : null;
+  }
+
+  /// Rang ENTRÉE/SORTIE d'un mouvement selon son effet sur la QUANTITÉ titre :
+  /// `0` = entrée ou neutre (n'ajoute jamais de sortie de titres), `1` = sortie.
+  /// Sert à ordonner, au sein d'une MÊME DATE, toutes les ENTRÉES avant les
+  /// SORTIES — car un compte comptant / PEA n'autorise PAS la vente à découvert :
+  /// toute survente transitoire (une vente listée avant son achat le même jour,
+  /// cas réel de l'ordre des relevés Bourse Direct) est un artefact d'ordre qui,
+  /// via le clamp anti-survente, DÉTRUIRAIT des titres. Entrées-d'abord élimine
+  /// tout clamp parasite quel que soit l'ordre du fichier.
+  ///
+  ///   - Rang 1 (sorties) : `sell`, `transferOut`, et `adjustment` à quantité
+  ///     STRICTEMENT NÉGATIVE (delta signé sortant ; les rompus sont un `sell`).
+  ///   - Rang 0 (entrées/neutres) : `buy`, `openingBalance`, `adjustment` à
+  ///     quantité ≥ 0 (dont l'attribution gratuite) ou espèces (quantité null),
+  ///     et tous les mouvements CASH PUR (`dividend`/`deposit`/`withdrawal`/
+  ///     `interest`/`charge`, régularisations) qui ne touchent pas la quantité.
+  static int _quantityRank(AssetTransaction t) {
+    switch (t.kind) {
+      case TransactionKind.sell:
+      case TransactionKind.transferOut:
+        return 1;
+      case TransactionKind.adjustment:
+        // Rang selon le SIGNE de la quantité (delta signé). Variante espèces
+        // (quantity null) ou delta ≥ 0 → entrée/neutre. `double` suffit : on ne
+        // teste QUE le signe, aucune précision requise.
+        final q = t.quantity;
+        if (q != null) {
+          final d = double.tryParse(q.replaceAll(',', '.').trim());
+          if (d != null && d < 0) return 1;
+        }
+        return 0;
+      case TransactionKind.buy:
+      case TransactionKind.openingBalance:
+      case TransactionKind.dividend:
+      case TransactionKind.deposit:
+      case TransactionKind.withdrawal:
+      case TransactionKind.interest:
+      case TransactionKind.charge:
+        return 0;
+    }
+  }
+
+  /// Comparateur chronologique CANONIQUE du rejeu du journal (source unique,
+  /// partagée par le moteur de projection et l'export fiscal) :
+  ///   `date` croissante
+  ///   → RANG entrée/sortie ([_quantityRank]) : au sein d'une même date, les
+  ///     ENTRÉES de titres passent AVANT les SORTIES (pas de survente possible
+  ///     en comptant/PEA — élimine le clamp parasite quel que soit l'ordre,
+  ///     parfois défaillant, du fichier source) ;
+  ///   → [importSeq] SI LES DEUX mouvements en portent une (départage FIN et
+  ///     stable entre mouvements de MÊME rang/date, préserve l'ordre du fichier
+  ///     là où il est exploitable) ;
+  ///   → repli [id] croissant (saisies manuelles sans `seq`, ou edge « manuel +
+  ///     importé même rang/date »).
+  ///
+  /// La quantité nette devient exacte (plus de clamp). Pour le cas courant d'un
+  /// aller-retour intraday partant à plat, la PV réalisée reste EXACTE (entrées
+  /// d'abord). Seule distorsion résiduelle assumée : « détention préalable +
+  /// sortie totale + re-entrée le MÊME jour » (base WAC mêlée) — acceptable vu la
+  /// granularité JOURNALIÈRE des dates.
+  static int compareChronological(AssetTransaction a, AssetTransaction b) {
+    final byDate = a.date.compareTo(b.date);
+    if (byDate != 0) return byDate;
+    final byRank = _quantityRank(a).compareTo(_quantityRank(b));
+    if (byRank != 0) return byRank;
+    final sa = a.importSeq;
+    final sb = b.importSeq;
+    if (sa != null && sb != null) {
+      final bySeq = sa.compareTo(sb);
+      if (bySeq != 0) return bySeq;
+    }
+    return a.id.compareTo(b.id);
+  }
 
   // ---------------------------------------------------------------------------
   // Fabrique d'identifiant
