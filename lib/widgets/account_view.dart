@@ -1,5 +1,6 @@
 // lib/widgets/account_view.dart
 import 'package:decimal/decimal.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
@@ -49,6 +50,19 @@ bool isHeldPosition({
     if (marketValue.abs() <= 1e-6) return false;
   }
   return true;
+}
+
+/// Projette [values] (mode 2 « apports nets », B7 Lot 3b) sur l'axe X du
+/// graphique, EXACTEMENT comme [ValuationLineChart] indexe sa série
+/// principale (`FlSpot(index, valeur)`, même référentiel que `chartDates` —
+/// [values] est déjà alignée index-par-index dessus par le contrôleur).
+/// Retourne `const []` si [values] est vide OU ne contient QUE des zéros
+/// (aucun dépôt/retrait journalisé) : évite une ligne plate à 0 inutile.
+List<FlSpot> _buildContributionsSpots(List<double> values) {
+  if (values.isEmpty || values.every((v) => v == 0)) return const [];
+  return [
+    for (int i = 0; i < values.length; i++) FlSpot(i.toDouble(), values[i]),
+  ];
 }
 
 class AccountView extends StatefulWidget {
@@ -1388,6 +1402,10 @@ class _AccountViewState extends State<AccountView> {
       showSnapshotLegend: false,
       // account_view n'a pas de série snapshot
       snapshotSpots: const [],
+      // Ligne « Apports » en mode réel (B7 Lot 3b).
+      contributionsSpots: useRealCurve
+          ? _buildContributionsSpots(_ctrl.realContributionsValues)
+          : const [],
     );
   }
 

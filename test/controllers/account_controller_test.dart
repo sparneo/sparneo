@@ -785,6 +785,15 @@ void main() {
       // Point final = titres (10 × 105 = 1050) + cash dérivé (2000 − 900 = 1100)
       // = 2150. Sans l'inclusion du cash, on aurait 1050.
       expect(ctrl.realChartValues.last, closeTo(10 * 105.0 + 1100.0, 1e-9));
+
+      // Courbe des apports (B7 Lot 3b) : ALIGNÉE sur chartDates, et le seul
+      // apport (dépôt de 2000) reste 2000 jusqu'au bout — l'achat de 900 est
+      // un transfert interne cash↔titre, PAS une sortie d'apport.
+      expect(
+        ctrl.realContributionsValues.length,
+        equals(ctrl.chartDates.length),
+      );
+      expect(ctrl.realContributionsValues.last, closeTo(2000.0, 1e-9));
     });
 
     test(

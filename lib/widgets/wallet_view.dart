@@ -1,4 +1,5 @@
 // lib/widgets/wallet_view.dart
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/controllers/wallet_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
@@ -22,6 +23,19 @@ import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/wallet/account_list_tile.dart';
+
+/// Projette [values] (mode 2 « apports nets », B7 Lot 3b) sur l'axe X du
+/// graphique, EXACTEMENT comme [ValuationLineChart] indexe sa série
+/// principale (`FlSpot(index, valeur)`, même référentiel que [dates] —
+/// [values] est déjà alignée index-par-index dessus par le contrôleur).
+/// Retourne `const []` si [values] est vide OU ne contient QUE des zéros
+/// (aucun dépôt/retrait journalisé) : évite une ligne plate à 0 inutile.
+List<FlSpot> _buildContributionsSpots(List<double> values) {
+  if (values.isEmpty || values.every((v) => v == 0)) return const [];
+  return [
+    for (int i = 0; i < values.length; i++) FlSpot(i.toDouble(), values[i]),
+  ];
+}
 
 class WalletView extends StatefulWidget {
   const WalletView({super.key});
@@ -635,8 +649,18 @@ class _WalletViewState extends State<WalletView> {
                                         values: useRealCurve
                                             ? _controller.realChartValues
                                             : _controller.chartValues,
-                                        snapshotSpots:
-                                            _controller.snapshotSpots,
+                                        // En mode réel, la ligne « Apports »
+                                        // REMPLACE les snapshots (B7 Lot 3b) —
+                                        // jamais les deux séries à la fois.
+                                        snapshotSpots: useRealCurve
+                                            ? const []
+                                            : _controller.snapshotSpots,
+                                        contributionsSpots: useRealCurve
+                                            ? _buildContributionsSpots(
+                                                _controller
+                                                    .realContributionsValues,
+                                              )
+                                            : const [],
                                         periodChange: periodChange,
                                         selectedPeriod:
                                             _controller.selectedPeriod,

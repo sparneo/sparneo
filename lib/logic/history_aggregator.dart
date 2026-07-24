@@ -374,6 +374,68 @@ class HistoryAggregator {
   }
 
   // ---------------------------------------------------------------------------
+  // Courbe des apports nets (mode 2, B7 Lot 3b — design doc 18 §7.2/§11.4) :
+  // superposée à la courbe de valeur, l'écart vertical visualise le gain.
+  // ---------------------------------------------------------------------------
+
+  /// Courbe des APPORTS NETS CUMULÉS (versements − retraits d'espèces)
+  /// dérivée du journal, en EUR, échantillonnée sur [gridDates] (alignée
+  /// index-par-index avec elle, même contrat que [reconstructRealNetWorth]).
+  ///
+  /// Seuls les mouvements `deposit`/`withdrawal` de tous les comptes de
+  /// [txsByAccount] comptent — décision produit actée (design §7.2/§11.4) :
+  /// apports = cash PUR, pas la base flux complète de la décomposition
+  /// flux/perf (qui inclurait aussi `openingBalance`/`transferOut`/
+  /// `adjustment`). `amount` est déjà SIGNÉ (dépôt > 0, retrait < 0) : on
+  /// somme, exactement le cumul voulu.
+  ///
+  /// Réutilise les briques du cœur pur DÉJÀ testées, sans réécrire de fold :
+  /// [buildCashTimeline] sur le sous-ensemble filtré (coalescé par date de
+  /// règlement, même sémantique que le cash projeté de
+  /// [reconstructRealNetWorth]), puis [cashAt] par date de la grille.
+  ///
+  /// Change : même compromis v1 que le reste du mode 2 (§6) — USD converti via
+  /// [usdToEurRate] au taux COURANT, toute autre devise non-EUR inchangée
+  /// (1:1). `0.0` avant le premier flux (aucune poche connue, [cashAt] renvoie
+  /// une map vide).
+  ///
+  /// Le cash PUR (comptes `AccountType.cash`, sans journal) est HORS
+  /// périmètre ici — à composer en aval par l'appelant via
+  /// [addConstantPureCash], exactement comme pour la courbe de valeur (même
+  /// constante, pour qu'elle s'annule dans l'écart valeur−apports).
+  static List<double> buildContributionsCurve({
+    required Map<String, List<AssetTransaction>> txsByAccount,
+    required List<DateTime> gridDates,
+    required double usdToEurRate,
+  }) {
+    if (gridDates.isEmpty) return <double>[];
+
+    final flows = <AssetTransaction>[
+      for (final txs in txsByAccount.values)
+        for (final tx in txs)
+          if (tx.kind == TransactionKind.deposit ||
+              tx.kind == TransactionKind.withdrawal)
+            tx,
+    ];
+
+    final timeline = buildCashTimeline(flows);
+
+    final values = <double>[];
+    for (final d in gridDates) {
+      final byCurrency = cashAt(timeline, d);
+      double totalEur = 0;
+      for (final entry in byCurrency.entries) {
+        final amount = entry.value.toDouble();
+        totalEur +=
+            entry.key.toUpperCase() == 'USD' ? amount * usdToEurRate : amount;
+      }
+      values.add(totalEur);
+    }
+
+    return values;
+  }
+
+  // ---------------------------------------------------------------------------
   // Variations par compte (wallet_view : _computeAccountsPeriodChanges)
   // ---------------------------------------------------------------------------
 

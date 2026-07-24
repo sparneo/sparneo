@@ -161,6 +161,11 @@ class WalletController extends ChangeNotifier {
   // « dernier cours connu » (pas un vrai historique de marché) — pour un
   // futur badge UI (Lot 3, design §4/§11.5 m1).
   Set<String> _realCurveApproxSymbols = {};
+  // Courbe des apports nets cumulés (B7 Lot 3b, design doc 18 §7.2/§11.4) :
+  // ALIGNÉE index-par-index sur [_chartDates]/[_realChartValues], superposée
+  // en mode réel pour visualiser l'écart valeur−apports (le gain). Cash pur
+  // ajouté en constante, comme [_realChartValues] — s'annule dans l'écart.
+  List<double> _realContributionsValues = [];
 
   // Variations par compte
   Map<String, double> _accountPeriodChanges = {};
@@ -219,6 +224,11 @@ class WalletController extends ChangeNotifier {
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
+
+  /// Courbe des apports nets cumulés (B7 Lot 3b), ALIGNÉE index-par-index sur
+  /// [chartDates]/[realChartValues]. Vide tant qu'aucun calcul mode 2 n'a
+  /// abouti.
+  List<double> get realContributionsValues => _realContributionsValues;
 
   Map<String, double> get accountPeriodChanges => _accountPeriodChanges;
   Map<String, double> get accountPeriodChangePercents =>
@@ -879,6 +889,11 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur un patrimoine vide (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
+      // Aucun journal à agréger ici (patrimoine vide) : vidée pour rester
+      // cohérente avec _realChartValues (évite un tableau apports périmé
+      // d'une longueur différente si le patrimoine devient vide après avoir
+      // eu une courbe réelle).
+      _realContributionsValues = [];
       _isLoadingHistory = false;
       _safeNotify();
       // Pas de positions : variations par compte nulles (gérées par le calcul).
@@ -906,6 +921,9 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur du cash plat (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
+      // Aucun compte non-cash ici (que du cash) : pas de journal à agréger,
+      // même motif que ci-dessus.
+      _realContributionsValues = [];
       _isLoadingHistory = false;
       _safeNotify();
       _computeAccountsPeriodChanges(accountPositions, {});
@@ -954,6 +972,7 @@ class WalletController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realContributionsValues = [];
       }
 
       // Superposer la série réelle des snapshots (best-effort, non bloquant)
@@ -1030,6 +1049,7 @@ class WalletController extends ChangeNotifier {
     if (_chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realContributionsValues = [];
       return;
     }
 
@@ -1053,6 +1073,7 @@ class WalletController extends ChangeNotifier {
     if (txsBySymbol.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realContributionsValues = [];
       return;
     }
 
@@ -1134,6 +1155,18 @@ class WalletController extends ChangeNotifier {
       pureCashEur,
     );
     _realCurveApproxSymbols = approxSymbols;
+
+    // Courbe des apports nets (B7 Lot 3b) : même cash pur en constante que
+    // ci-dessus — il s'annule dans l'écart valeur−apports (composition
+    // cohérente avec [_realChartValues]).
+    _realContributionsValues = HistoryAggregator.addConstantPureCash(
+      HistoryAggregator.buildContributionsCurve(
+        txsByAccount: txsByAccount,
+        gridDates: _chartDates,
+        usdToEurRate: _usdToEurRate,
+      ),
+      pureCashEur,
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -18,6 +18,8 @@
   "chartModeRealEvolution": "Évolution réelle",
   "chartModeRealCaption": "Reconstruit depuis vos mouvements journalisés. Les positions saisies sans historique n'y figurent pas.",
   "chartApproxValuesWarning": "Valeurs approchées pour {count} titre(s) sans historique.",
+  "chartSeriesValueLegend": "Valeur",
+  "chartSeriesContributionsLegend": "Apports",
   "noHistoricalData": "Aucune donnée historique",
   "noHistoricalDataAvailable": "Aucune donnée historique disponible",
   "noHistoricalDataForPositions": "Aucune donnée historique disponible pour {count} position(s)",

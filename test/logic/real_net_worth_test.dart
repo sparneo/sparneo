@@ -561,4 +561,127 @@ void main() {
       expect(result, [10.0, 20.0, 30.0]);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Lot 3b (design doc 18 §7.2/§11.4) : courbe des APPORTS NETS CUMULÉS
+  // (versements − retraits d'espèces), superposée à la courbe de valeur en
+  // mode réel — décision produit : cash PUR, pas la base flux complète.
+  // ---------------------------------------------------------------------------
+
+  group('HistoryAggregator.buildContributionsCurve', () {
+    test('dépôt J1 puis retrait J5 : 0 avant J1, cumul en escalier ensuite', () {
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final withdrawal = AssetTransaction(
+        id: 'w1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.withdrawal,
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+
+      final gridDates = [
+        DateTime(2023, 12, 31), // avant tout mouvement
+        DateTime(2024, 1, 1), // jour du dépôt
+        DateTime(2024, 1, 3), // entre les deux mouvements
+        DateTime(2024, 1, 5), // jour du retrait
+        DateTime(2024, 1, 10), // après
+      ];
+
+      final values = HistoryAggregator.buildContributionsCurve(
+        txsByAccount: {
+          'acc1': [deposit, withdrawal],
+        },
+        gridDates: gridDates,
+        usdToEurRate: 1.0,
+      );
+
+      expect(values, [0.0, 2000.0, 2000.0, 1500.0, 1500.0]);
+    });
+
+    test('conversion USD : poche cash USD convertie au taux courant', () {
+      final depositUsd = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '1000',
+        currency: 'USD',
+        date: DateTime(2024, 1, 1),
+      );
+
+      final values = HistoryAggregator.buildContributionsCurve(
+        txsByAccount: {
+          'acc1': [depositUsd],
+        },
+        gridDates: [DateTime(2024, 1, 1)],
+        usdToEurRate: 0.9,
+      );
+
+      expect(values.single, closeTo(900.0, 1e-9));
+    });
+
+    test('buy/dividend ne contribuent JAMAIS aux apports (seuls deposit/withdrawal comptent)', () {
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '5',
+        unitPrice: '100',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final dividend = AssetTransaction(
+        id: 'div1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.dividend,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 3),
+      );
+
+      final values = HistoryAggregator.buildContributionsCurve(
+        txsByAccount: {
+          'acc1': [deposit, buy, dividend],
+        },
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 3)],
+        usdToEurRate: 1.0,
+      );
+
+      // Le buy (-500) et le dividende (+50) ne bougent JAMAIS l'apport : reste
+      // à 1000 (le seul deposit) sur toute la fenêtre, malgré les mouvements
+      // cash ultérieurs de buy/dividend.
+      expect(values, [1000.0, 1000.0]);
+    });
+
+    test('gridDates vide → liste vide', () {
+      final values = HistoryAggregator.buildContributionsCurve(
+        txsByAccount: const {},
+        gridDates: const [],
+        usdToEurRate: 1.0,
+      );
+      expect(values, isEmpty);
+    });
+  });
 }

@@ -146,6 +146,12 @@ class AccountController extends ChangeNotifier {
   // « dernier cours connu » (pas un vrai historique de marché) — badge UI.
   Set<String> _realCurveApproxSymbols = {};
 
+  // Courbe des apports nets cumulés (B7 Lot 3b, design doc 18 §7.2/§11.4) :
+  // ALIGNÉE index-par-index sur [_chartDates]/[_realChartValues]. PÉRIMÈTRE
+  // du compte SEUL, pas de cash pur (un compte titres n'a pas de pendant
+  // cash pur — contrairement au wallet, cf. wallet_controller).
+  List<double> _realContributionsValues = [];
+
   double _usdToEurRate; // initialisé par le constructeur (0.92 par défaut)
 
   Map<String, double> _assetValues = {};
@@ -212,6 +218,11 @@ class AccountController extends ChangeNotifier {
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
+
+  /// Courbe des apports nets cumulés du compte (B7 Lot 3b), ALIGNÉE
+  /// index-par-index sur [chartDates]/[realChartValues]. Vide tant qu'aucun
+  /// calcul mode 2 n'a abouti.
+  List<double> get realContributionsValues => _realContributionsValues;
 
   double get usdToEurRate => _usdToEurRate;
   Map<String, double> get assetValues => _assetValues;
@@ -558,6 +569,7 @@ class AccountController extends ChangeNotifier {
       _periodChangePercent = null;
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realContributionsValues = [];
       _safeNotify();
       return;
     }
@@ -621,6 +633,7 @@ class AccountController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realContributionsValues = [];
       }
 
       _isLoadingHistory = false;
@@ -657,6 +670,7 @@ class AccountController extends ChangeNotifier {
     if (_activeAccount == null || _chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realContributionsValues = [];
       return;
     }
 
@@ -680,6 +694,7 @@ class AccountController extends ChangeNotifier {
     if (txsBySymbol.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realContributionsValues = [];
       return;
     }
 
@@ -758,6 +773,15 @@ class AccountController extends ChangeNotifier {
 
     _realChartValues = reconstructed.values;
     _realCurveApproxSymbols = approxSymbols;
+
+    // Courbe des apports nets du compte (B7 Lot 3b) : pas de cash pur à
+    // composer ici (périmètre compte seul, cf. commentaire de
+    // [_realContributionsValues]).
+    _realContributionsValues = HistoryAggregator.buildContributionsCurve(
+      txsByAccount: {_activeAccount!.id: txs},
+      gridDates: _chartDates,
+      usdToEurRate: _usdToEurRate,
+    );
   }
 
   /// Appelé par la vue lorsque l'utilisateur sélectionne une nouvelle période.

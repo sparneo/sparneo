@@ -119,6 +119,16 @@
     }
   },
 
+  "chartSeriesValueLegend": "Value",
+  "@chartSeriesValueLegend": {
+    "description": "Legend label for the main value series, shown alongside the contributions series to disambiguate the two lines in real-evolution mode"
+  },
+
+  "chartSeriesContributionsLegend": "Contributions",
+  "@chartSeriesContributionsLegend": {
+    "description": "Legend label for the net contributions (deposits minus withdrawals) series overlaid on the real-evolution chart"
+  },
+
   "noHistoricalData": "No historical data",
   "@noHistoricalData": {
     "description": "Shown when there is no historical chart data"

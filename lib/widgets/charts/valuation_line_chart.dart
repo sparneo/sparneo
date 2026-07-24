@@ -15,6 +15,13 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 /// - [dates] / [values]       : séries de données de l'axe temporel.
 /// - [snapshotSpots]          : série secondaire de snapshots réels (pointillés
 ///                              violets) ; liste vide = série absente.
+/// - [contributionsSpots]     : série « Apports » (mode réel, B7 Lot 3b) —
+///                              ligne SOLIDE des versements−retraits cumulés,
+///                              sous la courbe de valeur (l'écart visualise le
+///                              gain) ; liste vide = série absente. REMPLACE
+///                              [snapshotSpots] en mode réel (jamais les deux
+///                              en même temps côté appelant), mais le widget
+///                              reste correct si les deux sont fournies.
 /// - [periodChange]           : variation de période (nul = couleur verte par
 ///                              défaut, valeur < 0 = rouge).
 /// - [selectedPeriod]         : période active (format axe / tooltip).
@@ -33,6 +40,7 @@ class ValuationLineChart extends StatelessWidget {
   final List<DateTime> dates;
   final List<double> values;
   final List<FlSpot> snapshotSpots;
+  final List<FlSpot> contributionsSpots;
   final double? periodChange;
   final ChartPeriod selectedPeriod;
 
@@ -58,6 +66,7 @@ class ValuationLineChart extends StatelessWidget {
     required this.values,
     required this.selectedPeriod,
     this.snapshotSpots = const [],
+    this.contributionsSpots = const [],
     this.periodChange,
     // Défauts wallet_view
     this.height = 200,
@@ -296,13 +305,26 @@ class ValuationLineChart extends StatelessWidget {
     // charte mauve, désormais dérivé de la seed pour s'adapter au thème sombre).
     final snapshotColor = Theme.of(context).colorScheme.tertiary;
 
-    // Bornes Y : étendues aux snapshots pour éviter que la série pointillée
-    // soit rognée hors de la zone de tracé (correctif vague 2).
+    // Couleur série apports (mode réel, B7 Lot 3b) : même accent tertiaire —
+    // sans conflit visuel avec [snapshotColor], les deux séries ne sont
+    // jamais affichées simultanément côté appelant (la ligne apports
+    // REMPLACE les snapshots en mode réel).
+    final contributionsColor = Theme.of(context).colorScheme.tertiary;
+
+    // Bornes Y : étendues aux snapshots/apports pour éviter qu'une série
+    // secondaire soit rognée hors de la zone de tracé (correctif vague 2).
     double minY = values.reduce((a, b) => a < b ? a : b);
     double maxY = values.reduce((a, b) => a > b ? a : b);
 
     if (snapshotSpots.isNotEmpty) {
       for (final s in snapshotSpots) {
+        if (s.y < minY) minY = s.y;
+        if (s.y > maxY) maxY = s.y;
+      }
+    }
+
+    if (contributionsSpots.isNotEmpty) {
+      for (final s in contributionsSpots) {
         if (s.y < minY) minY = s.y;
         if (s.y > maxY) maxY = s.y;
       }
@@ -354,14 +376,37 @@ class ValuationLineChart extends StatelessWidget {
 
     final List<LineChartBarData> allSeries = [mainSeries];
 
+    // Indices de barre des séries secondaires (pour le tooltip ci-dessous) —
+    // dépendent de l'ORDRE d'ajout, jamais supposés fixes : les deux séries
+    // ne co-existent normalement pas (snapshots XOR apports côté appelant),
+    // mais le calcul reste correct si elles le faisaient.
+    int? snapshotBarIndex;
+    int? contributionsBarIndex;
+
     // Série secondaire : snapshots réels (pointillés, visible si ≥ 2 points)
     if (snapshotSpots.isNotEmpty) {
+      snapshotBarIndex = allSeries.length;
       allSeries.add(LineChartBarData(
         spots: snapshotSpots,
         isCurved: false,
         color: snapshotColor,
         barWidth: 2,
         dashArray: [6, 4], // 6 px tracé, 4 px espace
+        dotData: const FlDotData(show: false),
+        belowBarData: BarAreaData(show: false),
+      ));
+    }
+
+    // Série secondaire : apports nets cumulés (mode réel, B7 Lot 3b) — ligne
+    // SOLIDE sous la courbe de valeur, sans remplissage (l'écart vertical
+    // visualise le gain).
+    if (contributionsSpots.isNotEmpty) {
+      contributionsBarIndex = allSeries.length;
+      allSeries.add(LineChartBarData(
+        spots: contributionsSpots,
+        isCurved: true,
+        color: contributionsColor,
+        barWidth: 2,
         dotData: const FlDotData(show: false),
         belowBarData: BarAreaData(show: false),
       ));
@@ -429,12 +474,20 @@ class ValuationLineChart extends StatelessWidget {
           touchTooltipData: LineTouchTooltipData(
             getTooltipItems: (touchedSpots) {
               return touchedSpots.map((touchedSpot) {
-                final isSnapshotSeries = touchedSpot.barIndex == 1;
+                final isSnapshotSeries =
+                    snapshotBarIndex != null &&
+                        touchedSpot.barIndex == snapshotBarIndex;
+                final isContributionsSeries =
+                    contributionsBarIndex != null &&
+                        touchedSpot.barIndex == contributionsBarIndex;
                 final spotIndex = touchedSpot.spotIndex;
 
                 // Pour la série principale, l'index X == indice dans dates.
                 // Pour la série snapshots, FlSpot.x est aussi un indice dans
-                // dates (même référentiel).
+                // dates (même référentiel) — mais SPARSE (moins de points que
+                // dates), d'où la lecture explicite de x plutôt que de
+                // spotIndex. La série apports a, elle, un point par date
+                // (comme la série principale) : spotIndex suffit.
                 final xIndex = isSnapshotSeries
                     ? touchedSpot.x.toInt().clamp(0, dates.length - 1)
                     : spotIndex;
@@ -449,11 +502,19 @@ class ValuationLineChart extends StatelessWidget {
                     ? '$dateLabel\n${Formatters.formatEur(totalValue)} ●'
                     : '$dateLabel\n${Formatters.formatEur(totalValue)}';
 
+                final Color labelColor;
+                if (isSnapshotSeries) {
+                  labelColor = snapshotColor;
+                } else if (isContributionsSeries) {
+                  labelColor = contributionsColor;
+                } else {
+                  labelColor = Colors.white;
+                }
+
                 return LineTooltipItem(
                   label,
                   TextStyle(
-                    color:
-                        isSnapshotSeries ? snapshotColor : Colors.white,
+                    color: labelColor,
                     fontSize: 11,
                   ),
                   textAlign: TextAlign.center,
@@ -472,11 +533,45 @@ class ValuationLineChart extends StatelessWidget {
         ? SizedBox(height: height, child: chartWidget)
         : chartWidget;
 
-    // Légende discrète sous le graphique, uniquement quand la série est visible
-    // et que showSnapshotLegend est activé.
-    if (snapshotSpots.isEmpty || !showSnapshotLegend) {
+    // Légende discrète sous le graphique : snapshots (si visibles et
+    // showSnapshotLegend activé) et/ou apports (si la série est présente —
+    // toujours affichée, indépendamment de showSnapshotLegend, qui ne
+    // gouverne que l'ancienne légende snapshots).
+    final bool showSnapshotLegendNow =
+        snapshotSpots.isNotEmpty && showSnapshotLegend;
+    final bool showContributionsLegend = contributionsSpots.isNotEmpty;
+
+    if (!showSnapshotLegendNow && !showContributionsLegend) {
       return sized;
     }
+
+    final legendTextColor = Theme.of(context).colorScheme.onSurfaceVariant;
+    final legendChildren = <Widget>[
+      // Quand la ligne apports est présente, une pastille « Valeur » lève
+      // l'ambiguïté sur la série principale (l'écart entre les deux
+      // visualise le gain).
+      if (showContributionsLegend) ...[
+        Indicator(
+          color: mainColor,
+          text: l10n.chartSeriesValueLegend,
+          size: 10,
+          textColor: legendTextColor,
+        ),
+        Indicator(
+          color: contributionsColor,
+          text: l10n.chartSeriesContributionsLegend,
+          size: 10,
+          textColor: legendTextColor,
+        ),
+      ],
+      if (showSnapshotLegendNow)
+        Indicator(
+          color: snapshotColor,
+          text: l10n.realValueSeriesLabel,
+          size: 10,
+          textColor: legendTextColor,
+        ),
+    ];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -489,11 +584,10 @@ class ValuationLineChart extends StatelessWidget {
         const SizedBox(height: 6),
         Padding(
           padding: const EdgeInsets.only(left: 4),
-          child: Indicator(
-            color: snapshotColor,
-            text: l10n.realValueSeriesLabel,
-            size: 10,
-            textColor: Theme.of(context).colorScheme.onSurfaceVariant,
+          child: Wrap(
+            spacing: 16,
+            runSpacing: 4,
+            children: legendChildren,
           ),
         ),
       ],
