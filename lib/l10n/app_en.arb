@@ -93,6 +93,32 @@
     "description": "Aggregated slice grouping the smallest items in an allocation chart"
   },
 
+  "chartModePerformance": "Performance",
+  "@chartModePerformance": {
+    "description": "Chart mode selector segment: mode 1, projection of current holdings (performance)"
+  },
+
+  "chartModeRealEvolution": "Real evolution",
+  "@chartModeRealEvolution": {
+    "description": "Chart mode selector segment: mode 2, net worth reconstructed from the journaled transaction history"
+  },
+
+  "chartModeRealCaption": "Reconstructed from your journaled transactions. Manually entered positions without history are not included.",
+  "@chartModeRealCaption": {
+    "description": "Caption shown below the chart when the real-evolution mode is active"
+  },
+
+  "chartApproxValuesWarning": "Approximate values for {count} security(ies) without history.",
+  "@chartApproxValuesWarning": {
+    "description": "Warning shown in real-evolution mode when some symbols fall back to their last known price",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "2"
+      }
+    }
+  },
+
   "noHistoricalData": "No historical data",
   "@noHistoricalData": {
     "description": "Shown when there is no historical chart data"

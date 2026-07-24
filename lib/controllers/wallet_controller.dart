@@ -1044,6 +1044,18 @@ class WalletController extends ChangeNotifier {
       }
     }
 
+    // Aucun titre JOURNALISÉ dans tout le patrimoine (positions 100 % legacy,
+    // saisies sans mouvement) : la reconstruction ne porterait qu'un cash pur
+    // plat, indiscernable du mode 1 et laissant croire à tort que les positions
+    // legacy valent 0. On n'expose alors PAS de courbe réelle (`hasRealCurve`
+    // reste faux → aucun bascule proposé). Un patrimoine 100 % cash passe déjà
+    // par les branches de sortie anticipée de _loadHistory (jamais ici).
+    if (txsBySymbol.isEmpty) {
+      _realChartValues = [];
+      _realCurveApproxSymbols = {};
+      return;
+    }
+
     // Asset par symbole : position ACTUELLE (autoritatif : quoteSymbol,
     // currency, quotable) si elle existe, sinon SYNTHÉTISÉ (titre vendu sans
     // position résiduelle — on tente quand même le fetch, currency reprise

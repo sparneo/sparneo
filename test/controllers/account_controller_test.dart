@@ -694,6 +694,131 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // Mode 2 — « évolution réelle » du compte (B7, design doc 18)
+  // -------------------------------------------------------------------------
+
+  group('mode 2 — évolution réelle du compte (B7)', () {
+    test(
+        'compte journalisé SANS ancre cash (buy seul) : hasRealCurve vrai, '
+        'realChartValues alignée, valeur = titres seuls (cash non ancré exclu)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ledger = LedgerService(database: db);
+      // Achat journalisé DIRECT (pas d'openingBalance déclaratif) : le
+      // symbole n'apparaît dans le mode 2 qu'à travers ce journal.
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-buy-tkr',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasRealCurve, isTrue);
+      expect(ctrl.realChartValues.length, equals(ctrl.chartDates.length));
+      // Détenu depuis le premier jour de la fenêtre : chaque point vaut
+      // qty(10) × prix(du jour), jamais 0 (pas de repli, historique complet).
+      expect(ctrl.realChartValues, everyElement(greaterThan(0)));
+      expect(ctrl.realChartValues.last, closeTo(10 * 105.0, 1e-9));
+    });
+
+    test(
+        'compte ANCRÉ (dépôt + achat) : la courbe réelle inclut le cash dérivé '
+        '— point final = titres + espèces', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ledger = LedgerService(database: db);
+      // Dépôt de 2000 € (ANCRE le compte → cash dérivé pris en compte),
+      // puis achat de 10 TKR @90 (−900). Cash dérivé résiduel = 2000 − 900.
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-dep',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-buy-tkr2',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasRealCurve, isTrue);
+      expect(ctrl.realChartValues.length, equals(ctrl.chartDates.length));
+      // Point final = titres (10 × 105 = 1050) + cash dérivé (2000 − 900 = 1100)
+      // = 2150. Sans l'inclusion du cash, on aurait 1050.
+      expect(ctrl.realChartValues.last, closeTo(10 * 105.0 + 1100.0, 1e-9));
+    });
+
+    test(
+        'compte sans journal (legacy, design §11.6) : PAS de courbe réelle '
+        '(hasRealCurve faux, aucun bascule) — mode 1 reste intact', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      // Position historique sans le moindre mouvement de journal (legacy) :
+      // absente de txsBySymbol, donc rien à reconstruire (décision produit
+      // §11.6 — jamais de valeur inventée pour du legacy).
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      // Mode 1 intact (rétroprojection de la position legacy actuelle).
+      expect(ctrl.chartValues, isNotEmpty);
+      expect(ctrl.chartValues, everyElement(greaterThan(0)));
+      // Mode 2 : AUCUN titre journalisé → pas de courbe réelle exposée. Le
+      // switch n'est donc pas proposé (évite une courbe plate à 0 trompeuse).
+      expect(ctrl.hasRealCurve, isFalse);
+      expect(ctrl.realChartValues, isEmpty);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Renommage de compte
   // -------------------------------------------------------------------------
 

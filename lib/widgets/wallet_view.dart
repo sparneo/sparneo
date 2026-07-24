@@ -33,6 +33,14 @@ class WalletView extends StatefulWidget {
 class _WalletViewState extends State<WalletView> {
   late final WalletController _controller;
 
+  // Mode d'affichage du graphe global (B7 Lot 3a, design doc 18 §7.2/§11.6).
+  // Purement local à la vue : les DEUX séries (performance / évolution
+  // réelle) sont déjà calculées par le contrôleur (Lots 1+2) — basculer ne
+  // recharge rien, un simple setState suffit. Faux par défaut : comportement
+  // identique à avant ce lot pour tout utilisateur n'ayant pas de courbe
+  // réelle disponible ([WalletController.hasRealCurve]).
+  bool _showRealCurve = false;
+
   @override
   void initState() {
     super.initState();
@@ -511,63 +519,172 @@ class _WalletViewState extends State<WalletView> {
                 if (_controller.accounts.isNotEmpty &&
                     (_controller.allPositionsData.isNotEmpty ||
                         _controller.cashBalances.isNotEmpty)) ...[
-                  // Carte valeur totale + variation de période
-                  TotalValueCard(
-                    totalValue: totalPatrimoine,
-                    periodChange: _controller.periodChange,
-                    periodChangePercent: _controller.periodChangePercent,
-                    selectedPeriodLabel:
-                        _controller.selectedPeriod.localizedLabel(l10n),
-                    title: l10n.totalValue,
-                  ),
-                  const SizedBox(height: 24),
+                  // Mode réel effectivement actif : garde de robustesse (design
+                  // §Lot 3a) — si le bascule utilisateur est sur « évolution
+                  // réelle » mais que la série s'avère indisponible (échec mode
+                  // 2, cf. hasRealCurve), on retombe silencieusement sur le
+                  // mode 1 plutôt que d'afficher un graphe vide.
+                  Builder(
+                    builder: (_) {
+                      final bool useRealCurve =
+                          _showRealCurve && _controller.hasRealCurve;
 
-                  // Sélecteur de période + graphique global
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      // En mode réel, la variation naïve (% mode 1) mélange
+                      // apports et performance — trompeuse tant que la
+                      // décomposition flux/perf (Lot 3b) n'est pas branchée. On
+                      // la masque entièrement plutôt que d'afficher un chiffre
+                      // faux.
+                      final double? periodChange =
+                          useRealCurve ? null : _controller.periodChange;
+                      final double? periodChangePercent = useRealCurve
+                          ? null
+                          : _controller.periodChangePercent;
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Flexible(
-                            child: PeriodSelector(
-                              selectedPeriod: _controller.selectedPeriod,
-                              onSelected: _controller.onPeriodChanged,
-                              // Défauts wallet_view : fond gris, pas de gras
-                            ),
+                          // Carte valeur totale + variation de période
+                          TotalValueCard(
+                            totalValue: totalPatrimoine,
+                            periodChange: periodChange,
+                            periodChangePercent: periodChangePercent,
+                            selectedPeriodLabel:
+                                _controller.selectedPeriod.localizedLabel(
+                                  l10n,
+                                ),
+                            title: l10n.totalValue,
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 12),
-                      SizedBox(
-                        height: 200,
-                        child: _controller.isLoadingHistory
-                            ? const Center(child: CircularProgressIndicator())
-                            : _controller.chartValues.isEmpty
-                            ? Center(
-                                child: Text(
-                                  l10n.noData,
-                                  style: TextStyle(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
+                          const SizedBox(height: 24),
+
+                          // Sélecteur de période + sélecteur de mode + graphique global
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Flexible(
+                                    child: PeriodSelector(
+                                      selectedPeriod:
+                                          _controller.selectedPeriod,
+                                      onSelected: _controller.onPeriodChanged,
+                                      // Défauts wallet_view : fond gris, pas de gras
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              // Sélecteur de mode courbe (performance /
+                              // évolution réelle) : n'apparaît que si une
+                              // courbe réelle est disponible (sinon
+                              // comportement inchangé — patrimoine 100 %
+                              // legacy ou vide, design §11.6).
+                              if (_controller.hasRealCurve) ...[
+                                const SizedBox(height: 8),
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: SegmentedButton<bool>(
+                                    segments: [
+                                      ButtonSegment(
+                                        value: false,
+                                        label: Text(
+                                          l10n.chartModePerformance,
+                                        ),
+                                      ),
+                                      ButtonSegment(
+                                        value: true,
+                                        label: Text(
+                                          l10n.chartModeRealEvolution,
+                                        ),
+                                      ),
+                                    ],
+                                    selected: {_showRealCurve},
+                                    showSelectedIcon: false,
+                                    style: const ButtonStyle(
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    onSelectionChanged: (selection) {
+                                      setState(
+                                        () =>
+                                            _showRealCurve = selection.first,
+                                      );
+                                    },
                                   ),
                                 ),
-                              )
-                            : ValuationLineChart(
-                                dates: _controller.chartDates,
-                                values: _controller.chartValues,
-                                snapshotSpots: _controller.snapshotSpots,
-                                periodChange: _controller.periodChange,
-                                selectedPeriod: _controller.selectedPeriod,
-                                // Paramètres wallet_view (tous par défaut)
-                                height: null, // géré par le SizedBox parent
-                                leftTitlesReservedSize: 40,
-                                barWidth: 3,
-                                showSnapshotLegend: true,
+                              ],
+                              const SizedBox(height: 12),
+                              SizedBox(
+                                height: 200,
+                                child: _controller.isLoadingHistory
+                                    ? const Center(
+                                        child: CircularProgressIndicator(),
+                                      )
+                                    : _controller.chartValues.isEmpty
+                                    ? Center(
+                                        child: Text(
+                                          l10n.noData,
+                                          style: TextStyle(
+                                            color: Theme.of(
+                                              context,
+                                            ).colorScheme.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      )
+                                    : ValuationLineChart(
+                                        dates: _controller.chartDates,
+                                        values: useRealCurve
+                                            ? _controller.realChartValues
+                                            : _controller.chartValues,
+                                        snapshotSpots:
+                                            _controller.snapshotSpots,
+                                        periodChange: periodChange,
+                                        selectedPeriod:
+                                            _controller.selectedPeriod,
+                                        // Paramètres wallet_view (tous par défaut)
+                                        height:
+                                            null, // géré par le SizedBox parent
+                                        leftTitlesReservedSize: 40,
+                                        barWidth: 3,
+                                        showSnapshotLegend: true,
+                                      ),
                               ),
-                      ),
-                    ],
+                              if (useRealCurve) ...[
+                                const SizedBox(height: 8),
+                                Text(
+                                  l10n.chartModeRealCaption,
+                                  style: Theme.of(context).textTheme.bodySmall
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.onSurfaceVariant,
+                                      ),
+                                ),
+                                if (_controller
+                                    .realCurveApproxSymbols
+                                    .isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Text(
+                                    l10n.chartApproxValuesWarning(
+                                      _controller
+                                          .realCurveApproxSymbols
+                                          .length,
+                                    ),
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodySmall
+                                        ?.copyWith(
+                                          color: Theme.of(
+                                            context,
+                                          ).colorScheme.error,
+                                        ),
+                                  ),
+                                ],
+                              ],
+                            ],
+                          ),
+                        ],
+                      );
+                    },
                   ),
                   const SizedBox(height: 24),
                 ],

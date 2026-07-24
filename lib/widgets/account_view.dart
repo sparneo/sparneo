@@ -74,6 +74,18 @@ class _AccountViewState extends State<AccountView> {
   /// (même base que le contrôleur).
   final TransactionStorage _txStorage = TransactionStorage();
 
+  /// Mode de courbe sélectionné par l'utilisateur (performance / évolution
+  /// réelle B7, design doc 18, MÊME motif que wallet_view Lot 3a). Combiné à
+  /// [AccountController.hasRealCurve] via [_useRealCurve] : robustesse si la
+  /// courbe réelle s'avère indisponible malgré la bascule utilisateur.
+  bool _showRealCurve = false;
+
+  /// Mode réel EFFECTIVEMENT actif (garde de robustesse — cf. wallet_view) :
+  /// si l'utilisateur a basculé sur « évolution réelle » mais que la série
+  /// s'avère indisponible, on retombe silencieusement sur le mode 1 plutôt
+  /// que d'afficher un graphe vide.
+  bool get _useRealCurve => _showRealCurve && _ctrl.hasRealCurve;
+
   @override
   void initState() {
     super.initState();
@@ -1145,8 +1157,11 @@ class _AccountViewState extends State<AccountView> {
         TotalValueCard(
           title: l10n.totalValueAccount,
           totalValue: totalValueEur,
-          periodChange: _ctrl.periodChange,
-          periodChangePercent: _ctrl.periodChangePercent,
+          // En mode réel, la variation naïve (% mode 1) mélange apports et
+          // performance — trompeuse tant que la décomposition flux/perf n'est
+          // pas branchée (cf. wallet_view Lot 3a). On la masque entièrement.
+          periodChange: _useRealCurve ? null : _ctrl.periodChange,
+          periodChangePercent: _useRealCurve ? null : _ctrl.periodChangePercent,
           selectedPeriodLabel: _ctrl.selectedPeriod.localizedLabel(l10n),
         ),
         // Nature du compte (comptes titres) — puce cliquable pour affiner
@@ -1241,6 +1256,7 @@ class _AccountViewState extends State<AccountView> {
 
   Widget _buildAccountChartSection() {
     final l10n = AppLocalizations.of(context)!;
+    final useRealCurve = _useRealCurve;
     return Card(
       margin: EdgeInsets.zero,
       elevation: 1,
@@ -1252,6 +1268,35 @@ class _AccountViewState extends State<AccountView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildPeriodSelector(),
+            // Sélecteur de mode courbe (performance / évolution réelle, B7
+            // design doc 18), MÊME motif que wallet_view Lot 3a : n'apparaît
+            // que si une courbe réelle est disponible pour ce compte.
+            if (_ctrl.hasRealCurve) ...[
+              const SizedBox(height: 8),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: SegmentedButton<bool>(
+                  segments: [
+                    ButtonSegment(
+                      value: false,
+                      label: Text(l10n.chartModePerformance),
+                    ),
+                    ButtonSegment(
+                      value: true,
+                      label: Text(l10n.chartModeRealEvolution),
+                    ),
+                  ],
+                  selected: {_showRealCurve},
+                  showSelectedIcon: false,
+                  style: const ButtonStyle(
+                    visualDensity: VisualDensity.compact,
+                  ),
+                  onSelectionChanged: (selection) {
+                    setState(() => _showRealCurve = selection.first);
+                  },
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             if (_ctrl.isLoadingHistory)
               const Center(
@@ -1281,7 +1326,32 @@ class _AccountViewState extends State<AccountView> {
                 ),
               )
             else
-              _buildAccountChart(),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildAccountChart(useRealCurve),
+                  if (useRealCurve) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      l10n.chartModeRealCaption,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    if (_ctrl.realCurveApproxSymbols.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        l10n.chartApproxValuesWarning(
+                          _ctrl.realCurveApproxSymbols.length,
+                        ),
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
+                      ),
+                    ],
+                  ],
+                ],
+              ),
           ],
         ),
       ),
@@ -1299,7 +1369,7 @@ class _AccountViewState extends State<AccountView> {
     );
   }
 
-  Widget _buildAccountChart() {
+  Widget _buildAccountChart(bool useRealCurve) {
     if (_ctrl.chartValues.isEmpty) return const SizedBox.shrink();
 
     // Formule de hauteur identique à l'originale
@@ -1309,9 +1379,9 @@ class _AccountViewState extends State<AccountView> {
 
     return ValuationLineChart(
       dates: _ctrl.chartDates,
-      values: _ctrl.chartValues,
+      values: useRealCurve ? _ctrl.realChartValues : _ctrl.chartValues,
       selectedPeriod: _ctrl.selectedPeriod,
-      periodChange: _ctrl.periodChange,
+      periodChange: useRealCurve ? null : _ctrl.periodChange,
       height: chartHeight,
       leftTitlesReservedSize: 50,
       barWidth: 2,
