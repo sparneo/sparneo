@@ -388,4 +388,177 @@ void main() {
       expect(r.values.single, 0.0);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Lot 2 (glue réseau, design doc 18 §9) : les deux fonctions pures extraites
+  // pour rester testables sans I/O — buildLastPriceFallback (repli « dernier
+  // cours ») et addConstantPureCash (composition cash pur sans double-comptage).
+  // ---------------------------------------------------------------------------
+
+  group('HistoryAggregator.buildLastPriceFallback', () {
+    test('titre détenu sans historique → série plate au dernier cours + repli non-null', () {
+      final buyTx = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'XYZ',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '42',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+
+      final gridDates = [DateTime(2024, 1, 1), DateTime(2024, 1, 5), DateTime(2024, 1, 10)];
+      final fallback = HistoryAggregator.buildLastPriceFallback(
+        symbol: 'XYZ',
+        txs: [buyTx],
+        gridDates: gridDates,
+      );
+
+      expect(fallback, isNotNull);
+      expect(fallback!.symbol, 'XYZ');
+      expect(fallback.dates, [gridDates.first, gridDates.last]);
+      expect(fallback.prices, [42.0, 42.0]);
+    });
+
+    test('dernier cours = unitPrice du dernier buy/sell CHRONOLOGIQUE, pas le dernier de la liste', () {
+      final buyTx = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'XYZ',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '42',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final sellTx = AssetTransaction(
+        id: 's1',
+        accountId: 'acc1',
+        symbol: 'XYZ',
+        kind: TransactionKind.sell,
+        quantity: '4',
+        unitPrice: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+
+      // Liste passée dans l'ordre INVERSE de la date : le tri chronologique
+      // interne doit malgré tout retenir le vendu (dernier dans le temps).
+      final fallback = HistoryAggregator.buildLastPriceFallback(
+        symbol: 'XYZ',
+        txs: [sellTx, buyTx],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 10)],
+      );
+
+      expect(fallback!.prices, [50.0, 50.0]);
+    });
+
+    test('symbole jamais détenu sur la fenêtre → null (pas de repli, pas de flag)', () {
+      final buyTx = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'XYZ',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '42',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 20), // après toute la fenêtre
+      );
+
+      final fallback = HistoryAggregator.buildLastPriceFallback(
+        symbol: 'XYZ',
+        txs: [buyTx],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 10)],
+      );
+
+      expect(fallback, isNull);
+    });
+
+    test('aucun buy/sell avec unitPrice (ex. openingBalance sans prix) → repli à 0', () {
+      final opening = AssetTransaction(
+        id: 'o1',
+        accountId: 'acc1',
+        symbol: 'XYZ',
+        kind: TransactionKind.openingBalance,
+        quantity: '10',
+        unitPrice: null,
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+
+      final fallback = HistoryAggregator.buildLastPriceFallback(
+        symbol: 'XYZ',
+        txs: [opening],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 10)],
+      );
+
+      expect(fallback!.prices, [0.0, 0.0]);
+    });
+  });
+
+  group('HistoryAggregator.addConstantPureCash — sans double-comptage', () {
+    test('ajoute le cash pur en CONSTANTE à chaque point, sans toucher le cash déjà dérivé', () {
+      // Reconstruction mode 2 d'un compte non-cash ANCRÉ (cash dérivé inclus
+      // par reconstructRealNetWorth) : 1000 € de dépôt, titre acheté après.
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '5',
+        unitPrice: '100',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final hist = _histData('AAPL', [DateTime(2024, 1, 1), DateTime(2024, 1, 3)], [100.0, 100.0]);
+
+      final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc1': [deposit, buy],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        usdToEurRate: 1.0,
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 3)],
+      );
+      // Avant cash pur : 0 (rien détenu) + 1000 (cash dérivé) = 1000, puis
+      // 500 (5×100) + 500 (1000-500 cash dérivé) = 1000.
+      expect(reconstructed.values, [1000.0, 1000.0]);
+
+      // Un DEUXIÈME compte, de type cash pur (300 €, aucun journal), n'est PAS
+      // connu de reconstructRealNetWorth (absent de txsByAccount) : composé
+      // en aval, en CONSTANTE.
+      final withPureCash = HistoryAggregator.addConstantPureCash(
+        reconstructed.values,
+        300.0,
+      );
+
+      expect(withPureCash, [1300.0, 1300.0]);
+      // Le cash dérivé du compte non-cash (1000, variable selon la date dans
+      // le cas général) n'est PAS resommé : seule la constante 300 s'ajoute,
+      // identique aux deux points malgré des compositions internes distinctes.
+      expect(withPureCash[0] - reconstructed.values[0], 300.0);
+      expect(withPureCash[1] - reconstructed.values[1], 300.0);
+    });
+
+    test('pureCashEur == 0 → renvoie la même liste sans altération', () {
+      final values = [10.0, 20.0, 30.0];
+      final result = HistoryAggregator.addConstantPureCash(values, 0.0);
+      expect(result, [10.0, 20.0, 30.0]);
+    });
+  });
 }

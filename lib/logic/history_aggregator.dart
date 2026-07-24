@@ -302,6 +302,78 @@ class HistoryAggregator {
   }
 
   // ---------------------------------------------------------------------------
+  // Repli « dernier cours » + composition cash pur (mode 2, B7 Lot 2 — design
+  // doc 18 §4/§11.5 m1). PUR, sans I/O — extrait de wallet_controller pour
+  // rester testable unitairement (le reste du Lot 2 est de la glue réseau).
+  // ---------------------------------------------------------------------------
+
+  /// Synthétise une [AssetHistoricalData] PLATE (deux points, prix constant) au
+  /// « dernier cours connu » pour un symbole SANS historique de prix (titre
+  /// délisté/irrésolu, ou fetch en échec) mais DÉTENU à au moins une date de
+  /// [gridDates] — sans ce repli, [reconstructRealNetWorth] contribuerait `0`
+  /// pour ce symbole alors qu'il pesait réellement dans le patrimoine (design
+  /// §4 : jamais d'exclusion silencieuse).
+  ///
+  /// Source du dernier cours : [AssetTransaction.unitPrice] du dernier
+  /// `buy`/`sell` de ce symbole (ordre chronologique CANONIQUE,
+  /// [AssetTransaction.compareChronological]), à défaut `0`. C'est un PRU, pas
+  /// un cours de marché — biais assumé et à SIGNALER (repli « approché »,
+  /// design §11.5 m1) : l'appelant doit flagger [symbol] dans
+  /// `realCurveApproxSymbols` quand ce repli est utilisé (retour non-null).
+  ///
+  /// Retourne `null` si [symbol] n'est jamais détenu sur la fenêtre (pas
+  /// besoin de repli — le symbole contribue légitimement `0` partout, aucun
+  /// signal « approché » à afficher) ou si [gridDates] est vide.
+  static AssetHistoricalData? buildLastPriceFallback({
+    required String symbol,
+    required List<AssetTransaction> txs,
+    required List<DateTime> gridDates,
+  }) {
+    if (gridDates.isEmpty) return null;
+
+    final timeline = buildQuantityTimeline(txs);
+    final heldOnWindow =
+        gridDates.any((d) => quantityAt(timeline, d) > Decimal.zero);
+    if (!heldOnWindow) return null;
+
+    final priced = txs
+        .where(
+          (t) =>
+              (t.kind == TransactionKind.buy ||
+                  t.kind == TransactionKind.sell) &&
+              t.unitPrice != null &&
+              t.unitPrice!.trim().isNotEmpty,
+        )
+        .toList()
+      ..sort(AssetTransaction.compareChronological);
+    final lastPrice = priced.isEmpty
+        ? 0.0
+        : double.tryParse(priced.last.unitPrice!.replaceAll(',', '.').trim()) ??
+              0.0;
+
+    return AssetHistoricalData(
+      symbol: symbol,
+      dates: [gridDates.first, gridDates.last],
+      prices: [lastPrice, lastPrice],
+    );
+  }
+
+  /// Ajoute un cash PUR (comptes `AccountType.cash`, sans journal — hors
+  /// périmètre de [reconstructRealNetWorth]) en CONSTANTE à chaque valeur
+  /// d'une série mode 2 déjà composée. Fonction À PART : le cash DÉRIVÉ des
+  /// comptes non-cash est DÉJÀ dans [values] (calculé par
+  /// [reconstructRealNetWorth] via `txsByAccount`, gating M1 inclus) — ne
+  /// JAMAIS le recalculer/rajouter ici, sous peine de double-comptage (design
+  /// Lot 2 §4, piège documenté en tête de `position_projection.dart`).
+  static List<double> addConstantPureCash(
+    List<double> values,
+    double pureCashEur,
+  ) {
+    if (pureCashEur == 0) return values;
+    return [for (final v in values) v + pureCashEur];
+  }
+
+  // ---------------------------------------------------------------------------
   // Variations par compte (wallet_view : _computeAccountsPeriodChanges)
   // ---------------------------------------------------------------------------
 

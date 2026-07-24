@@ -9,6 +9,7 @@ import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
@@ -143,6 +144,24 @@ class WalletController extends ChangeNotifier {
   double? _periodChange;
   double? _periodChangePercent;
 
+  // Mode 2 « évolution réelle du patrimoine » (B7 Lot 2, design doc 18) :
+  // reconstruction datée depuis le journal, calculée EN PARALLÈLE du mode 1
+  // ci-dessus (additif — n'écrit JAMAIS les champs mode 1). ALIGNÉE
+  // index-par-index sur [_chartDates] (même grille de dates, garantie par
+  // construction — cf. _computeRealNetWorthCurve).
+  //
+  // [_txsByAccountForHistory] : journal COMPLET des comptes NON-CASH, capturé
+  // par loadAllData (nonCashTxsResults, déjà fetché pour le gating
+  // cash-ledger opt-in) et réutilisé ici pour énumérer TOUS les symboles
+  // historiques (y compris soldés, absents de [_allPositionsData]) sans
+  // reformuler un accès storage.
+  Map<String, List<AssetTransaction>> _txsByAccountForHistory = {};
+  List<double> _realChartValues = [];
+  // Symboles dont la valeur, à au moins une date, provient d'un repli
+  // « dernier cours connu » (pas un vrai historique de marché) — pour un
+  // futur badge UI (Lot 3, design §4/§11.5 m1).
+  Set<String> _realCurveApproxSymbols = {};
+
   // Variations par compte
   Map<String, double> _accountPeriodChanges = {};
   Map<String, double> _accountPeriodChangePercents = {};
@@ -187,6 +206,19 @@ class WalletController extends ChangeNotifier {
   List<double> get chartValues => _chartValues;
   double? get periodChange => _periodChange;
   double? get periodChangePercent => _periodChangePercent;
+
+  /// Série du mode 2 « évolution réelle », ALIGNÉE index-par-index sur
+  /// [chartDates] (même grille que le mode 1). Vide tant qu'aucun calcul mode
+  /// 2 n'a abouti (cf. [hasRealCurve]).
+  List<double> get realChartValues => _realChartValues;
+
+  /// Symboles dont la valeur mode 2 provient d'un repli « dernier cours
+  /// connu » plutôt que d'un véritable historique de marché (design §4/§11.5
+  /// m1) — destiné à un futur badge « valeurs approchées » (Lot 3).
+  Set<String> get realCurveApproxSymbols => _realCurveApproxSymbols;
+
+  /// Vrai si une courbe mode 2 est disponible pour l'affichage.
+  bool get hasRealCurve => _realChartValues.isNotEmpty;
 
   Map<String, double> get accountPeriodChanges => _accountPeriodChanges;
   Map<String, double> get accountPeriodChangePercents =>
@@ -342,6 +374,15 @@ class WalletController extends ChangeNotifier {
       final nonCashTxsResults = await Future.wait(
         nonCashAccounts.map((a) => _txStorage.getByAccount(a.id)),
       );
+      // Mode 2 (B7 Lot 2) : conserve le journal COMPLET par compte non-cash,
+      // réutilisé par _loadHistory pour énumérer TOUS les symboles du journal
+      // (y compris soldés) — AVANT tout filtrage/gating cash-ledger ci-dessous
+      // (le gating d'ancrage ne s'applique qu'à l'agrégation cash affichée,
+      // pas à l'énumération des symboles pour le fetch d'historique).
+      _txsByAccountForHistory = {
+        for (int i = 0; i < nonCashAccounts.length; i++)
+          nonCashAccounts[i].id: nonCashTxsResults[i],
+      };
       final Map<String, double> derivedCashEurByAccount = {};
       for (int i = 0; i < nonCashAccounts.length; i++) {
         final acc = nonCashAccounts[i];
@@ -835,6 +876,9 @@ class WalletController extends ChangeNotifier {
       _chartValues = [];
       _chartDates = [];
       _snapshotSpots = [];
+      // Mode 2 == mode 1 sur un patrimoine vide (design §9 Lot 2 pt.5).
+      _realChartValues = List<double>.from(_chartValues);
+      _realCurveApproxSymbols = {};
       _isLoadingHistory = false;
       _safeNotify();
       // Pas de positions : variations par compte nulles (gérées par le calcul).
@@ -859,6 +903,9 @@ class WalletController extends ChangeNotifier {
       _snapshotSpots = [];
       _periodChange = 0;
       _periodChangePercent = 0;
+      // Mode 2 == mode 1 sur du cash plat (design §9 Lot 2 pt.5).
+      _realChartValues = List<double>.from(_chartValues);
+      _realCurveApproxSymbols = {};
       _isLoadingHistory = false;
       _safeNotify();
       _computeAccountsPeriodChanges(accountPositions, {});
@@ -892,6 +939,23 @@ class WalletController extends ChangeNotifier {
       // Map partagée : agrégation globale + variations par compte.
       _aggregateGlobalHistoricalData(symbolToData);
       _computeAccountsPeriodChanges(accountPositions, symbolToData);
+
+      // Mode 2 « évolution réelle » (B7 Lot 2) : calculé EN PARALLÈLE du
+      // mode 1 ci-dessus, JAMAIS bloquant — une erreur ici (réseau, données
+      // incohérentes) laisse simplement la courbe réelle absente
+      // ([hasRealCurve] false) ; le mode 1 reste intact et affiché.
+      try {
+        await _computeRealNetWorthCurve(symbolToData);
+      } catch (e, st) {
+        AppLogger.warning(
+          'Impossible de calculer la courbe réelle du patrimoine (mode 2)',
+          e,
+          st,
+        );
+        _realChartValues = [];
+        _realCurveApproxSymbols = {};
+      }
+
       // Superposer la série réelle des snapshots (best-effort, non bloquant)
       await _loadSnapshotSeries();
       _isLoadingHistory = false;
@@ -940,6 +1004,124 @@ class WalletController extends ChangeNotifier {
     _accountPeriodChanges = result.accountPeriodChanges;
     _accountPeriodChangePercents = result.accountPeriodChangePercents;
     _safeNotify();
+  }
+
+  /// Calcule le mode 2 « évolution réelle » (B7 Lot 2, design doc 18 §9) :
+  /// énumère TOUS les symboles du journal (comptes non-cash, y compris les
+  /// titres soldés — absents de [_allPositionsData]), élargit le fetch
+  /// d'historique au DELTA manquant, applique le repli « dernier cours » pour
+  /// les symboles détenus sans historique, puis compose avec le cash dérivé
+  /// (via [HistoryAggregator.reconstructRealNetWorth]) et le cash PUR
+  /// (comptes cash, ajouté en CONSTANTE — jamais le cash dérivé une seconde
+  /// fois, cf. [_txsByAccountForHistory] et la garde de partition
+  /// `account.type` dans [loadAllData]).
+  ///
+  /// [symbolToData] est la map DÉJÀ récupérée par le mode 1 pour les
+  /// positions actuelles — réutilisée ici pour ne refetcher QUE le delta
+  /// (symboles du journal absents de cette map).
+  ///
+  /// Écrit UNIQUEMENT [_realChartValues]/[_realCurveApproxSymbols] — n'écrit
+  /// JAMAIS les champs du mode 1. Toute exception se propage à l'appelant
+  /// ([loadAllData]/_loadHistory), qui l'absorbe dans un try/catch dédié.
+  Future<void> _computeRealNetWorthCurve(
+    Map<String, AssetHistoricalData?> symbolToData,
+  ) async {
+    final txsByAccount = _txsByAccountForHistory;
+    if (_chartDates.isEmpty) {
+      _realChartValues = [];
+      _realCurveApproxSymbols = {};
+      return;
+    }
+
+    // Regroupe TOUT le journal (comptes non-cash) par symbole — inclut les
+    // titres VENDUS (plus de position actuelle dans _allPositionsData).
+    final txsBySymbol = <String, List<AssetTransaction>>{};
+    for (final txs in txsByAccount.values) {
+      for (final tx in txs) {
+        final sym = tx.symbol;
+        if (sym == null) continue;
+        txsBySymbol.putIfAbsent(sym, () => []).add(tx);
+      }
+    }
+
+    // Asset par symbole : position ACTUELLE (autoritatif : quoteSymbol,
+    // currency, quotable) si elle existe, sinon SYNTHÉTISÉ (titre vendu sans
+    // position résiduelle — on tente quand même le fetch, currency reprise
+    // d'un mouvement quelconque de ce symbole).
+    final currentAssetBySymbol = <String, Asset>{
+      for (final p in _allPositionsData) p.symbol: p.asset,
+    };
+    final assetBySymbol = <String, Asset>{};
+    for (final sym in txsBySymbol.keys) {
+      final current = currentAssetBySymbol[sym];
+      assetBySymbol[sym] =
+          current ?? Asset(symbol: sym, currency: txsBySymbol[sym]!.first.currency);
+    }
+
+    // Fetch élargi : DELTA = symboles du journal absents de symbolToData
+    // (déjà rempli par le mode 1 pour les positions actuelles), MÊME fenêtre
+    // que le mode 1. Un actif non coté n'est jamais interrogé (repli direct).
+    final missingSymbols =
+        txsBySymbol.keys.where((s) => !symbolToData.containsKey(s)).toList();
+    final fetched = await Future.wait(
+      missingSymbols.map((s) {
+        final asset = assetBySymbol[s]!;
+        if (!asset.quotable) return Future<AssetHistoricalData?>.value(null);
+        return _marketService.getHistoricalDataForAsset(
+          asset,
+          days: _selectedPeriod.days,
+        );
+      }),
+    );
+    final fullSymbolToData = Map<String, AssetHistoricalData?>.from(
+      symbolToData,
+    );
+    for (int i = 0; i < missingSymbols.length; i++) {
+      fullSymbolToData[missingSymbols[i]] = fetched[i];
+    }
+
+    // Repli « dernier cours » pour tout symbole détenu sur la fenêtre sans
+    // historique exploitable (délisté/irrésolu/fetch en échec) — synthétise
+    // une série PLATE et flag le symbole comme approché (design §4/§11.5 m1).
+    final approxSymbols = <String>{};
+    for (final sym in txsBySymbol.keys) {
+      final data = fullSymbolToData[sym];
+      if (data != null && !data.isEmpty) continue;
+      final fallback = HistoryAggregator.buildLastPriceFallback(
+        symbol: sym,
+        txs: txsBySymbol[sym]!,
+        gridDates: _chartDates,
+      );
+      if (fallback == null) continue; // jamais détenu sur la fenêtre
+      fullSymbolToData[sym] = fallback;
+      approxSymbols.add(sym);
+    }
+
+    final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+      txsBySymbol: txsBySymbol,
+      txsByAccount: txsByAccount,
+      symbolToData: fullSymbolToData,
+      assetBySymbol: assetBySymbol,
+      usdToEurRate: _usdToEurRate,
+      gridDates: _chartDates,
+    );
+
+    // Cash PUR (comptes AccountType.cash, sans journal — hors périmètre de
+    // reconstructRealNetWorth) : ajouté EN CONSTANTE. Le cash DÉRIVÉ des
+    // comptes NON-CASH est DÉJÀ dans `reconstructed.values` (via
+    // txsByAccount, gating M1 inclus) — ne JAMAIS le resommer ici. _cashBalances
+    // contient les deux familles sous des clés disjointes par account.type
+    // (cf. loadAllData) : ne sommer QUE les comptes cash évite le
+    // double-comptage par construction.
+    final pureCashEur = _accounts
+        .where((a) => a.type == AccountType.cash)
+        .fold(0.0, (sum, a) => sum + (_cashBalances[a.id] ?? 0.0));
+
+    _realChartValues = HistoryAggregator.addConstantPureCash(
+      reconstructed.values,
+      pureCashEur,
+    );
+    _realCurveApproxSymbols = approxSymbols;
   }
 
   // ---------------------------------------------------------------------------
