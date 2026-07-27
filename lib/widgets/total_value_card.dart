@@ -15,12 +15,13 @@ import 'package:portfolio_tracker/utils/formatters.dart';
 /// - [titleKey]           : clé de localisation du titre de la carte
 ///                          (l10n.totalValue ou l10n.totalValueAccount selon la vue).
 /// - [titleWidget]        : alternative à [titleKey] si le titre vient du caller.
-/// - [percentIsAnnualized]: mode réel uniquement (B7 annualisation) — quand
-///                          `true`, [periodChangePercent] est un rendement
-///                          ANNUALISÉ (fenêtre ≥ 2 ans, cf. [HistoryAggregator.
-///                          computeRealGains]) : la carte ajoute le suffixe
-///                          « /an » (l10n.chartPercentPerYear) plutôt que
-///                          d'afficher le nombre nu. `false` par défaut —
+/// - [percentAnnualized]  : mode réel uniquement (B7 annualisation) — quand
+///                          non-null, c'est un SECOND pourcentage (rendement
+///                          ANNUALISÉ, fenêtre ≥ 1 an, cf. [HistoryAggregator.
+///                          computeRealGains]) affiché ENTRE PARENTHÈSES à la
+///                          suite de [periodChangePercent] (le cumulé, jamais
+///                          remplacé), via `l10n.chartPercentWithAnnualized`.
+///                          `null` par défaut = un seul pourcentage affiché,
 ///                          comportement STRICTEMENT inchangé en mode
 ///                          performance (mode 1, jamais annualisé).
 /// - [onInfoPressed]      : mode réel uniquement — callback ouvrant une popup
@@ -40,7 +41,7 @@ class TotalValueCard extends StatelessWidget {
   final double? periodChangePercent;
   final String selectedPeriodLabel;
   final String title;
-  final bool percentIsAnnualized;
+  final double? percentAnnualized;
   final VoidCallback? onInfoPressed;
 
   const TotalValueCard({
@@ -50,7 +51,7 @@ class TotalValueCard extends StatelessWidget {
     required this.title,
     this.periodChange,
     this.periodChangePercent,
-    this.percentIsAnnualized = false,
+    this.percentAnnualized,
     this.onInfoPressed,
   });
 
@@ -79,9 +80,10 @@ class TotalValueCard extends StatelessWidget {
               Builder(
                 builder: (_) {
                   final percentText = periodChangePercent != null
-                      ? (percentIsAnnualized
-                          ? l10n.chartPercentPerYear(
+                      ? (percentAnnualized != null
+                          ? l10n.chartPercentWithAnnualized(
                               Formatters.formatPercentFr(periodChangePercent!),
+                              Formatters.formatPercentFr(percentAnnualized!),
                             )
                           : Formatters.formatPercentFr(periodChangePercent!))
                       : l10n.notAvailable;
@@ -99,6 +101,7 @@ class TotalValueCard extends StatelessWidget {
                           '${Formatters.formatEurSigned(periodChange!)} · '
                           '$percentText · '
                           '$selectedPeriodLabel',
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             color: changeColor,

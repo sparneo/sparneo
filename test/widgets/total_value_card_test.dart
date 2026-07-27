@@ -101,7 +101,28 @@ void main() {
   });
 
   testWidgets(
-    'percentIsAnnualized == false (défaut) : pourcentage nu, sans suffixe /an',
+    'aucun overflow sur largeur réduite avec percentAnnualized (ligne plus '
+    'longue, mitigation maxLines: 2)',
+    (tester) async {
+      await tester.pumpWidget(_host(const TotalValueCard(
+        totalValue: 999999.99,
+        periodChange: -123456.78,
+        periodChangePercent: -1234567.89,
+        selectedPeriodLabel: 'Max',
+        title: 'Valeur totale du portefeuille',
+        percentAnnualized: -55.55,
+      )));
+      await tester.pumpAndSettle();
+      // Aucune exception FlutterError (dont RenderFlex overflowed) levée
+      // pendant le pump — vérifie que le passage à maxLines: 2 absorbe la
+      // ligne combinée cumulé+annualisé sans overflow VERTICAL ni HORIZONTAL.
+      expect(tester.takeException(), isNull);
+    },
+  );
+
+  testWidgets(
+    'percentAnnualized == null (défaut) : un seul pourcentage, sans '
+    'parenthèses',
     (tester) async {
       await tester.pumpWidget(_host(const TotalValueCard(
         totalValue: 5000.00,
@@ -119,19 +140,24 @@ void main() {
   );
 
   testWidgets(
-    'percentIsAnnualized == true : suffixe "/an" ajouté au pourcentage',
+    'percentAnnualized non-null : les deux pourcentages (cumulé + annualisé '
+    'entre parenthèses) sont affichés',
     (tester) async {
       await tester.pumpWidget(_host(const TotalValueCard(
         totalValue: 5000.00,
         periodChange: 150.50,
-        periodChangePercent: 9.07,
+        periodChangePercent: 183.4,
         selectedPeriodLabel: 'Max',
         title: 'Total',
-        percentIsAnnualized: true,
+        percentAnnualized: 9.07,
       )));
       await tester.pumpAndSettle();
 
+      // Le texte combiné contient le cumulé ET l'annualisé entre parenthèses
+      // (cf. l10n.chartPercentWithAnnualized : "{percent} ({annualized}/an)").
+      expect(find.textContaining(RegExp(r'\+183,4\s%')), findsOneWidget);
       expect(find.textContaining('/an'), findsOneWidget);
+      expect(find.textContaining(RegExp(r'\(\+9,1\s%/an\)')), findsOneWidget);
     },
   );
 

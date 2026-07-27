@@ -150,11 +150,15 @@
     }
   },
 
-  "chartPercentPerYear": "{percent}/yr",
-  "@chartPercentPerYear": {
-    "description": "Suffixes an already-formatted percent string with an annualisation marker, shown on the period gain of the real-evolution card when computeRealGains annualises a long window (B7 annualisation lot)",
+  "chartPercentWithAnnualized": "{percent} ({annualized}/yr)",
+  "@chartPercentWithAnnualized": {
+    "description": "Combines the cumulative period gain percent with an annualised second percent shown in parentheses, on the period gain line of the real-evolution card once the window reaches 1 year (B7 annualisation lot) — the cumulative value is never replaced, only complemented",
     "placeholders": {
       "percent": {
+        "type": "String",
+        "example": "+183.4%"
+      },
+      "annualized": {
         "type": "String",
         "example": "+9.1%"
       }
@@ -168,12 +172,12 @@
 
   "chartRealPeriodGainHelpBody": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage relates this gain to the average capital actually at work during the period: a recent deposit only counts for the time it was invested.",
   "@chartRealPeriodGainHelpBody": {
-    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when it is shown cumulative, i.e. isAnnualized is false"
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when no annualised figure is shown, i.e. periodGainPercentAnnualized is null"
   },
 
-  "chartRealPeriodGainHelpBodyAnnualized": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage is annualised: it is the average yearly return, comparable to an index. It relates the gain to the average capital actually at work — a recent deposit only counts for the time it was invested.",
+  "chartRealPeriodGainHelpBodyAnnualized": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nTwo percentages are shown: the first is the cumulative gain over the whole period, the second (in brackets) the average yearly return — comparable to an index.\n\nBoth relate the gain to the average capital actually at work: a recent deposit only counts for the time it was invested.",
   "@chartRealPeriodGainHelpBodyAnnualized": {
-    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when it is annualised, i.e. isAnnualized is true"
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when a second, annualised percentage is also shown, i.e. periodGainPercentAnnualized is non-null"
   },
 
   "chartRealTotalGainHelpTitle": "Total gains",

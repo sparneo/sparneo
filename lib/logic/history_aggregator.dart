@@ -63,7 +63,7 @@ class RealGains {
   const RealGains({
     this.periodGain,
     this.periodGainPercent,
-    this.isAnnualized = false,
+    this.periodGainPercentAnnualized,
   });
 
   /// Instance neutre — tous les champs `null` (cf. gardes de
@@ -73,17 +73,19 @@ class RealGains {
 
   final double? periodGain;
 
-  /// Valeur À AFFICHER — cumulée (Modified Dietz brut) OU annualisée selon
-  /// [isAnnualized] (cf. [HistoryAggregator.computeRealGains], règle des
-  /// 2 ans). JAMAIS deux champs distincts : l'appelant n'a qu'un seul nombre
-  /// à formater, [isAnnualized] ne fait qu'ajouter le suffixe « /an » côté UI.
+  /// Gain CUMULÉ sur la période (Modified Dietz brut) — TOUJOURS ce nombre,
+  /// jamais remplacé par une variante annualisée (cf.
+  /// [HistoryAggregator.computeRealGains]). C'est le premier des deux
+  /// pourcentages affichés côté UI.
   final double? periodGainPercent;
 
-  /// `true` si [periodGainPercent] a été ANNUALISÉ (fenêtre ≥ 2 ans, cf.
-  /// [HistoryAggregator.computeRealGains]) — l'UI doit alors suffixer « /an ».
-  /// `false` par défaut : cumulé tel quel (fenêtre courte, ou garde `1+r<=0`/
-  /// `years<=0` déclenchée).
-  final bool isAnnualized;
+  /// Rendement ANNUALISÉ (fenêtre ≥ 1 an, cf.
+  /// [HistoryAggregator.computeRealGains]) — SECOND pourcentage affiché entre
+  /// parenthèses aux côtés de [periodGainPercent], PAS un remplacement.
+  /// `null` = rien à afficher entre parenthèses (fenêtre < 1 an, ou garde
+  /// `1+r<=0`/`years<=0` déclenchée) : l'UI retombe alors sur le rendu à un
+  /// seul pourcentage.
+  final double? periodGainPercentAnnualized;
 }
 
 /// Résultat de [HistoryAggregator.computeRealTotalGain] — gain TOTAL en
@@ -747,37 +749,44 @@ class HistoryAggregator {
   ///   Modified Dietz ignorée (`denom = V[début]` seul), même garde-fou que
   ///   `totalSpan <= 0`.
   ///
-  /// ANNUALISATION (≥ 2 ans, cf. [RealGains.isAnnualized]) — POURQUOI : le
-  /// Modified Dietz ci-dessus est conçu pour mesurer une performance sur une
-  /// fenêtre COURTE (mois/trimestre/année), où rapporter le gain au capital
-  /// MOYEN pondéré dans le temps reste lisible. Sur « Max » d'un patrimoine
-  /// construit progressivement depuis 10+ ans, ce capital moyen (ex. ~20 k€)
-  /// est très inférieur au capital final (ex. ~66 k€) — le `%` cumulé qui en
-  /// résulte (ex. +183 %) est mathématiquement correct mais illisible et
-  /// contredit visuellement le « Gains totaux » affiché juste à côté (calcul
-  /// différent, cf. [computeRealTotalGain]). Ramené à l'année (ex. +9,1 %/an),
-  /// le même chiffre redevient comparable à un indice — c'est la lecture que
-  /// l'utilisateur attend sur une fenêtre longue.
+  /// ANNUALISATION (≥ 1 an, cf. [RealGains.periodGainPercentAnnualized]) —
+  /// POURQUOI : le Modified Dietz ci-dessus mesure une performance CUMULÉE,
+  /// lisible sur une fenêtre courte (mois/trimestre) mais qui devient
+  /// difficile à comparer d'une fenêtre à l'autre dès qu'on dépasse un an —
+  /// et carrément illisible sur « Max » d'un patrimoine construit
+  /// progressivement depuis 10+ ans (ex. +183 % cumulé, mathématiquement
+  /// correct mais qui ne se compare à rien). Ramené à l'année (ex. +9,1 %/an),
+  /// le même chiffre redevient comparable à un indice. DÉCISION PRODUIT : les
+  /// DEUX valeurs sont utiles et affichées SIMULTANÉMENT dès que la fenêtre
+  /// dépasse un an — l'annualisé vient COMPLÉTER [periodGainPercent] (jamais
+  /// le remplacer, contrairement à l'ancien comportement) : c'est pourquoi
+  /// [RealGains] porte deux champs distincts plutôt qu'un seul + un bool.
   ///
   /// Règle basée sur la DURÉE RÉELLE de [gridDates] (`spanDays`), JAMAIS sur
   /// le libellé de période sélectionné : un journal ne couvrant que 6 mois
-  /// affiché sous le filtre « Max » doit rester cumulé — l'annualiser
-  /// extrapolerait un rendement annuel à partir de 6 mois d'historique, une
-  /// fausse précision. Seuil `spanDays >= 730` (2 ans, borne INCLUSE) :
-  /// en-deçà, la fenêtre reste assez courte pour que le cumulé se lise sans
-  /// besoin de ramener à l'année.
+  /// affiché sous le filtre « Max » ne doit PAS produire d'annualisé —
+  /// l'extrapoler à partir de 6 mois d'historique serait une fausse
+  /// précision. Seuil `spanDays >= 548` (18 mois, borne INCLUSE) : en-deçà,
+  /// seul le cumulé est affiché (pas de parenthèses côté UI).
+  ///
+  /// POURQUOI 18 mois et non 12 : à 365 jours exactement, `years == 1` et la
+  /// formule REDONNE le cumulé — afficher « +12,4 % (+12,4 %/an) » serait un
+  /// doublon pur. La zone 12-15 mois reste trop proche pour apporter une
+  /// information (à 13 mois, +20 % cumulé → +18,3 %/an). À partir de 18 mois
+  /// l'écart devient franc (+20 % → +12,9 %/an) et le second chiffre gagne
+  /// enfin son droit de cité.
   ///
   /// Formule standard (rendement composé annuel) : `years = spanDays /
-  /// 365.25` ; `r = periodGainPercent / 100` ; `annualized = ((1+r)^(1/years)
-  /// − 1) × 100`.
+  /// 365.25` ; `r = periodGainPercent / 100` (le CUMULÉ — jamais une autre
+  /// valeur) ; `annualized = ((1+r)^(1/years) − 1) × 100`.
   ///
   /// Garde `1 + r <= 0` (perte cumulée ≥ 100 %) : la racine `1/years`-ième
-  /// d'un nombre négatif ou nul n'a pas de sens mathématique réel — on GARDE
-  /// le `%` cumulé tel quel et [RealGains.isAnnualized] reste `false` (pas de
-  /// suffixe « /an » sur un chiffre qui n'est PAS annualisé). Idem si
-  /// `years <= 0` (fenêtre dégénérée, ne devrait pas arriver avec `N >= 2`
-  /// sur des dates distinctes, mais on reste défensif plutôt que de diviser
-  /// par zéro/produire un NaN silencieux).
+  /// d'un nombre négatif ou nul n'a pas de sens mathématique réel —
+  /// [RealGains.periodGainPercentAnnualized] reste `null` (rien à afficher
+  /// entre parenthèses) mais [periodGainPercent] (cumulé, négatif) reste, lui,
+  /// renseigné. Idem si `years <= 0` (fenêtre dégénérée, ne devrait pas
+  /// arriver avec `N >= 2` sur des dates distinctes, mais on reste défensif
+  /// plutôt que de diviser par zéro/produire un NaN silencieux).
   static RealGains computeRealGains({
     required List<double> values,
     required List<double> externalFlows,
@@ -810,28 +819,29 @@ class HistoryAggregator {
     // Formatters.formatPercentFr, qui n'applique AUCUNE mise à l'échelle.
     final cumulativePercent = denom > 0 ? periodGain / denom * 100 : null;
 
-    // Annualisation (≥ 2 ans, cf. commentaire ci-dessus) — n'agit que sur le
-    // `%` : periodGain (montant absolu) n'a jamais de notion « par an ».
-    var periodGainPercent = cumulativePercent;
-    var isAnnualized = false;
+    // Annualisation (≥ 1 an, cf. commentaire ci-dessus) — VIENT EN PLUS du
+    // cumulé, ne le remplace JAMAIS : periodGainPercent reste le cumulé brut
+    // dans tous les cas, periodGainPercentAnnualized est un SECOND nombre
+    // (ou `null`). periodGain (montant absolu) n'a jamais de notion « par an ».
+    double? periodGainPercentAnnualized;
     if (cumulativePercent != null) {
       final spanDays = tn.difference(t0).inMilliseconds / 86400000.0;
-      if (spanDays >= 730) {
+      if (spanDays >= 548) {
         final years = spanDays / 365.25;
         final r = cumulativePercent / 100;
         if (years > 0 && 1 + r > 0) {
-          periodGainPercent = (pow(1 + r, 1 / years) - 1) * 100;
-          isAnnualized = true;
+          periodGainPercentAnnualized = (pow(1 + r, 1 / years) - 1) * 100;
         }
-        // Sinon (years <= 0 ou 1+r <= 0) : cumulativePercent conservé tel
-        // quel, isAnnualized reste false (cf. garde documentée ci-dessus).
+        // Sinon (years <= 0 ou 1+r <= 0) : periodGainPercentAnnualized reste
+        // null (cf. garde documentée ci-dessus) — cumulativePercent, lui,
+        // reste inchangé et sera renvoyé tel quel dans periodGainPercent.
       }
     }
 
     return RealGains(
       periodGain: periodGain,
-      periodGainPercent: periodGainPercent,
-      isAnnualized: isAnnualized,
+      periodGainPercent: cumulativePercent,
+      periodGainPercentAnnualized: periodGainPercentAnnualized,
     );
   }
 

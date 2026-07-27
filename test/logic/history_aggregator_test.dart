@@ -660,18 +660,19 @@ void main() {
 
   // =========================================================================
   // Annualisation du % de période (B7 lot annualisation) — cf. doc dense de
-  // computeRealGains : sur les fenêtres longues (>= 2 ans), le % Modified
-  // Dietz cumulé (rapporté au capital MOYEN pondéré) devient illisible face au
-  // gain total ; on lui préfère un rendement annualisé, comparable à un
-  // indice.
+  // computeRealGains : sur les fenêtres longues (>= 1 an), le % Modified
+  // Dietz cumulé (rapporté au capital MOYEN pondéré) devient difficile à
+  // comparer d'une fenêtre à l'autre ; on lui ADJOINT (jamais on ne le
+  // remplace) un rendement annualisé, comparable à un indice.
   // =========================================================================
 
   group('HistoryAggregator.computeRealGains — annualisation', () {
     test(
-      'fenêtre < 2 ans : periodGainPercent cumulé inchangé, isAnnualized == false',
+      'fenêtre < 1 an : periodGainPercent cumulé inchangé, '
+      'periodGainPercentAnnualized == null',
       () {
         // Cas nominal repris ci-dessus : 30 jours, très en-deçà du seuil de
-        // 730 jours.
+        // 365 jours.
         final gains = HistoryAggregator.computeRealGains(
           values: [40000.0, 52000.0],
           externalFlows: [8000.0, 15000.0],
@@ -679,13 +680,13 @@ void main() {
         );
 
         expect(gains.periodGainPercent, closeTo(12.5, 1e-9));
-        expect(gains.isAnnualized, isFalse);
+        expect(gains.periodGainPercentAnnualized, isNull);
       },
     );
 
     test(
-      'fenêtre de 12 ans, r = 1.834 (183.4 % cumulé) : annualisé ≈ 9.07 %, '
-      'isAnnualized == true',
+      'fenêtre de 12 ans, r = 1.834 (183.4 % cumulé) : periodGainPercent '
+      'reste 183.4 %, periodGainPercentAnnualized ≈ 9.07 %',
       () {
         // 2 points ⇒ denom Modified Dietz se réduit à V[0] (cf. commentaire du
         // cas nominal plus haut) : periodGainPercent cumulé == periodGain/V[0]*100,
@@ -708,38 +709,73 @@ void main() {
         // ci-dessus avant de juger l'annualisation elle-même).
         expect(gains.periodGain, closeTo(periodGain, 1e-6));
 
-        expect(gains.isAnnualized, isTrue);
-        expect(gains.periodGainPercent, closeTo(9.07, 0.05));
+        // Le cumulé N'EST PLUS JAMAIS écrasé : les deux valeurs coexistent.
+        expect(gains.periodGainPercent, closeTo(183.4, 0.05));
+        expect(gains.periodGainPercentAnnualized, closeTo(9.07, 0.05));
       },
     );
 
     test(
-      'fenêtre exactement 730 jours (borne incluse) : annualisée',
+      'fenêtre exactement 548 jours (18 mois, borne incluse) : annualisé '
+      'non-null et FRANCHEMENT distinct du cumulé',
+      () {
+        final gains = HistoryAggregator.computeRealGains(
+          values: [10000.0, 12000.0],
+          externalFlows: [0.0, 0.0],
+          gridDates: [
+            DateTime(2022, 1, 1),
+            DateTime(2022, 1, 1).add(const Duration(days: 548)),
+          ],
+        );
+
+        // Cumulé = 20 % (periodGain/V[0]) INCHANGÉ ; annualisé ≈ 12,9 %/an —
+        // l'écart justifie l'affichage du second nombre.
+        expect(gains.periodGainPercent, closeTo(20.0, 1e-6));
+        expect(gains.periodGainPercentAnnualized, closeTo(12.9, 0.2));
+      },
+    );
+
+    test(
+      'fenêtre de 365 jours PILE : PAS d\'annualisé — la formule redonnerait '
+      'le cumulé (doublon inutile à l\'écran)',
       () {
         final gains = HistoryAggregator.computeRealGains(
           values: [10000.0, 11000.0],
           externalFlows: [0.0, 0.0],
           gridDates: [
             DateTime(2022, 1, 1),
-            DateTime(2022, 1, 1).add(const Duration(days: 730)),
+            DateTime(2022, 1, 1).add(const Duration(days: 365)),
           ],
         );
 
-        // Cumulé aurait été 10 % (periodGain/V[0]) ; l'annualisation sur une
-        // fenêtre d'~2 ans ramène le % sous ce cumulé — la valeur exacte
-        // importe moins ici que la bascule elle-même (borne 730 INCLUSE).
-        expect(gains.isAnnualized, isTrue);
-        expect(gains.periodGainPercent, isNot(closeTo(10.0, 1e-6)));
-        expect(gains.periodGainPercent, lessThan(10.0));
+        expect(gains.periodGainPercent, closeTo(10.0, 1e-6));
+        expect(gains.periodGainPercentAnnualized, isNull);
+      },
+    );
+
+    test(
+      'fenêtre juste sous le seuil (547 jours) : pas encore annualisée',
+      () {
+        final gains = HistoryAggregator.computeRealGains(
+          values: [10000.0, 11000.0],
+          externalFlows: [0.0, 0.0],
+          gridDates: [
+            DateTime(2022, 1, 1),
+            DateTime(2022, 1, 1).add(const Duration(days: 547)),
+          ],
+        );
+
+        expect(gains.periodGainPercent, closeTo(10.0, 1e-6));
+        expect(gains.periodGainPercentAnnualized, isNull);
       },
     );
 
     test(
       'perte cumulée >= 100 % (1 + r <= 0) sur une fenêtre longue : cumulé '
-      'conservé, isAnnualized == false (racine réelle impossible)',
+      'conservé, periodGainPercentAnnualized == null (racine réelle impossible)',
       () {
         final start = DateTime(2012, 1, 1);
-        final end = start.add(const Duration(days: 4383)); // 12 ans, >= 730
+        final end = start.add(const Duration(days: 4383)); // 12 ans, >= 365
 
         // r = -1.5 (perte de 150 % du capital moyen) : 1 + r = -0.5 <= 0.
         final gains = HistoryAggregator.computeRealGains(
@@ -749,7 +785,7 @@ void main() {
         );
 
         expect(gains.periodGainPercent, closeTo(-150.0, 1e-6));
-        expect(gains.isAnnualized, isFalse);
+        expect(gains.periodGainPercentAnnualized, isNull);
       },
     );
 
@@ -771,8 +807,8 @@ void main() {
           externalFlows: [0.0, 0.0],
           gridDates: [sameDate, sameDate],
         );
-        // spanDays == 0 < 730 : jamais annualisé, aucun NaN/crash.
-        expect(gains.isAnnualized, isFalse);
+        // spanDays == 0 < 365 : jamais annualisé, aucun NaN/crash.
+        expect(gains.periodGainPercentAnnualized, isNull);
         expect(gains.periodGainPercent, closeTo(5.0, 1e-9));
       },
     );

@@ -192,14 +192,15 @@ class _WalletViewState extends State<WalletView> {
   /// Popup d'aide « gain sur la période » (mode réel, B7 annualisation) —
   /// déclenchée par l'icône ⓘ de la carte de valeur totale. Remplace un
   /// ancien Tooltip (motif partagé [showHelpDialog], cf. account_view).
-  /// Corps choisi selon `realPeriodGainIsAnnualized` (fenêtre ≥ 2 ans).
+  /// Corps choisi selon `realPeriodGainPercentAnnualized != null` (fenêtre
+  /// ≥ 1 an).
   void _showRealPeriodGainHelp() {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
     showHelpDialog(
       context,
       title: l10n.chartRealPeriodGainHelpTitle,
-      body: _controller.realPeriodGainIsAnnualized
+      body: _controller.realPeriodGainPercentAnnualized != null
           ? l10n.chartRealPeriodGainHelpBodyAnnualized
           : l10n.chartRealPeriodGainHelpBody,
     );
@@ -590,12 +591,13 @@ class _WalletViewState extends State<WalletView> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           // Carte valeur totale + variation de période. En
-                          // mode réel seulement (B7 annualisation) : suffixe
-                          // « /an » si Modified Dietz a été annualisé
-                          // (fenêtre ≥ 2 ans) + tooltip pédagogique — variante
-                          // annualisée/cumulée selon
-                          // realPeriodGainIsAnnualized. Mode performance
-                          // (mode 1) : comportement STRICTEMENT inchangé.
+                          // mode réel seulement (B7 annualisation) : second
+                          // pourcentage annualisé entre parenthèses si
+                          // Modified Dietz l'a calculé (fenêtre ≥ 1 an) +
+                          // tooltip pédagogique — corps du popup choisi selon
+                          // realPeriodGainPercentAnnualized. Mode performance
+                          // (mode 1) : comportement STRICTEMENT inchangé
+                          // (percentAnnualized reste null).
                           TotalValueCard(
                             totalValue: totalPatrimoine,
                             periodChange: periodChange,
@@ -605,8 +607,9 @@ class _WalletViewState extends State<WalletView> {
                                   l10n,
                                 ),
                             title: l10n.totalValue,
-                            percentIsAnnualized: useRealCurve &&
-                                _controller.realPeriodGainIsAnnualized,
+                            percentAnnualized: useRealCurve
+                                ? _controller.realPeriodGainPercentAnnualized
+                                : null,
                             onInfoPressed: useRealCurve
                                 ? _showRealPeriodGainHelp
                                 : null,

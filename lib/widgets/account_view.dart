@@ -145,14 +145,15 @@ class _AccountViewState extends State<AccountView> {
   /// Popup d'aide « gain sur la période » (mode réel, B7 annualisation) —
   /// déclenchée par l'icône ⓘ de la carte de valeur totale. Remplace un
   /// ancien Tooltip (motif partagé [showHelpDialog], cf. _showSymbolHelp).
-  /// Corps choisi selon `realPeriodGainIsAnnualized` (fenêtre ≥ 2 ans).
+  /// Corps choisi selon `realPeriodGainPercentAnnualized != null` (fenêtre
+  /// ≥ 1 an).
   void _showRealPeriodGainHelp() {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
     showHelpDialog(
       context,
       title: l10n.chartRealPeriodGainHelpTitle,
-      body: _ctrl.realPeriodGainIsAnnualized
+      body: _ctrl.realPeriodGainPercentAnnualized != null
           ? l10n.chartRealPeriodGainHelpBodyAnnualized
           : l10n.chartRealPeriodGainHelpBody,
     );
@@ -1210,11 +1211,13 @@ class _AccountViewState extends State<AccountView> {
               ? _ctrl.realPeriodGainPercent
               : _ctrl.periodChangePercent,
           selectedPeriodLabel: _ctrl.selectedPeriod.localizedLabel(l10n),
-          // Mode réel seulement (B7 annualisation) : suffixe « /an » si
-          // Modified Dietz a été annualisé (fenêtre ≥ 2 ans) + icône d'aide
-          // ouvrant une popup pédagogique. Mode performance : inchangé.
-          percentIsAnnualized:
-              _useRealCurve && _ctrl.realPeriodGainIsAnnualized,
+          // Mode réel seulement (B7 annualisation) : second pourcentage
+          // annualisé entre parenthèses si Modified Dietz l'a calculé
+          // (fenêtre ≥ 1 an) + icône d'aide ouvrant une popup pédagogique.
+          // Mode performance : inchangé (percentAnnualized reste null).
+          percentAnnualized: _useRealCurve
+              ? _ctrl.realPeriodGainPercentAnnualized
+              : null,
           onInfoPressed: _useRealCurve ? _showRealPeriodGainHelp : null,
         ),
         // Nature du compte (comptes titres) — puce cliquable pour affiner

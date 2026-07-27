@@ -177,10 +177,12 @@ class WalletController extends ChangeNotifier {
   // [HistoryAggregator.computeRealGains] (Modified Dietz) — voir [RealGains].
   double? _realPeriodGain;
   double? _realPeriodGainPercent;
-  // `true` si [_realPeriodGainPercent] est ANNUALISÉ (fenêtre ≥ 2 ans) plutôt
-  // que cumulé — cf. [RealGains.isAnnualized]. Pilote le suffixe « /an » côté
-  // UI (TotalValueCard.percentIsAnnualized).
-  bool _realPeriodGainIsAnnualized = false;
+  // Rendement ANNUALISÉ, SECOND nombre affiché entre parenthèses aux côtés de
+  // [_realPeriodGainPercent] dès que la fenêtre atteint 1 an — cf.
+  // [RealGains.periodGainPercentAnnualized]. `null` = rien à afficher entre
+  // parenthèses (fenêtre courte, ou garde de calcul déclenchée) ; ne
+  // remplace JAMAIS [_realPeriodGainPercent] (TotalValueCard.percentAnnualized).
+  double? _realPeriodGainPercentAnnualized;
   // Gain TOTAL (état courant, base coût, INDÉPENDANT de la fenêtre affichée)
   // via [HistoryAggregator.computeRealTotalGain] — voir [RealTotalGain]. Passe
   // TOUJOURS TOUTES les positions du patrimoine ([_allPositionsData], legacy
@@ -260,9 +262,11 @@ class WalletController extends ChangeNotifier {
   double? get realPeriodGain => _realPeriodGain;
   double? get realPeriodGainPercent => _realPeriodGainPercent;
 
-  /// `true` si [realPeriodGainPercent] est ANNUALISÉ (fenêtre ≥ 2 ans) — cf.
-  /// [HistoryAggregator.computeRealGains]/[RealGains.isAnnualized].
-  bool get realPeriodGainIsAnnualized => _realPeriodGainIsAnnualized;
+  /// Rendement ANNUALISÉ, à afficher EN PLUS de [realPeriodGainPercent] (pas
+  /// à sa place) dès que la fenêtre atteint 1 an — cf.
+  /// [HistoryAggregator.computeRealGains]/[RealGains.periodGainPercentAnnualized].
+  /// `null` = rien à afficher entre parenthèses.
+  double? get realPeriodGainPercentAnnualized => _realPeriodGainPercentAnnualized;
 
   /// Gains TOTAUX en état courant (base coût), INDÉPENDANTS de la période
   /// sélectionnée — cf. [HistoryAggregator.computeRealTotalGain]. `null` tant
@@ -1102,7 +1106,7 @@ class WalletController extends ChangeNotifier {
   void _resetRealGains() {
     _realPeriodGain = null;
     _realPeriodGainPercent = null;
-    _realPeriodGainIsAnnualized = false;
+    _realPeriodGainPercentAnnualized = null;
     _realTotalGain = null;
     _realTotalGainPercent = null;
     _realNoBasisSymbols = {};
@@ -1270,7 +1274,7 @@ class WalletController extends ChangeNotifier {
     );
     _realPeriodGain = periodGains.periodGain;
     _realPeriodGainPercent = periodGains.periodGainPercent;
-    _realPeriodGainIsAnnualized = periodGains.isAnnualized;
+    _realPeriodGainPercentAnnualized = periodGains.periodGainPercentAnnualized;
 
     // Gain TOTAL (état courant, base coût) : calcul INDÉPENDANT des courbes
     // ci-dessus (voie b, pas de dérivation de la grille de dates) — TOUTES
