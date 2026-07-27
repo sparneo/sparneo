@@ -1,8 +1,13 @@
 // test/services/caching_market_data_provider_test.dart
 //
-// Test du décorateur CachingMarketDataProvider (LOT 2 — cache « dernier cours
-// connu »). Utilise un faux MarketDataProvider (même style que _FakeProvider
-// de market_data_service_test.dart) piloté par le test, adossé à une vraie
+// Test du décorateur CachingMarketDataProvider :
+//  - LOT 2 — cache « dernier cours connu » (getQuoteWithMetadata) ;
+//  - cache mémoire des séries historiques (getHistoricalData), keyé par
+//    (symbol, days), TTL court + invalidation manuelle (rafraîchissement
+//    explicite) — cf. groupe "cache historique (getHistoricalData)".
+//
+// Utilise un faux MarketDataProvider (même style que _FakeProvider de
+// market_data_service_test.dart) piloté par le test, adossé à une vraie
 // LastPriceStorage sur AppDatabase in-memory (pas de fake de storage : on
 // veut prouver le round-trip réel upsert → lecture via le décorateur).
 
@@ -28,6 +33,10 @@ class _FakeProvider implements MarketDataProvider {
   String? lastHistoricalSymbol;
   int? lastHistoricalDays;
 
+  /// Compteur d'appels RÉELS au délégué — c'est lui qui prouve un hit/miss du
+  /// cache mémoire (un hit ne doit JAMAIS incrémenter ce compteur).
+  int historicalCallCount = 0;
+
   @override
   Future<AssetQuoteData?> getQuoteWithMetadata(String symbol) async {
     lastQuoteSymbol = symbol;
@@ -36,6 +45,7 @@ class _FakeProvider implements MarketDataProvider {
 
   @override
   Future<AssetHistoricalData?> getHistoricalData(String symbol, {int days = 30}) async {
+    historicalCallCount++;
     lastHistoricalSymbol = symbol;
     lastHistoricalDays = days;
     return historicalToReturn;
@@ -55,12 +65,19 @@ void main() {
   late LastPriceStorage cache;
   late _FakeProvider delegate;
   late CachingMarketDataProvider provider;
+  // Horloge FAKE injectée dans le provider (cf. constructeur `clock:`) — le
+  // cache historique teste le TTL en avançant cette variable, jamais en
+  // dormant réellement (déterministe, rapide). N'affecte PAS le cache
+  // « dernier cours » (getQuoteWithMetadata), qui horodate toujours via le
+  // DateTime.now() réel de LastPriceStorage — non concerné par ce lot.
+  late DateTime fakeNow;
 
   setUp(() async {
     appDb = AppDatabase(factory: databaseFactoryFfi, path: inMemoryDatabasePath);
     cache = LastPriceStorage(database: appDb);
     delegate = _FakeProvider();
-    provider = CachingMarketDataProvider(delegate, cache);
+    fakeNow = DateTime(2026, 1, 1, 12);
+    provider = CachingMarketDataProvider(delegate, cache, clock: () => fakeNow);
   });
 
   tearDown(() async {
@@ -123,7 +140,10 @@ void main() {
       expect(result, isNull);
     });
 
-    test('getHistoricalData est une pure délégation, sans cache', () async {
+  });
+
+  group('CachingMarketDataProvider — cache historique (getHistoricalData)', () {
+    test('premier appel : délègue et renvoie la donnée', () async {
       final historical = AssetHistoricalData(
         symbol: 'AAPL',
         dates: [DateTime(2026, 1, 1)],
@@ -136,6 +156,134 @@ void main() {
       expect(result, same(historical));
       expect(delegate.lastHistoricalSymbol, 'AAPL');
       expect(delegate.lastHistoricalDays, 90);
+      expect(delegate.historicalCallCount, 1);
     });
+
+    test('hit keyé (symbol, days) : le second appel identique ne redélègue PAS', () async {
+      final historical = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 1, 1)],
+        prices: [150.0],
+      );
+      delegate.historicalToReturn = historical;
+
+      final first = await provider.getHistoricalData('AAPL', days: 90);
+      // Si le délégué changeait de réponse ici, un HIT devrait quand même
+      // renvoyer la donnée déjà mise en cache (pas la nouvelle) : c'est ce que
+      // prouve `same(first)` ci-dessous plutôt qu'une simple égalité de valeur.
+      delegate.historicalToReturn = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 6, 1)],
+        prices: [999.0],
+      );
+      final second = await provider.getHistoricalData('AAPL', days: 90);
+
+      expect(second, same(first));
+      expect(delegate.historicalCallCount, 1);
+    });
+
+    test('clé composite (symbol, days) : des days différents ne partagent PAS le cache', () async {
+      delegate.historicalToReturn = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 1, 1)],
+        prices: [150.0],
+      );
+
+      await provider.getHistoricalData('AAPL', days: 30);
+      await provider.getHistoricalData('AAPL', days: 90);
+
+      // Deux clés distinctes ("AAPL|30" et "AAPL|90") ⇒ deux appels délégué,
+      // même si c'est le même symbole.
+      expect(delegate.historicalCallCount, 2);
+    });
+
+    test('des symboles différents ne partagent PAS le cache', () async {
+      delegate.historicalToReturn = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 1, 1)],
+        prices: [150.0],
+      );
+
+      await provider.getHistoricalData('AAPL', days: 30);
+      await provider.getHistoricalData('MSFT', days: 30);
+
+      expect(delegate.historicalCallCount, 2);
+    });
+
+    test('réponse null (échec/introuvable) : jamais mise en cache', () async {
+      delegate.historicalToReturn = null;
+
+      await provider.getHistoricalData('UNKNOWN', days: 30);
+      final second = await provider.getHistoricalData('UNKNOWN', days: 30);
+
+      // Un échec redélègue à CHAQUE appel (pas de mémorisation d'un échec,
+      // sans quoi un symbole en panne temporaire resterait « introuvable »
+      // pendant tout le TTL).
+      expect(second, isNull);
+      expect(delegate.historicalCallCount, 2);
+    });
+
+    test('expiration TTL : après 15 min (horloge fake), redélègue au lieu de resservir', () async {
+      final oldData = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 1, 1)],
+        prices: [150.0],
+      );
+      delegate.historicalToReturn = oldData;
+      await provider.getHistoricalData('AAPL', days: 30);
+      expect(delegate.historicalCallCount, 1);
+
+      // Toujours dans le TTL (14 min) : hit, pas de redélégation.
+      fakeNow = fakeNow.add(const Duration(minutes: 14));
+      final stillCached = await provider.getHistoricalData('AAPL', days: 30);
+      expect(stillCached, same(oldData));
+      expect(delegate.historicalCallCount, 1);
+
+      // TTL dépassé (15 min pile) : redélègue, et la nouvelle donnée est
+      // servie (pas l'ancienne).
+      final freshData = AssetHistoricalData(
+        symbol: 'AAPL',
+        dates: [DateTime(2026, 2, 1)],
+        prices: [160.0],
+      );
+      delegate.historicalToReturn = freshData;
+      fakeNow = fakeNow.add(const Duration(minutes: 1));
+      final afterTtl = await provider.getHistoricalData('AAPL', days: 30);
+
+      expect(afterTtl, same(freshData));
+      expect(delegate.historicalCallCount, 2);
+    });
+
+    test(
+      'invalidateHistory (rafraîchissement manuel) : vide le cache immédiatement, sans attendre le TTL',
+      () async {
+        final oldData = AssetHistoricalData(
+          symbol: 'AAPL',
+          dates: [DateTime(2026, 1, 1)],
+          prices: [150.0],
+        );
+        delegate.historicalToReturn = oldData;
+        await provider.getHistoricalData('AAPL', days: 30);
+        expect(delegate.historicalCallCount, 1);
+
+        // Toujours dans le TTL (horloge inchangée) : sans invalidation, ce
+        // second appel serait un hit. `invalidateHistory` doit forcer une
+        // vraie redélégation malgré ça — c'est le contrat attendu du
+        // rafraîchissement manuel (pull-to-refresh), qui ne peut pas se
+        // contenter d'attendre l'expiration.
+        provider.invalidateHistory();
+
+        final freshData = AssetHistoricalData(
+          symbol: 'AAPL',
+          dates: [DateTime(2026, 2, 1)],
+          prices: [160.0],
+        );
+        delegate.historicalToReturn = freshData;
+        final afterInvalidate = await provider.getHistoricalData('AAPL', days: 30);
+
+        expect(afterInvalidate, same(freshData));
+        expect(delegate.historicalCallCount, 2);
+      },
+    );
   });
 }

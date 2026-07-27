@@ -48,7 +48,7 @@ class PositionDetailPage extends StatefulWidget {
 }
 
 class _PositionDetailPageState extends State<PositionDetailPage> {
-  final MarketDataService _marketService = MarketDataService();
+  final MarketDataService _marketService = MarketDataService.shared;
   final ExchangeRateService _exchangeService = ExchangeRateService();
   final AccountStorage _storage = AccountStorage();
 

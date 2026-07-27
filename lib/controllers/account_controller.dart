@@ -32,6 +32,7 @@ import 'package:portfolio_tracker/services/market_data_service.dart';
 import 'package:portfolio_tracker/services/statement_import_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
+import 'package:portfolio_tracker/utils/bounded_concurrency.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
 
@@ -89,7 +90,7 @@ class AccountController extends ChangeNotifier {
     double? initialUsdToEurRate,
   }) : _storage = storage ?? AccountStorage(),
        _ledger = ledgerService ?? LedgerService(),
-       _marketService = marketService ?? MarketDataService(),
+       _marketService = marketService ?? MarketDataService.shared,
        _exchangeService = exchangeService ?? ExchangeRateService(),
        _txStorage = transactionStorage ?? TransactionStorage(),
        _usdToEurRate = initialUsdToEurRate ?? 0.92;
@@ -365,9 +366,9 @@ class AccountController extends ChangeNotifier {
   }
 
   /// Charge toutes les positions du compte actif et leurs cours.
-  /// Réimplémente la logique de [AssetService.fetchAllPrices] en utilisant
-  /// les services injectés (_storage, _marketService), ce qui permet de les
-  /// remplacer par des fakes en test.
+  /// Reste volontairement écrit ici plutôt que délégué à un service dédié :
+  /// la boucle de cotation s'appuie sur les services injectés (_storage,
+  /// _marketService), ce qui permet de les remplacer par des fakes en test.
   Future<List<PositionWithMarketData>> _fetchAllPrices() async {
     final positions = await _storage.getPositions(_activeAccount!.id);
     // On cote TOUTES les positions du stockage, y compris celles actuellement
@@ -379,8 +380,15 @@ class AccountController extends ChangeNotifier {
     // ici (avant l'await) rendrait l'ensemble obsolète et réintroduirait la
     // course « la masquée réapparaît / l'Annuler est perdu ». Le léger surcoût
     // (coter aussi les masquées) est accepté au profit de la correction.
-    final results = await Future.wait(
-      positions.map((position) async {
+    //
+    // Concurrence BORNÉE (mapBounded) : autant de positions que le compte en
+    // détient, potentiellement bien plus que la borne — sans elle, un compte
+    // à beaucoup de titres partirait en rafale non bornée vers Yahoo (risque
+    // de 429).
+    final results = await mapBounded(
+      positions,
+      maxConcurrentMarketRequests,
+      (position) async {
         // Actif NON COTÉ (repli ISIN / titre délisté) : jamais interrogé sur la
         // source de marché. Traité comme « sans cotation » — currentPrice null
         // → valorisé 0 en aval (position soldée = 0 par construction) ; PAS
@@ -427,7 +435,7 @@ class AccountController extends ChangeNotifier {
           // toutes les cotations live.
           lastUpdated: quote.asOf,
         );
-      }).toList(),
+      },
     );
     return results;
   }
@@ -546,6 +554,14 @@ class AccountController extends ChangeNotifier {
           .toList();
       _recomputeAssetValues();
       _safeNotify();
+      // Rafraîchissement MANUEL explicite (pull-to-refresh) : vide le cache
+      // mémoire des séries historiques AVANT de recharger l'historique, pour
+      // que l'utilisateur obtienne bien une ronde réseau plutôt qu'une
+      // réponse resservie (même si le TTL n'a pas expiré). Les rechargements
+      // « structurels » (import, CRUD → _initService) ne le font PAS : la
+      // série de prix d'un symbole ne dépend jamais du journal local,
+      // resservir le cache y reste correct.
+      _marketService.invalidateHistoryCache();
       await _loadAccountHistory();
     } catch (e) {
       _globalError = e.toString();
@@ -586,14 +602,17 @@ class AccountController extends ChangeNotifier {
         _positionsData,
       );
 
-      final futures = currentPositions.map((positionData) async {
-        return await _marketService.getHistoricalDataForAsset(
+      // Concurrence BORNÉE (mapBounded, cf. _fetchAllPrices) : ordre des
+      // résultats préservé, indispensable ici — `results[i]` est appairé par
+      // index à `currentPositions[i]` (agrégation + mode 2 plus bas).
+      final results = await mapBounded(
+        currentPositions,
+        maxConcurrentMarketRequests,
+        (positionData) => _marketService.getHistoricalDataForAsset(
           positionData.asset,
           days: _selectedPeriod.days,
-        );
-      }).toList();
-
-      final results = await Future.wait(futures);
+        ),
+      );
 
       // Calculs purs — pas de mutation d'état intermédiaire
       final aggregated = HistoryAggregator.aggregateHistoricalData(
@@ -721,18 +740,20 @@ class AccountController extends ChangeNotifier {
 
     // Fetch élargi : DELTA = symboles du journal absents de symbolToData,
     // MÊME fenêtre que le mode 1. Un actif non coté n'est jamais interrogé.
+    // Concurrence BORNÉE (mapBounded) : ordre préservé, appairé par index à
+    // `missingSymbols` juste en dessous.
     final missingSymbols =
         txsBySymbol.keys.where((s) => !symbolToData.containsKey(s)).toList();
-    final fetched = await Future.wait(
-      missingSymbols.map((s) {
-        final asset = assetBySymbol[s]!;
-        if (!asset.quotable) return Future<AssetHistoricalData?>.value(null);
-        return _marketService.getHistoricalDataForAsset(
-          asset,
-          days: _selectedPeriod.days,
-        );
-      }),
-    );
+    final fetched = await mapBounded(missingSymbols, maxConcurrentMarketRequests, (
+      s,
+    ) {
+      final asset = assetBySymbol[s]!;
+      if (!asset.quotable) return Future<AssetHistoricalData?>.value(null);
+      return _marketService.getHistoricalDataForAsset(
+        asset,
+        days: _selectedPeriod.days,
+      );
+    });
     final fullSymbolToData = Map<String, AssetHistoricalData?>.from(
       symbolToData,
     );

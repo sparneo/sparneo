@@ -21,6 +21,7 @@ import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
 import 'package:portfolio_tracker/services/snapshot_storage.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
+import 'package:portfolio_tracker/utils/bounded_concurrency.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
 
@@ -69,7 +70,7 @@ class WalletController extends ChangeNotifier {
     TransactionStorage? transactionStorage,
     this.defaultWalletName = 'Mon Patrimoine',
   }) : _storage = storage ?? AccountStorage(),
-       _marketService = marketService ?? MarketDataService(),
+       _marketService = marketService ?? MarketDataService.shared,
        _exchangeService = exchangeService ?? ExchangeRateService(),
        _snapshotStorage = snapshotStorage ?? SnapshotStorage(),
        _allocationTargetStorage =
@@ -434,15 +435,19 @@ class WalletController extends ChangeNotifier {
         }
       }
       final symbolsList = uniqueSymbols.toList();
-      final quoteResults = await Future.wait(
-        symbolsList.map((s) {
-          final asset = assetBySymbol[s]!;
-          // Actif NON COTÉ (repli ISIN / titre délisté) : jamais interrogé sur
-          // la source de marché — on n'émet aucune requête pour ce symbole.
-          if (!asset.quotable) return Future<AssetQuoteData?>.value(null);
-          return _marketService.getQuoteForAsset(asset);
-        }),
-      );
+      // Concurrence BORNÉE (mapBounded) : ordre préservé, appairé par index à
+      // `symbolsList` juste en dessous — sans borne, un patrimoine à
+      // beaucoup de titres partirait en rafale non bornée vers Yahoo (risque
+      // de 429).
+      final quoteResults = await mapBounded(symbolsList, maxConcurrentMarketRequests, (
+        s,
+      ) {
+        final asset = assetBySymbol[s]!;
+        // Actif NON COTÉ (repli ISIN / titre délisté) : jamais interrogé sur
+        // la source de marché — on n'émet aucune requête pour ce symbole.
+        if (!asset.quotable) return Future<AssetQuoteData?>.value(null);
+        return _marketService.getQuoteForAsset(asset);
+      });
       final Map<String, AssetQuoteData?> quotesBySymbol = {};
       for (int i = 0; i < symbolsList.length; i++) {
         quotesBySymbol[symbolsList[i]] = quoteResults[i];
@@ -537,6 +542,22 @@ class WalletController extends ChangeNotifier {
       // si l'utilisateur change de wallet pendant _loadHistory, on ne persistera
       // pas le total du wallet précédent sous l'id du nouveau.
       final capturingWalletId = _activeWallet?.id;
+
+      // Rafraîchissement MANUEL explicite : loadAllData est le point d'entrée
+      // unique du pull-to-refresh (wallet_view.dart, RefreshIndicator.
+      // onRefresh) — on vide le cache mémoire des séries historiques AVANT de
+      // recharger, pour que l'utilisateur obtienne une vraie ronde réseau
+      // plutôt qu'une réponse resservie (même si le TTL n'a pas expiré). Le
+      // switch de période (onPeriodChanged) appelle _loadHistory DIRECTEMENT,
+      // sans passer par loadAllData ni cette invalidation : c'est précisément
+      // le chemin qui doit bénéficier du cache. Les autres rechargements
+      // « structurels » qui passent par loadAllData (CRUD wallet/compte,
+      // post-import) subissent aussi cette invalidation par simplicité — la
+      // série de prix d'un symbole ne dépend jamais du journal local, ce
+      // n'est donc pas une correction requise, juste le prix d'un point
+      // d'entrée unique plutôt que d'un nouveau paramètre `forceRefresh`
+      // propagé à travers tout loadAllData.
+      _marketService.invalidateHistoryCache();
 
       // Charger l'historique UNE SEULE FOIS : alimente le graphique global
       // ET les variations par compte via une map partagée.
@@ -940,12 +961,14 @@ class WalletController extends ChangeNotifier {
         for (final p in _allPositionsData) p.symbol: p.asset,
       };
       final symbolsList = uniqueSymbols.toList();
-      final results = await Future.wait(
-        symbolsList.map(
-          (s) => _marketService.getHistoricalDataForAsset(
-            assetBySymbol[s]!,
-            days: _selectedPeriod.days,
-          ),
+      // Concurrence BORNÉE (mapBounded) : ordre préservé, appairé par index à
+      // `symbolsList` (boucle juste en dessous).
+      final results = await mapBounded(
+        symbolsList,
+        maxConcurrentMarketRequests,
+        (s) => _marketService.getHistoricalDataForAsset(
+          assetBySymbol[s]!,
+          days: _selectedPeriod.days,
         ),
       );
 
@@ -1094,18 +1117,20 @@ class WalletController extends ChangeNotifier {
     // Fetch élargi : DELTA = symboles du journal absents de symbolToData
     // (déjà rempli par le mode 1 pour les positions actuelles), MÊME fenêtre
     // que le mode 1. Un actif non coté n'est jamais interrogé (repli direct).
+    // Concurrence BORNÉE (mapBounded) : ordre préservé, appairé par index à
+    // `missingSymbols` juste en dessous.
     final missingSymbols =
         txsBySymbol.keys.where((s) => !symbolToData.containsKey(s)).toList();
-    final fetched = await Future.wait(
-      missingSymbols.map((s) {
-        final asset = assetBySymbol[s]!;
-        if (!asset.quotable) return Future<AssetHistoricalData?>.value(null);
-        return _marketService.getHistoricalDataForAsset(
-          asset,
-          days: _selectedPeriod.days,
-        );
-      }),
-    );
+    final fetched = await mapBounded(missingSymbols, maxConcurrentMarketRequests, (
+      s,
+    ) {
+      final asset = assetBySymbol[s]!;
+      if (!asset.quotable) return Future<AssetHistoricalData?>.value(null);
+      return _marketService.getHistoricalDataForAsset(
+        asset,
+        days: _selectedPeriod.days,
+      );
+    });
     final fullSymbolToData = Map<String, AssetHistoricalData?>.from(
       symbolToData,
     );

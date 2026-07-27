@@ -54,6 +54,18 @@ class MarketDataService {
         _provider = provider ??
             CachingMarketDataProvider(YahooFinanceProvider(), LastPriceStorage());
 
+  /// Instance unique partagée par défaut à l'échelle de l'app. Les
+  /// contrôleurs/pages qui ne reçoivent pas de [MarketDataService] injecté
+  /// (hors tests) doivent s'y raccrocher plutôt que d'instancier leur propre
+  /// [MarketDataService] : cela mutualise le cache mémoire des cotations et
+  /// des séries historiques porté par [CachingMarketDataProvider] entre les
+  /// écrans (ex. patrimoine ↔ détail de compte), au lieu que chacun reparte
+  /// d'un cache vide. Paresseuse (construite au premier accès) et jamais
+  /// disposée : aucune des couches sous-jacentes (provider Yahoo, cache
+  /// mémoire, [LastPriceStorage] qui s'appuie sur `AppDatabase.shared()`) ne
+  /// détient de ressource à fermer.
+  static final MarketDataService shared = MarketDataService();
+
   /// Constructeur réservé aux tests : crée une instance sous-classable sans
   /// déclencher d'appels réseau. L'appelant fournit un [ExchangeRateService]
   /// (typiquement un fake construit via [ExchangeRateService.forTesting]) et,
@@ -70,6 +82,19 @@ class MarketDataService {
 
   Future<AssetHistoricalData?> getHistoricalData(String symbol, {int days = 30}) =>
       _provider.getHistoricalData(symbol, days: days);
+
+  /// Vide le cache mémoire des séries historiques (voir
+  /// [CachingMarketDataProvider.invalidateHistory]), si le [_provider]
+  /// injecté en porte un — no-op sinon (ex. [MarketDataService.forTesting]
+  /// avec un fake qui n'a pas ce cache). Réservé aux chemins de
+  /// RAFRAÎCHISSEMENT MANUEL explicite (pull-to-refresh) des contrôleurs, qui
+  /// ne connaissent que ce service et pas le décorateur concret.
+  void invalidateHistoryCache() {
+    final provider = _provider;
+    if (provider is CachingMarketDataProvider) {
+      provider.invalidateHistory();
+    }
+  }
 
   /// Recherche les places candidates pour un [isin] (voir
   /// [MarketDataProvider.searchByIsin]). Utilisée par l'assistant d'import
