@@ -77,7 +77,7 @@ variante :
   ],
   "assets": [
     { "symbol": "AAPL", "name": "Apple Inc.", "class": "stock",
-      "currency": "USD", "exchange": "NMS", "country": "US" }
+      "currency": "USD", "exchange": "NMS", "country": "US", "isin": "US0378331005" }
   ],
   "transactions": [
     { "id": "t-1", "accountId": "a-cto", "symbol": "AAPL", "kind": "buy",
@@ -122,12 +122,53 @@ Un actif par `symbol` distinct apparaissant dans les transactions.
 | `class`    | string? | Classe d'actif (voir ci-dessous), `null` si inconnue. |
 | `currency` | string  | Devise de cotation (ISO 4217). |
 | `exchange` | string? | Code place de cotation, `null` si inconnu. |
-| `country`  | string? | Pays (ISO 3166-1 alpha-2) dérivé de `exchange`, `null` si indéterminable. |
+| `country`  | string? | Pays (ISO 3166-1 alpha-2) source de l'actif, `null` si indéterminable. Dérivé du préfixe ISIN en priorité, avec repli sur la place de cotation — voir « Dérivation de `country` » ci-dessous. |
+| `isin`     | string? | Code ISIN de l'actif (v4, additif), `null` si inconnu. Renseigné par l'import de relevé courtier ; absent des positions saisies à la main ou récupérées depuis Yahoo Finance (qui ne fournit pas d'ISIN). |
 
 **`class`** ∈ `etf`, `stock`, `bond`, `crypto`, `fund`, `preciousMetal`, `other`.
 
-> Pour un actif intégralement cédé, Sparneo peut ne plus disposer de ses métadonnées (place, classe) :
-> l'entrée est alors émise avec ces champs à `null`, à compléter par l'outil consommateur.
+> Pour un actif intégralement cédé, Sparneo peut ne plus disposer de ses métadonnées (place, classe,
+> ISIN) : l'entrée est alors émise avec ces champs à `null`, à compléter par l'outil consommateur.
+
+#### Dérivation de `country` (v4)
+
+`country` n'est **pas** un fait déclaré : Sparneo le **dérive**, dans cet ordre de priorité.
+
+1. **Préfixe ISIN** (source primaire, v4). Un code ISIN valide (norme ISO 6166, 12 caractères) porte
+   le pays d'émission sur ses 2 premiers caractères (ex. `IE00B4L5Y983` → `IE`). C'est le pays
+   **domiciliaire de l'émetteur**, pas la place où le titre est négocié — la distinction compte : un
+   ETF UCITS domicilié en **Irlande** mais coté sur **Euronext Paris** (`exchange = "PAR"`) a un ISIN
+   `IE00…`. Ses distributions sont des revenus de **source étrangère** au sens de la déclaration 2047
+   (ligne, taux conventionnel de retenue à la source et crédit d'impôt dépendent du pays de source, pas
+   de la place de cotation). Un `country` dérivé de la seule place les aurait classées à tort comme
+   françaises et omises de la 2047.
+2. **Repli sur `exchange`** (voir table ci-dessous) si l'ISIN est absent, malformé, ou non exploitable
+   (préfixe non national, voir limites).
+3. `null` si ni l'un ni l'autre n'aboutit.
+
+**Préfixes ISIN ignorés** (retombent sur le repli `exchange`) : tout préfixe commençant par `X`
+(`XS…` = Euroclear/Clearstream, famille réservée aux émissions internationales non rattachées à un
+pays) et `EU` (institutions européennes, pas un pays). Un ISIN malformé (longueur ≠ 12, préfixe non
+alphabétique) est traité comme absent.
+
+**Limite connue et assumée : ADR/GDR.** Un ADR ou un GDR américain représentatif d'une action
+étrangère porte un ISIN `US…` (émission du dépositaire américain), alors que le dividende sous-jacent
+est bien de source étrangère avec retenue à la source du pays d'origine. Ni l'ISIN ni l'`exchange` ne
+permettent de détecter ce cas depuis Sparneo. C'est précisément pour cette raison que le champ `isin`
+brut est exporté en plus de `country` : l'outil consommateur, qui peut maintenir ses propres règles ou
+référentiels fiscaux, reste libre de retraiter ce cas.
+
+**Pas de changement de `version`.** L'ajout d'`isin` est additif et `country` garde son type et sa
+sémantique — seule sa dérivation devient plus juste. Rien ne casse au parsing, le numéro de format
+reste donc `4` (les bumps sont réservés aux incompatibilités structurelles, typiquement l'ajout d'un
+`kind` qu'un lecteur ancien rejetterait). Conséquence à connaître : deux exports déclarant `version: 4`
+peuvent avoir été produits avant ou après ce changement, et donner un `country` différent pour le même
+actif — le champ `version` ne permet pas de les distinguer. La présence de la clé `isin` dans les
+entrées `assets` est l'indice fiable. En cas de doute, réexporter donne la dérivation à jour.
+
+**Couverture.** Beaucoup d'actifs n'auront pas d'ISIN connu (positions saisies à la main, actifs
+provenant de Yahoo Finance qui n'en fournit pas) et retomberont donc sur `exchange`. L'ISIN est
+alimenté par les imports de relevés courtiers qui en portent un.
 
 ### `transactions`
 
@@ -197,7 +238,9 @@ que relue partiellement.
 
 ### Correspondance place → pays
 
-Table utilisée pour dériver `assets.country` depuis `exchange` (valeur `null` si absente de la table) :
+Table de **repli** pour dériver `assets.country` depuis `exchange`, utilisée uniquement quand le
+préfixe ISIN est absent ou non exploitable (voir « Dérivation de `country` » plus haut ; c'était
+auparavant l'unique source). Valeur `null` si `exchange` est absent de la table :
 
 ```
 PAR→FR  AMS→NL  BRU→BE  LIS→PT  XET→DE  FRA→DE  GER→DE

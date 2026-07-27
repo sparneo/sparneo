@@ -251,6 +251,7 @@ void main() {
           'currency': 'USD',
           'exchange': 'NMS',
           'country': 'US',
+          'isin': null,
         },
         {
           'symbol': 'BTC',
@@ -259,6 +260,7 @@ void main() {
           'currency': 'EUR',
           'exchange': 'XXX',
           'country': null,
+          'isin': null,
         },
         {
           'symbol': 'CW8',
@@ -267,6 +269,7 @@ void main() {
           'currency': 'EUR',
           'exchange': 'PAR',
           'country': 'FR',
+          'isin': null,
         },
         {
           'symbol': 'GOLD1OZ',
@@ -275,6 +278,7 @@ void main() {
           'currency': 'EUR',
           'exchange': null,
           'country': null,
+          'isin': null,
         },
         // Fallback : titre entièrement cédé, absent de assetsBySymbol.
         {
@@ -284,6 +288,7 @@ void main() {
           'currency': 'GBP', // récupérée depuis la transaction OLDCO
           'exchange': null,
           'country': null,
+          'isin': null,
         },
       ],
       // Trié par date ASC puis id ASC.
@@ -663,5 +668,146 @@ void main() {
 
     // Ligne mono-devise : clé absente (pas juste null) → export legacy inchangé.
     expect(mono.containsKey('settlementCurrency'), isFalse);
+  });
+
+  group('isin + country (v4)', () {
+    // Périmètre volontairement réduit à un seul actif FOO : ces tests portent
+    // uniquement sur la dérivation isin/country, déjà couverte incidemment
+    // par le golden test (AAPL/CW8/OLDCO) mais ici rendue explicite et
+    // exhaustive sur les cas limites (voir docs/sparneo-fiscal-export.md).
+    Map<String, dynamic> buildSingleAssetExport({
+      required String? isin,
+      required String? exchange,
+    }) {
+      return buildFiscalExport(
+        accounts: [
+          Account(
+              id: 'a1', walletId: 'w1', name: 'A', kind: AccountKind.cto, currency: 'EUR'),
+        ],
+        transactionsByAccount: {
+          'a1': [
+            AssetTransaction(
+              id: 't1',
+              accountId: 'a1',
+              symbol: 'FOO',
+              kind: TransactionKind.buy,
+              quantity: '1',
+              unitPrice: '1',
+              amount: '-1',
+              currency: 'EUR',
+              date: DateTime(2024, 1, 1),
+            ),
+          ],
+        },
+        assetsBySymbol: {
+          'FOO': Asset(
+            symbol: 'FOO',
+            type: AssetType.etf,
+            currency: 'EUR',
+            exchange: exchange,
+            isin: isin,
+          ),
+        },
+        taxYear: 2024,
+        appVersion: '0.1.0',
+        exportedAt: exportedAt,
+      );
+    }
+
+    Map<String, dynamic> singleAsset(Map<String, dynamic> result) =>
+        (result['assets'] as List).single as Map<String, dynamic>;
+
+    test('isin présent → exporté tel quel dans l\'entrée assets', () {
+      final result =
+          buildSingleAssetExport(isin: 'IE00B4L5Y983', exchange: 'PAR');
+      expect(singleAsset(result)['isin'], 'IE00B4L5Y983');
+    });
+
+    test('isin absent (null) → clé présente avec valeur null', () {
+      final result = buildSingleAssetExport(isin: null, exchange: 'NMS');
+      final asset = singleAsset(result);
+      expect(asset.containsKey('isin'), isTrue);
+      expect(asset['isin'], isNull);
+    });
+
+    test(
+        'actif intégralement cédé (branche fallback sans Asset) → isin: null',
+        () {
+      final result = buildFiscalExport(
+        accounts: [
+          Account(
+              id: 'a1', walletId: 'w1', name: 'A', kind: AccountKind.cto, currency: 'EUR'),
+        ],
+        transactionsByAccount: {
+          'a1': [
+            AssetTransaction(
+              id: 't1',
+              accountId: 'a1',
+              symbol: 'GONE',
+              kind: TransactionKind.sell,
+              quantity: '1',
+              unitPrice: '1',
+              amount: '1',
+              currency: 'EUR',
+              date: DateTime(2024, 1, 1),
+            ),
+          ],
+        },
+        assetsBySymbol: const {}, // GONE absent → branche fallback
+        taxYear: 2024,
+        appVersion: '0.1.0',
+        exportedAt: exportedAt,
+      );
+      final asset = singleAsset(result);
+      expect(asset.containsKey('isin'), isTrue);
+      expect(asset['isin'], isNull);
+    });
+
+    test(
+        'cas motivant : ETF UCITS irlandais (isin IE00B4L5Y983) coté sur '
+        'Euronext Paris (exchange PAR) → country dérivé de l\'isin (IE), '
+        'PAS de la place de cotation (FR serait faux : revenu de source '
+        'étrangère pour la 2047)', () {
+      final result =
+          buildSingleAssetExport(isin: 'IE00B4L5Y983', exchange: 'PAR');
+      expect(singleAsset(result)['country'], 'IE');
+    });
+
+    test(
+        'préfixe XS (Euroclear/Clearstream, émission internationale non '
+        'nationale) → ignoré, repli sur exchange', () {
+      final result =
+          buildSingleAssetExport(isin: 'XS1234567890', exchange: 'PAR');
+      expect(singleAsset(result)['country'], 'FR');
+    });
+
+    test('isin malformé (mauvaise longueur) → repli sur exchange', () {
+      final result = buildSingleAssetExport(isin: 'IE00B4L5', exchange: 'PAR');
+      expect(singleAsset(result)['country'], 'FR');
+    });
+
+    test(
+        'non-régression : pas d\'isin + exchange NMS connu → country dérivé '
+        'de exchange (comportement historique intact)', () {
+      final result = buildSingleAssetExport(isin: null, exchange: 'NMS');
+      expect(singleAsset(result)['country'], 'US');
+    });
+
+    test('ni isin exploitable ni exchange connu → country null', () {
+      final result = buildSingleAssetExport(isin: null, exchange: 'ZZZ');
+      expect(singleAsset(result)['country'], isNull);
+    });
+
+    test(
+        'isin d\'un pays absent de la table exchange (PL, BR) → pays quand '
+        'même dérivé via l\'isin', () {
+      final resultPl =
+          buildSingleAssetExport(isin: 'PL1234567890', exchange: null);
+      expect(singleAsset(resultPl)['country'], 'PL');
+
+      final resultBr =
+          buildSingleAssetExport(isin: 'BR1234567890', exchange: null);
+      expect(singleAsset(resultBr)['country'], 'BR');
+    });
   });
 }
