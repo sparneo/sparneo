@@ -108,7 +108,7 @@
     "description": "Caption shown below the chart when the real-evolution mode is active"
   },
 
-  "chartApproxValuesWarning": "Approximate values for {count} security(ies) without history.",
+  "chartApproxValuesWarning": "Price unavailable for {count} security(ies): value held at last known price (flat curve over those periods).",
   "@chartApproxValuesWarning": {
     "description": "Warning shown in real-evolution mode when some symbols fall back to their last known price",
     "placeholders": {

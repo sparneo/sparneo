@@ -17,7 +17,7 @@
   "chartModePerformance": "Performance",
   "chartModeRealEvolution": "Évolution réelle",
   "chartModeRealCaption": "Reconstruit depuis vos mouvements journalisés. Les positions saisies sans historique n'y figurent pas.",
-  "chartApproxValuesWarning": "Valeurs approchées pour {count} titre(s) sans historique.",
+  "chartApproxValuesWarning": "Cours indisponible pour {count} titre(s) : valeur figée au dernier prix connu (courbe plate sur ces périodes).",
   "chartSeriesValueLegend": "Valeur",
   "chartSeriesContributionsLegend": "Apports",
   "noHistoricalData": "Aucune donnée historique",
