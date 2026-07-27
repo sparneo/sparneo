@@ -15,6 +15,22 @@ import 'package:portfolio_tracker/utils/formatters.dart';
 /// - [titleKey]           : clé de localisation du titre de la carte
 ///                          (l10n.totalValue ou l10n.totalValueAccount selon la vue).
 /// - [titleWidget]        : alternative à [titleKey] si le titre vient du caller.
+/// - [percentIsAnnualized]: mode réel uniquement (B7 annualisation) — quand
+///                          `true`, [periodChangePercent] est un rendement
+///                          ANNUALISÉ (fenêtre ≥ 2 ans, cf. [HistoryAggregator.
+///                          computeRealGains]) : la carte ajoute le suffixe
+///                          « /an » (l10n.chartPercentPerYear) plutôt que
+///                          d'afficher le nombre nu. `false` par défaut —
+///                          comportement STRICTEMENT inchangé en mode
+///                          performance (mode 1, jamais annualisé).
+/// - [onInfoPressed]      : mode réel uniquement — callback ouvrant une popup
+///                          pédagogique (explique Modified Dietz / annualisation
+///                          à l'utilisateur) via une icône ⓘ discrète ajoutée
+///                          en fin de ligne de variation. `null` par défaut =
+///                          pas d'icône, ligne strictement inchangée (un
+///                          [Tooltip] ne convenait pas : il ne s'ouvre qu'en
+///                          appui long sur mobile et se referme trop vite pour
+///                          un texte de plusieurs paragraphes).
 ///
 /// La carte est identique entre wallet_view et account_view ; la seule
 /// différence est le texte du titre (l10n.totalValue vs l10n.totalValueAccount).
@@ -24,6 +40,8 @@ class TotalValueCard extends StatelessWidget {
   final double? periodChangePercent;
   final String selectedPeriodLabel;
   final String title;
+  final bool percentIsAnnualized;
+  final VoidCallback? onInfoPressed;
 
   const TotalValueCard({
     super.key,
@@ -32,6 +50,8 @@ class TotalValueCard extends StatelessWidget {
     required this.title,
     this.periodChange,
     this.periodChangePercent,
+    this.percentIsAnnualized = false,
+    this.onInfoPressed,
   });
 
   @override
@@ -56,29 +76,69 @@ class TotalValueCard extends StatelessWidget {
             ),
             if (periodChange != null) ...[
               const SizedBox(height: 6),
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    isPositive ? Icons.trending_up : Icons.trending_down,
-                    color: changeColor,
-                    size: 15,
-                  ),
-                  const SizedBox(width: 4),
-                  Flexible(
-                    child: Text(
-                      '${Formatters.formatEurSigned(periodChange!)} · '
-                      '${periodChangePercent != null ? Formatters.formatPercentFr(periodChangePercent!) : l10n.notAvailable} · '
-                      '$selectedPeriodLabel',
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
+              Builder(
+                builder: (_) {
+                  final percentText = periodChangePercent != null
+                      ? (percentIsAnnualized
+                          ? l10n.chartPercentPerYear(
+                              Formatters.formatPercentFr(periodChangePercent!),
+                            )
+                          : Formatters.formatPercentFr(periodChangePercent!))
+                      : l10n.notAvailable;
+                  return Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        isPositive ? Icons.trending_up : Icons.trending_down,
                         color: changeColor,
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
+                        size: 15,
                       ),
-                    ),
-                  ),
-                ],
+                      const SizedBox(width: 4),
+                      Flexible(
+                        child: Text(
+                          '${Formatters.formatEurSigned(periodChange!)} · '
+                          '$percentText · '
+                          '$selectedPeriodLabel',
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: changeColor,
+                            fontSize: 13,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      // Icône d'aide discrète (ⓘ), affordance cliquable —
+                      // remplace un ancien Tooltip (pattern popup, cf.
+                      // total_value_card.dart doc de tête). Couleur NEUTRE
+                      // (onSurfaceVariant) volontairement : c'est une aide,
+                      // pas une donnée gain/perte. InkWell + Padding serré
+                      // plutôt qu'IconButton : son padding par défaut (8, cible
+                      // 48x48) déséquilibrerait cette ligne compacte à côté de
+                      // l'icône trending_up/down (15px) et forcerait l'ellipsis
+                      // du texte plus tôt sur écran étroit.
+                      if (onInfoPressed != null) ...[
+                        const SizedBox(width: 2),
+                        Tooltip(
+                          message: l10n.chartHelpTooltip,
+                          child: InkWell(
+                            onTap: onInfoPressed,
+                            borderRadius: BorderRadius.circular(12),
+                            child: Padding(
+                              padding: const EdgeInsets.all(4),
+                              child: Icon(
+                                Icons.info_outline,
+                                size: 15,
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  );
+                },
               ),
             ],
           ],

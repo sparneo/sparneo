@@ -430,4 +430,351 @@ void main() {
       expect(updated[0].periodChangePercent, 0.0);
     });
   });
+
+  // =========================================================================
+  // priceEurAt (helper partagé A1 — extrait de reconstructRealNetWorth)
+  // =========================================================================
+
+  group('HistoryAggregator.priceEurAt', () {
+    test('data null → 0.0', () {
+      expect(
+        HistoryAggregator.priceEurAt(null, null, DateTime(2024, 6, 15), 0.92),
+        0.0,
+      );
+    });
+
+    test('data vide → 0.0', () {
+      final empty = _histData('AAA', [], []);
+      expect(
+        HistoryAggregator.priceEurAt(empty, null, DateTime(2024, 6, 15), 0.92),
+        0.0,
+      );
+    });
+
+    test('EUR : prix brut, pas de conversion', () {
+      final data = _histData('AAA', [DateTime(2024, 6, 10)], [100.0]);
+      final asset = Asset(symbol: 'AAA', currency: 'EUR');
+      expect(
+        HistoryAggregator.priceEurAt(data, asset, DateTime(2024, 6, 10), 0.92),
+        100.0,
+      );
+    });
+
+    test('USD : conversion via usdToEurRate', () {
+      final data = _histData('AAA', [DateTime(2024, 6, 10)], [100.0]);
+      final asset = Asset(symbol: 'AAA', currency: 'USD');
+      expect(
+        HistoryAggregator.priceEurAt(data, asset, DateTime(2024, 6, 10), 0.92),
+        closeTo(92.0, 1e-9),
+      );
+    });
+
+    test('asset null : traité comme non-USD (pas de conversion)', () {
+      final data = _histData('AAA', [DateTime(2024, 6, 10)], [100.0]);
+      expect(
+        HistoryAggregator.priceEurAt(data, null, DateTime(2024, 6, 10), 0.92),
+        100.0,
+      );
+    });
+
+    test('date hors bornes → clampée (findNearestIndexBounded)', () {
+      final data = _histData(
+        'AAA',
+        [DateTime(2024, 6, 10), DateTime(2024, 6, 20)],
+        [100.0, 120.0],
+      );
+      final asset = Asset(symbol: 'AAA', currency: 'EUR');
+      // Avant la première date → clampé au premier prix.
+      expect(
+        HistoryAggregator.priceEurAt(data, asset, DateTime(2024, 1, 1), 0.92),
+        100.0,
+      );
+      // Après la dernière date → clampé au dernier prix.
+      expect(
+        HistoryAggregator.priceEurAt(data, asset, DateTime(2025, 1, 1), 0.92),
+        120.0,
+      );
+    });
+  });
+
+  // =========================================================================
+  // computeRealGains (B7 correction financière — gain de PÉRIODE, Modified
+  // Dietz). Le gain TOTAL est désormais un calcul SÉPARÉ, cf.
+  // test/logic/real_net_worth_test.dart : HistoryAggregator.computeRealTotalGain.
+  // =========================================================================
+
+  group('HistoryAggregator.computeRealGains', () {
+    test('cas nominal (2 points) : periodGain et periodGainPercent corrects', () {
+      // V 40000→52000, F 8000→15000 (exemple de la spec). Avec 2 points, le
+      // seul flux intermédiaire coïncide avec le point final (poids Modified
+      // Dietz = 0) : le dénominateur se réduit à V[0] — cas dégénéré attendu.
+      final gains = HistoryAggregator.computeRealGains(
+        values: [40000.0, 52000.0],
+        externalFlows: [8000.0, 15000.0],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 31)],
+      );
+
+      // periodGain = (52000-40000) - (15000-8000) = 12000 - 7000 = 5000
+      expect(gains.periodGain, closeTo(5000.0, 1e-9));
+      // periodGainPercent = 5000 / 40000 * 100 = 12.5
+      expect(gains.periodGainPercent, closeTo(12.5, 1e-9));
+    });
+
+    test('moins-value : periodGain négatif', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [10000.0, 9000.0],
+        externalFlows: [8000.0, 8000.0],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 31)],
+      );
+
+      // gap[0] = 2000, gap[1] = 1000 → periodGain = -1000
+      expect(gains.periodGain, closeTo(-1000.0, 1e-9));
+      expect(gains.periodGainPercent, closeTo(-10.0, 1e-9)); // -1000/10000
+    });
+
+    test('N < 2 (un seul point) : tout null (pas de fenêtre)', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [12000.0],
+        externalFlows: [10000.0],
+        gridDates: [DateTime(2024, 1, 1)],
+      );
+
+      expect(gains.periodGain, isNull);
+      expect(gains.periodGainPercent, isNull);
+    });
+
+    test('N == 0 (listes vides) : tout null', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [],
+        externalFlows: [],
+        gridDates: [],
+      );
+
+      expect(gains.periodGain, isNull);
+      expect(gains.periodGainPercent, isNull);
+    });
+
+    test('longueurs V/F/gridDates différentes : incohérent → tout null', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [1000.0, 2000.0, 3000.0],
+        externalFlows: [1000.0, 2000.0],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 3)],
+      );
+
+      expect(gains.periodGain, isNull);
+      expect(gains.periodGainPercent, isNull);
+    });
+
+    test('gridDates de longueur différente de values (même si F correspond) → tout null', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [1000.0, 2000.0],
+        externalFlows: [1000.0, 2000.0],
+        gridDates: [DateTime(2024, 1, 1)],
+      );
+
+      expect(gains.periodGain, isNull);
+      expect(gains.periodGainPercent, isNull);
+    });
+
+    test('denom <= 0 → periodGainPercent null, mais periodGain reste calculé', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [0.0, 5000.0],
+        externalFlows: [0.0, 4000.0],
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 31)],
+      );
+
+      // periodGain = (5000-0) - (4000-0) = 1000, calculable même si V[0] == 0
+      expect(gains.periodGain, closeTo(1000.0, 1e-9));
+      expect(gains.periodGainPercent, isNull);
+    });
+
+    test(
+      'Modified Dietz : gros dépôt EN MILIEU de fenêtre → % PAS gonflé par '
+      'rapport au % naïf periodGain/V[0]',
+      () {
+        // Grille à 3 points régulièrement espacés : début, milieu, fin.
+        final gridDates = [
+          DateTime(2024, 1, 1),
+          DateTime(2024, 1, 16), // milieu (15 jours des deux côtés sur 30)
+          DateTime(2024, 1, 31),
+        ];
+        // Dépôt de 9000 survenu exactement au point milieu (F saute de 0 à
+        // 9000 entre l'index 0 et l'index 1, rien entre 1 et 2).
+        final values = [1000.0, 10000.0, 10100.0];
+        final externalFlows = [0.0, 9000.0, 9000.0];
+
+        final gains = HistoryAggregator.computeRealGains(
+          values: values,
+          externalFlows: externalFlows,
+          gridDates: gridDates,
+        );
+
+        // periodGain = (10100-1000) - (9000-0) = 9100 - 9000 = 100 (gain de
+        // marché RÉEL, isolé du dépôt).
+        expect(gains.periodGain, closeTo(100.0, 1e-9));
+
+        // % naïf (periodGain/V[0]*100) serait 100/1000*100 = 10 % — trompeur,
+        // car il ignore que 9000 des 10000 n'étaient investis que sur la
+        // moitié de la fenêtre.
+        const naivePercent = 100.0 / 1000.0 * 100.0;
+        expect(gains.periodGainPercent, isNot(closeTo(naivePercent, 1e-6)));
+
+        // Modified Dietz : denom = V[0] + w1·(F[1]-F[0]) + w2·(F[2]-F[1])
+        //                = 1000 + 0.5·9000 + 0·0 = 5500
+        // periodGainPercent = 100/5500*100 ≈ 1.818 % — bien plus bas que le %
+        // naïf, cohérent avec un capital réellement engagé bien supérieur.
+        expect(gains.periodGainPercent, closeTo(100.0 / 5500.0 * 100.0, 1e-6));
+        expect(gains.periodGainPercent! < naivePercent, isTrue);
+      },
+    );
+
+    test(
+      'cash pur ajouté en constante aux deux séries : periodGain INCHANGÉ '
+      '(la constante s\'annule dans l\'écart valeur−flux)',
+      () {
+        const pureCash = 50000.0;
+        final gridDates = [DateTime(2024, 1, 1), DateTime(2024, 1, 31)];
+        final withoutCash = HistoryAggregator.computeRealGains(
+          values: [40000.0, 52000.0],
+          externalFlows: [8000.0, 15000.0],
+          gridDates: gridDates,
+        );
+        final withCash = HistoryAggregator.computeRealGains(
+          values: [40000.0 + pureCash, 52000.0 + pureCash],
+          externalFlows: [8000.0 + pureCash, 15000.0 + pureCash],
+          gridDates: gridDates,
+        );
+
+        // Le GAIN (montant) est rigoureusement identique...
+        expect(withCash.periodGain, closeTo(withoutCash.periodGain!, 1e-9));
+        // ...mais le POURCENTAGE diffère : son dénominateur (V[0]) inclut, lui,
+        // la constante cash — c'est volontaire (cf. doc de computeRealGains).
+        expect(
+          withCash.periodGainPercent,
+          isNot(closeTo(withoutCash.periodGainPercent!, 1e-6)),
+        );
+      },
+    );
+
+  });
+
+  // =========================================================================
+  // Annualisation du % de période (B7 lot annualisation) — cf. doc dense de
+  // computeRealGains : sur les fenêtres longues (>= 2 ans), le % Modified
+  // Dietz cumulé (rapporté au capital MOYEN pondéré) devient illisible face au
+  // gain total ; on lui préfère un rendement annualisé, comparable à un
+  // indice.
+  // =========================================================================
+
+  group('HistoryAggregator.computeRealGains — annualisation', () {
+    test(
+      'fenêtre < 2 ans : periodGainPercent cumulé inchangé, isAnnualized == false',
+      () {
+        // Cas nominal repris ci-dessus : 30 jours, très en-deçà du seuil de
+        // 730 jours.
+        final gains = HistoryAggregator.computeRealGains(
+          values: [40000.0, 52000.0],
+          externalFlows: [8000.0, 15000.0],
+          gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 31)],
+        );
+
+        expect(gains.periodGainPercent, closeTo(12.5, 1e-9));
+        expect(gains.isAnnualized, isFalse);
+      },
+    );
+
+    test(
+      'fenêtre de 12 ans, r = 1.834 (183.4 % cumulé) : annualisé ≈ 9.07 %, '
+      'isAnnualized == true',
+      () {
+        // 2 points ⇒ denom Modified Dietz se réduit à V[0] (cf. commentaire du
+        // cas nominal plus haut) : periodGainPercent cumulé == periodGain/V[0]*100,
+        // ce qui permet de viser r = 1.834 exactement. Span calé sur
+        // 12 x 365.25 jours PILE (plutôt que deux dates calendaires) pour que
+        // `years` vaille exactement 12 dans la formule d'annualisation, sans
+        // aléa de calendrier (années bissextiles).
+        final start = DateTime(2012, 1, 1);
+        final end = start.add(const Duration(days: 4383)); // 12 x 365.25
+
+        const v0 = 20000.0;
+        const periodGain = 1.834 * v0; // r = periodGain / v0 = 1.834
+        final gains = HistoryAggregator.computeRealGains(
+          values: [v0, v0 + periodGain],
+          externalFlows: [0.0, 0.0],
+          gridDates: [start, end],
+        );
+
+        // Cumulé = 183.4 % avant annualisation (vérifie l'hypothèse de calcul
+        // ci-dessus avant de juger l'annualisation elle-même).
+        expect(gains.periodGain, closeTo(periodGain, 1e-6));
+
+        expect(gains.isAnnualized, isTrue);
+        expect(gains.periodGainPercent, closeTo(9.07, 0.05));
+      },
+    );
+
+    test(
+      'fenêtre exactement 730 jours (borne incluse) : annualisée',
+      () {
+        final gains = HistoryAggregator.computeRealGains(
+          values: [10000.0, 11000.0],
+          externalFlows: [0.0, 0.0],
+          gridDates: [
+            DateTime(2022, 1, 1),
+            DateTime(2022, 1, 1).add(const Duration(days: 730)),
+          ],
+        );
+
+        // Cumulé aurait été 10 % (periodGain/V[0]) ; l'annualisation sur une
+        // fenêtre d'~2 ans ramène le % sous ce cumulé — la valeur exacte
+        // importe moins ici que la bascule elle-même (borne 730 INCLUSE).
+        expect(gains.isAnnualized, isTrue);
+        expect(gains.periodGainPercent, isNot(closeTo(10.0, 1e-6)));
+        expect(gains.periodGainPercent, lessThan(10.0));
+      },
+    );
+
+    test(
+      'perte cumulée >= 100 % (1 + r <= 0) sur une fenêtre longue : cumulé '
+      'conservé, isAnnualized == false (racine réelle impossible)',
+      () {
+        final start = DateTime(2012, 1, 1);
+        final end = start.add(const Duration(days: 4383)); // 12 ans, >= 730
+
+        // r = -1.5 (perte de 150 % du capital moyen) : 1 + r = -0.5 <= 0.
+        final gains = HistoryAggregator.computeRealGains(
+          values: [10000.0, -5000.0],
+          externalFlows: [0.0, 0.0],
+          gridDates: [start, end],
+        );
+
+        expect(gains.periodGainPercent, closeTo(-150.0, 1e-6));
+        expect(gains.isAnnualized, isFalse);
+      },
+    );
+
+    test(
+      'span nul (deux points à la même date) : pas de crash, cumulé conservé',
+      () {
+        final sameDate = DateTime(2024, 6, 1);
+        expect(
+          () => HistoryAggregator.computeRealGains(
+            values: [10000.0, 10500.0],
+            externalFlows: [0.0, 0.0],
+            gridDates: [sameDate, sameDate],
+          ),
+          returnsNormally,
+        );
+
+        final gains = HistoryAggregator.computeRealGains(
+          values: [10000.0, 10500.0],
+          externalFlows: [0.0, 0.0],
+          gridDates: [sameDate, sameDate],
+        );
+        // spanDays == 0 < 730 : jamais annualisé, aucun NaN/crash.
+        expect(gains.isAnnualized, isFalse);
+        expect(gains.periodGainPercent, closeTo(5.0, 1e-9));
+      },
+    );
+  });
 }

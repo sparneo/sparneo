@@ -93,9 +93,14 @@
     "description": "Aggregated slice grouping the smallest items in an allocation chart"
   },
 
-  "chartModePerformance": "Performance",
+  "chartModePerformance": "Your holdings",
   "@chartModePerformance": {
     "description": "Chart mode selector segment: mode 1, projection of current holdings (performance)"
+  },
+
+  "chartModePerformanceCaption": "Value your current holdings would have had at past prices (today's quantities assumed constant). Doesn't reflect your past buys/sells — see \"Real evolution\".",
+  "@chartModePerformanceCaption": {
+    "description": "Caption shown below the chart in performance mode (mode 1) to clarify it is a retro-projection of current holdings, not the real portfolio history"
   },
 
   "chartModeRealEvolution": "Real evolution",
@@ -119,14 +124,92 @@
     }
   },
 
+  "chartRealTotalGain": "Total gains: {amount} · {percent}",
+  "@chartRealTotalGain": {
+    "description": "Total gains since the journal's origin, shown below the chart in real-evolution mode (B7 Lot 4) — amount and percent are already formatted strings",
+    "placeholders": {
+      "amount": {
+        "type": "String",
+        "example": "+37 000,00 €"
+      },
+      "percent": {
+        "type": "String",
+        "example": "+246,7 %"
+      }
+    }
+  },
+
+  "chartRealTotalGainAmountOnly": "Total gains: {amount}",
+  "@chartRealTotalGainAmountOnly": {
+    "description": "Same as chartRealTotalGain, but shown when the percent isn't computable (net contributions <= 0) — no ugly 'N/A' placeholder",
+    "placeholders": {
+      "amount": {
+        "type": "String",
+        "example": "+37 000,00 €"
+      }
+    }
+  },
+
+  "chartPercentPerYear": "{percent}/yr",
+  "@chartPercentPerYear": {
+    "description": "Suffixes an already-formatted percent string with an annualisation marker, shown on the period gain of the real-evolution card when computeRealGains annualises a long window (B7 annualisation lot)",
+    "placeholders": {
+      "percent": {
+        "type": "String",
+        "example": "+9.1%"
+      }
+    }
+  },
+
+  "chartRealPeriodGainHelpTitle": "Gain over the period",
+  "@chartRealPeriodGainHelpTitle": {
+    "description": "Title of the help popup explaining the real-evolution period gain percentage (Modified Dietz), opened via the info icon on the total value card"
+  },
+
+  "chartRealPeriodGainHelpBody": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage relates this gain to the average capital actually at work during the period: a recent deposit only counts for the time it was invested.",
+  "@chartRealPeriodGainHelpBody": {
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when it is shown cumulative, i.e. isAnnualized is false"
+  },
+
+  "chartRealPeriodGainHelpBodyAnnualized": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage is annualised: it is the average yearly return, comparable to an index. It relates the gain to the average capital actually at work — a recent deposit only counts for the time it was invested.",
+  "@chartRealPeriodGainHelpBodyAnnualized": {
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when it is annualised, i.e. isAnnualized is true"
+  },
+
+  "chartRealTotalGainHelpTitle": "Total gains",
+  "@chartRealTotalGainHelpTitle": {
+    "description": "Title of the help popup explaining the 'Total gains' line, opened via the info icon shown below the chart in real-evolution mode"
+  },
+
+  "chartRealTotalGainHelpBody": "Total gains since inception: current value minus invested capital (your cash deposits and transferred-in securities, counted at their cost basis).\n\nThis amount may differ from the gap visible between the two curves: the chart values transferred-in securities at their price on the day they entered, whereas this figure uses their actual cost basis.",
+  "@chartRealTotalGainHelpBody": {
+    "description": "Help popup body explaining the 'Total gains' line (chartRealTotalGain/chartRealTotalGainAmountOnly) shown below the chart in real-evolution mode"
+  },
+
+  "chartHelpTooltip": "Learn more",
+  "@chartHelpTooltip": {
+    "description": "Short accessibility/hover label for the info-icon trigger that opens a help popup (desktop tooltip on hover; on mobile the icon must be tapped, a long-press Tooltip wasn't discoverable enough)"
+  },
+
+  "chartNoBasisWarning": "Unknown cost basis for {count} security(ies): excluded from the performance calculation.",
+  "@chartNoBasisWarning": {
+    "description": "Discreet caption shown in real-evolution mode when computeRealTotalGain excludes one or more positions for lacking a known average buy price (PRU) — same visual treatment as chartApproxValuesWarning",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "1"
+      }
+    }
+  },
+
   "chartSeriesValueLegend": "Value",
   "@chartSeriesValueLegend": {
     "description": "Legend label for the main value series, shown alongside the contributions series to disambiguate the two lines in real-evolution mode"
   },
 
-  "chartSeriesContributionsLegend": "Contributions",
+  "chartSeriesContributionsLegend": "Invested capital",
   "@chartSeriesContributionsLegend": {
-    "description": "Legend label for the net contributions (deposits minus withdrawals) series overlaid on the real-evolution chart"
+    "description": "Legend label for the cumulative external flows (cash deposits/withdrawals plus priced security entries/exits) series overlaid on the real-evolution chart"
   },
 
   "noHistoricalData": "No historical data",

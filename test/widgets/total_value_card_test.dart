@@ -99,4 +99,78 @@ void main() {
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets(
+    'percentIsAnnualized == false (défaut) : pourcentage nu, sans suffixe /an',
+    (tester) async {
+      await tester.pumpWidget(_host(const TotalValueCard(
+        totalValue: 5000.00,
+        periodChange: 150.50,
+        periodChangePercent: 9.07,
+        selectedPeriodLabel: 'Max',
+        title: 'Total',
+      )));
+      await tester.pumpAndSettle();
+
+      // Formatters.formatPercentFr arrondit à 1 décimale par défaut.
+      expect(find.textContaining(RegExp(r'\+9,1\s%')), findsOneWidget);
+      expect(find.textContaining('/an'), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'percentIsAnnualized == true : suffixe "/an" ajouté au pourcentage',
+    (tester) async {
+      await tester.pumpWidget(_host(const TotalValueCard(
+        totalValue: 5000.00,
+        periodChange: 150.50,
+        periodChangePercent: 9.07,
+        selectedPeriodLabel: 'Max',
+        title: 'Total',
+        percentIsAnnualized: true,
+      )));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('/an'), findsOneWidget);
+    },
+  );
+
+  testWidgets(
+    'onInfoPressed null (défaut) : aucune icône d\'aide affichée',
+    (tester) async {
+      await tester.pumpWidget(_host(const TotalValueCard(
+        totalValue: 5000.00,
+        periodChange: 150.50,
+        periodChangePercent: 9.07,
+        selectedPeriodLabel: 'Max',
+        title: 'Total',
+      )));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.info_outline), findsNothing);
+    },
+  );
+
+  testWidgets(
+    'onInfoPressed fourni : icône d\'aide affichée et tap déclenche le callback',
+    (tester) async {
+      var pressed = false;
+      await tester.pumpWidget(_host(TotalValueCard(
+        totalValue: 5000.00,
+        periodChange: 150.50,
+        periodChangePercent: 9.07,
+        selectedPeriodLabel: 'Max',
+        title: 'Total',
+        onInfoPressed: () => pressed = true,
+      )));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.info_outline), findsOneWidget);
+
+      await tester.tap(find.byIcon(Icons.info_outline));
+      await tester.pumpAndSettle();
+
+      expect(pressed, isTrue);
+    },
+  );
 }

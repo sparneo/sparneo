@@ -11,6 +11,16 @@ import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
 
+/// Normalise une [DateTime] en DATE-ONLY UTC — RÉPLIQUE volontaire de
+/// l'utilitaire privé homonyme de `position_projection.dart` (inaccessible
+/// depuis ce fichier : underscore = privé à la LIBRARY, pas au dossier).
+/// Sert uniquement à coalescer les breakpoints de [HistoryAggregator.
+/// buildExternalFlowsCurve] par jour, exactement comme
+/// [buildQuantityTimeline]/[buildCashTimeline] le font pour leurs propres
+/// escaliers. Ne PAS appliquer à [AssetHistoricalData.dates] (déjà
+/// journalier, cf. design §11.5 m3).
+DateTime _dateOnlyUtc(DateTime d) => DateTime.utc(d.year, d.month, d.day);
+
 /// Résultat de [HistoryAggregator.aggregateGlobalHistoricalData].
 typedef GlobalAggregationResult = ({
   List<DateTime> chartDates,
@@ -36,6 +46,71 @@ typedef AccountsPeriodChangesResult = ({
   Map<String, double> accountPeriodChanges,
   Map<String, double> accountPeriodChangePercents,
 });
+
+/// Résultat de [HistoryAggregator.computeRealGains] — le gain sur la
+/// PÉRIODE affichée SEUL (B7 lot correction financière) : performance de
+/// MARCHÉ pendant la fenêtre, isolée des flux externes (apports/retraits/
+/// entrées-sorties de titres). Le gain TOTAL (état courant, base coût,
+/// indépendant de la fenêtre) est un calcul SÉPARÉ — voir [RealTotalGain] /
+/// [HistoryAggregator.computeRealTotalGain] — les deux ne sont PAS
+/// substituables (méthodes différentes : flux valorisés au jour du flux ici,
+/// base de coût là-bas ; l'écart entre les deux est assumé, cf. design
+/// doc 18, décision « divergence assumée »).
+/// Tous les champs sont `double?` : `null` = non calculable (garde-fous
+/// documentés sur [HistoryAggregator.computeRealGains]), jamais un zéro
+/// arbitraire qui laisserait croire à une absence de gain.
+class RealGains {
+  const RealGains({
+    this.periodGain,
+    this.periodGainPercent,
+    this.isAnnualized = false,
+  });
+
+  /// Instance neutre — tous les champs `null` (cf. gardes de
+  /// [HistoryAggregator.computeRealGains] : tailles incohérentes/vides/
+  /// fenêtre < 2 points).
+  static const RealGains empty = RealGains();
+
+  final double? periodGain;
+
+  /// Valeur À AFFICHER — cumulée (Modified Dietz brut) OU annualisée selon
+  /// [isAnnualized] (cf. [HistoryAggregator.computeRealGains], règle des
+  /// 2 ans). JAMAIS deux champs distincts : l'appelant n'a qu'un seul nombre
+  /// à formater, [isAnnualized] ne fait qu'ajouter le suffixe « /an » côté UI.
+  final double? periodGainPercent;
+
+  /// `true` si [periodGainPercent] a été ANNUALISÉ (fenêtre ≥ 2 ans, cf.
+  /// [HistoryAggregator.computeRealGains]) — l'UI doit alors suffixer « /an ».
+  /// `false` par défaut : cumulé tel quel (fenêtre courte, ou garde `1+r<=0`/
+  /// `years<=0` déclenchée).
+  final bool isAnnualized;
+}
+
+/// Résultat de [HistoryAggregator.computeRealTotalGain] — gain TOTAL en
+/// ÉTAT COURANT (voie b, base coût), INDÉPENDANT de la fenêtre affichée :
+/// contrairement à [RealGains.periodGain] (dérivé de la courbe §11.4), ce
+/// calcul ne rejoue aucune courbe datée — il agrège directement la
+/// plus-value latente des positions, la plus-value réalisée des ventes et
+/// les revenus (dividendes/intérêts/frais) depuis l'origine du journal.
+class RealTotalGain {
+  const RealTotalGain({
+    this.totalGain,
+    this.totalGainPercent,
+    this.noBasisSymbols = const {},
+  });
+
+  /// Instance neutre — aucun symbole en base connue, gains `null`.
+  static const RealTotalGain empty = RealTotalGain();
+
+  final double? totalGain;
+  final double? totalGainPercent;
+
+  /// Symboles dont la base de coût (PRU) est inconnue — EXCLUS du calcul
+  /// (numérateur ET dénominateur, cf. [HistoryAggregator.computeRealTotalGain])
+  /// plutôt que silencieusement comptés pour zéro. Destiné à un avertissement
+  /// UI (« performance partielle », design §Lot C).
+  final Set<String> noBasisSymbols;
+}
 
 /// Agrégation de données historiques. Toutes les méthodes sont statiques et
 /// pures : aucun accès à l'état d'un widget, aucun I/O.
@@ -228,6 +303,32 @@ class HistoryAggregator {
   /// - Change : taux COURANT (v1 assumée, design §6) — USD converti via
   ///   [usdToEurRate], toute autre devise non-EUR inchangée (même compromis
   ///   que le mode 1, qui ne gère que l'USD).
+  ///
+  /// Prix EUR d'UN symbole à UNE date — helper PARTAGÉ entre
+  /// [reconstructRealNetWorth] (prix « aujourd'hui-relatif » de chaque
+  /// symbole détenu) et [buildExternalFlowsCurve] (prix AU JOUR DU FLUX pour
+  /// valoriser une entrée/sortie de titres, design §11.4). Recherche du prix
+  /// via [findNearestIndexBounded] (même variante que le reste du mode 2,
+  /// clampée aux bornes de [data]) ; conversion USD→EUR via [usdToEurRate] si
+  /// [asset] cote en USD. `0.0` si [data] est `null`/vide (pas d'historique
+  /// exploitable pour ce symbole à cette date — cf. repli « dernier cours »,
+  /// géré en amont par l'appelant via [buildLastPriceFallback], PAS ici).
+  static double priceEurAt(
+    AssetHistoricalData? data,
+    Asset? asset,
+    DateTime d,
+    double usdToEurRate,
+  ) {
+    if (data == null || data.isEmpty) return 0.0;
+    final idx = findNearestIndexBounded(data.dates, d);
+    if (idx == -1) return 0.0;
+    var price = data.prices[idx].toDouble();
+    if (asset != null && asset.isUsd) {
+      price *= usdToEurRate;
+    }
+    return price;
+  }
+
   static ({List<DateTime> dates, List<double> values}) reconstructRealNetWorth({
     required Map<String, List<AssetTransaction>> txsBySymbol,
     required Map<String, List<AssetTransaction>> txsByAccount,
@@ -265,23 +366,19 @@ class HistoryAggregator {
         final qty = quantityAt(qtyTimelines[symbol]!, d);
         if (qty <= Decimal.zero) continue; // soldé à cette date (§8.5)
 
-        final data = symbolToData[symbol];
-        if (data == null || data.isEmpty) {
-          // Pas d'historique de prix (titre délisté/irrésolu) : contribue 0
-          // pour l'instant. Repli « dernier cours connu » = Lot 2 (design §4),
-          // PAS ce lot — point d'extension volontairement laissé ici.
-          continue;
-        }
-
-        final idx = findNearestIndexBounded(data.dates, d);
-        if (idx == -1) continue;
-        var price = data.prices[idx].toDouble();
-
-        final asset = assetBySymbol[symbol];
-        if (asset != null && asset.isUsd) {
-          price *= usdToEurRate;
-        }
-
+        // priceEurAt renvoie 0.0 si data null/vide (pas d'historique
+        // exploitable pour ce symbole à cette date) — comportement IDENTIQUE
+        // au `continue` précédent (ni l'un ni l'autre n'ajoutent de valeur),
+        // itéré en un seul appel plutôt qu'un lookup inline dupliqué avec
+        // buildExternalFlowsCurve. Repli « dernier cours connu » (titres
+        // délistés) reste géré en amont par l'appelant via
+        // [buildLastPriceFallback], pas ici.
+        final price = priceEurAt(
+          symbolToData[symbol],
+          assetBySymbol[symbol],
+          d,
+          usdToEurRate,
+        );
         totalEur += price * qty.toDouble();
       }
 
@@ -433,6 +530,434 @@ class HistoryAggregator {
     }
 
     return values;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Courbe des flux externes complets (B7 correction financière, design §11.4)
+  // : superposée à la courbe de valeur (remplace [buildContributionsCurve] à
+  // cet usage — cf. wallet_controller/account_controller), ET base du calcul
+  // Modified Dietz de [computeRealGains]. PUR, sans I/O.
+  // ---------------------------------------------------------------------------
+
+  /// Courbe des FLUX EXTERNES CUMULÉS (design §11.4), en EUR, échantillonnée
+  /// sur [gridDates] (alignée index-par-index, même contrat que
+  /// [reconstructRealNetWorth]). Remplace [buildContributionsCurve] pour la
+  /// courbe superposée ET pour [computeRealGains] : contrairement à cette
+  /// dernière (cash pur uniquement), elle capture TOUS les flux qui entrent/
+  /// sortent du patrimoine SANS être une performance de marché — dépôts/
+  /// retraits d'espèces ET entrées/sorties de titres à un prix figé (position
+  /// initiale déclarée, ajustement/correction, sortie sans cession), chacune
+  /// valorisée au COURS DU JOUR DU FLUX (pas le cours actuel).
+  ///
+  /// Deux briques sommées index-par-index (partition stricte, cf. en-tête
+  /// `position_projection.dart` — chaque mouvement ne contribue QU'À une
+  /// seule des deux, jamais aux deux ni à aucune) :
+  ///
+  /// (a) FLUX CASH : [deposit]/[withdrawal] (tous), et [openingBalance]/
+  /// [adjustment] à `symbol == null` (variante ESPÈCES). EXCLUS : `dividend`/
+  /// `interest`/`charge` (performance, pas capital) et `buy`/`sell` (la jambe
+  /// cash n'est qu'un TRANSFERT INTERNE vers la jambe titre, contribution
+  /// nette 0 — la sommer serait un double-comptage avec (b)). Réutilise
+  /// [buildCashTimeline]/[cashAt], même sémantique que
+  /// [buildContributionsCurve].
+  ///
+  /// (b) FLUX TITRE : pour chaque symbole, [replayLedger] avec `onStep` —
+  /// seuls [openingBalance]/[adjustment]/[transferOut] À `symbol != null`
+  /// contribuent, valorisés à `step.deltaQty × prix(sym, step.date)`
+  /// ([priceEurAt] sur [symbolToData], DÉJÀ post-repli « dernier cours » —
+  /// c'est la responsabilité de l'appelant, cf. [buildLastPriceFallback]).
+  /// `deltaQty` est le delta EFFECTIF post-clamp (cf. [LedgerStep]) : un
+  /// `transferOut` partiellement clampé (stock insuffisant) contribue son
+  /// effet RÉEL, pas la quantité déclarée. `buy`/`sell` sont EXCLUS ici aussi
+  /// (même raison qu'en (a) : transfert interne, contribution nette 0 — seuls
+  /// les FRAIS d'un achat/vente pèsent, et ils pèsent déjà dans [values] via
+  /// la base de coût/le prix, jamais dans cette courbe de flux).
+  ///
+  /// Les contributions titre sont accumulées PAR DATE (date-only UTC, comme
+  /// [buildQuantityTimeline]) puis PREFIX-SOMMÉES en breakpoints triés, avant
+  /// échantillonnage sur [gridDates] par dichotomie (dernier breakpoint ≤ d,
+  /// `0.0` avant le premier). Analogue à [quantityAt]/[cashAt], mais sur un
+  /// CUMUL de flux (`double`) plutôt qu'un ÉTAT (quantité/cash) — d'où une
+  /// implémentation locale ([_lastFlowAtOrBefore]) plutôt qu'une réutilisation
+  /// directe des primitives de `position_projection.dart` (types différents).
+  ///
+  /// Anti-double-comptage (invariant central, cf. en-tête
+  /// `position_projection.dart`) : `openingBalance` TITRE a `amount == null`
+  /// (jamais capté par (a)) ; `openingBalance` ESPÈCES a `deltaQty == 0`
+  /// (jamais capté par (b)) ; `buy`/`sell` contribuent `0` des deux côtés. Un
+  /// prix manquant (résiduel malgré le repli) donne une valorisation `0` en
+  /// (b) — vue IDENTIQUEMENT par [reconstructRealNetWorth] (même
+  /// `symbolToData`), l'écart valeur/flux reste donc net de cet aléa.
+  ///
+  /// Change : même compromis v1 que le reste du mode 2 (§6) — USD converti via
+  /// [usdToEurRate] au taux COURANT.
+  static List<double> buildExternalFlowsCurve({
+    required Map<String, List<AssetTransaction>> txsBySymbol,
+    required Map<String, List<AssetTransaction>> txsByAccount,
+    required Map<String, AssetHistoricalData?> symbolToData,
+    required Map<String, Asset> assetBySymbol,
+    required double usdToEurRate,
+    required List<DateTime> gridDates,
+  }) {
+    if (gridDates.isEmpty) return <double>[];
+
+    // (a) Flux CASH — sous-ensemble filtré, mêmes briques que
+    // buildContributionsCurve : deposit/withdrawal (tous) + openingBalance/
+    // adjustment ESPÈCES (symbol == null) SEULEMENT.
+    final cashFlows = <AssetTransaction>[
+      for (final txs in txsByAccount.values)
+        for (final tx in txs)
+          if (tx.kind == TransactionKind.deposit ||
+              tx.kind == TransactionKind.withdrawal ||
+              ((tx.kind == TransactionKind.openingBalance ||
+                      tx.kind == TransactionKind.adjustment) &&
+                  tx.symbol == null))
+            tx,
+    ];
+    final cashTimeline = buildCashTimeline(cashFlows);
+
+    // (b) Flux TITRE — accumulation par date-only UTC, un seul rejeu par
+    // symbole (réutilise le fold unique de replayLedger, aucune arithmétique
+    // dupliquée).
+    final byDate = <DateTime, double>{};
+    for (final entry in txsBySymbol.entries) {
+      final symbol = entry.key;
+      final data = symbolToData[symbol];
+      final asset = assetBySymbol[symbol];
+      replayLedger(
+        entry.value,
+        onStep: (step) {
+          if (step.symbol == null) return; // partition : jambe cash, cf. (a)
+          final isFlowKind = step.kind == TransactionKind.openingBalance ||
+              step.kind == TransactionKind.adjustment ||
+              step.kind == TransactionKind.transferOut;
+          if (!isFlowKind) return; // buy/sell : transfert interne, 0 ici
+
+          final price = priceEurAt(data, asset, step.date, usdToEurRate);
+          final contrib = step.deltaQty.toDouble() * price;
+          final day = _dateOnlyUtc(step.date);
+          byDate[day] = (byDate[day] ?? 0.0) + contrib;
+        },
+      );
+    }
+
+    final sortedDays = byDate.keys.toList()..sort();
+    var running = 0.0;
+    final breakpoints = <({DateTime date, double cumulative})>[];
+    for (final day in sortedDays) {
+      running += byDate[day]!;
+      breakpoints.add((date: day, cumulative: running));
+    }
+
+    final values = <double>[];
+    for (final d in gridDates) {
+      final byCurrency = cashAt(cashTimeline, d);
+      double cashEur = 0;
+      for (final e in byCurrency.entries) {
+        cashEur += e.key.toUpperCase() == 'USD'
+            ? e.value.toDouble() * usdToEurRate
+            : e.value.toDouble();
+      }
+      values.add(cashEur + _lastFlowAtOrBefore(breakpoints, d));
+    }
+
+    return values;
+  }
+
+  /// Dichotomie « dernier breakpoint ≤ [target] » sur un CUMUL de flux
+  /// (`double`) — équivalent local de [quantityAt]/[cashAt] pour un payload
+  /// `double` plutôt qu'un `Decimal`/`Map<String, Decimal>` (types
+  /// incompatibles avec ces primitives, d'où la réimplémentation MINIMALE
+  /// ci-dessous, même algorithme que la dichotomie privée de
+  /// `position_projection.dart`). `0.0` avant le premier breakpoint ou si
+  /// [breakpoints] est vide (aucun flux titre connu ≡ contribution nulle).
+  static double _lastFlowAtOrBefore(
+    List<({DateTime date, double cumulative})> breakpoints,
+    DateTime target,
+  ) {
+    final t = _dateOnlyUtc(target);
+    var lo = 0;
+    var hi = breakpoints.length - 1;
+    var ans = -1;
+    while (lo <= hi) {
+      final mid = (lo + hi) >> 1;
+      if (!breakpoints[mid].date.isAfter(t)) {
+        ans = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    return ans < 0 ? 0.0 : breakpoints[ans].cumulative;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gains mode réel — PÉRIODE (B7 correction financière, design §7.3/§11.4) :
+  // PUR, sans I/O — dérivé de [reconstructRealNetWorth]/
+  // [buildExternalFlowsCurve], déjà alignées index-par-index sur la même
+  // grille de dates par construction (contrat des deux fonctions ci-dessus).
+  // Le gain TOTAL (état courant) est un calcul SÉPARÉ : [computeRealTotalGain].
+  // ---------------------------------------------------------------------------
+
+  /// Calcule le gain sur la PÉRIODE affichée du mode 2 « évolution réelle » à
+  /// partir de [values] (valeur du patrimoine/compte, date par date),
+  /// [externalFlows] (flux externes CUMULÉS depuis l'origine du journal,
+  /// [buildExternalFlowsCurve], même grille) et [gridDates] (nécessaire à la
+  /// pondération temporelle Modified Dietz) — voir [RealGains].
+  ///
+  /// POURQUOI c'est correct (invariant central) : par construction du journal,
+  /// `valeur = flux_externes_cumulés + gains_cumulés`, donc à toute date
+  /// `gap = V − F = gains_cumulés`. Le « % naïf » `(V[fin]−V[début]) /
+  /// V[début]` est VOLONTAIREMENT masqué ailleurs (cf. wallet_view) car il
+  /// mélange flux et performance ; ici on isole la performance PURE en
+  /// travaillant sur `gap` plutôt que sur `V` :
+  /// `periodGain = gap[fin] − gap[début]` = gains RÉALISÉS PENDANT la fenêtre
+  /// affichée (les flux de la fenêtre s'annulent dans la soustraction — c'est
+  /// tout l'intérêt de passer par `gap`), soit explicitement
+  /// `(V[fin]−V[début]) − (F[fin]−F[début])`.
+  ///
+  /// `%` en MODIFIED DIETZ (standard de mesure de performance en présence de
+  /// flux intermédiaires) : `periodGainPercent = periodGain / denom × 100`
+  /// (convention ×100 partagée avec le reste de l'app, cf. `periodChangePercent`
+  /// — [Formatters.formatPercentFr] n'échelonne rien), avec
+  /// `denom = V[début] + Σ_{i≥1} w_i·(F[i]−F[i−1])` et `w_i = (t[fin]−t[i]) /
+  /// (t[fin]−t[début])` — un flux survenu tôt dans la fenêtre pèse presque
+  /// PLEINEMENT au dénominateur (il a eu le temps de fructifier, poids proche
+  /// de 1), un flux survenu juste avant la fin pèse presque RIEN (poids proche
+  /// de 0) : un gros dépôt en fin de fenêtre ne gonfle donc pas artificiellement
+  /// le `%` (contrairement à un simple `periodGain / V[début]`).
+  ///
+  /// Le cash PUR (comptes 100 % cash, ajouté en CONSTANTE identique à [values]
+  /// ET [externalFlows] par l'appelant, cf. [addConstantPureCash]) s'annule
+  /// dans `gap` à toute date — `periodGain` en est donc rigoureusement
+  /// indépendant. Le dénominateur Modified Dietz en dépend (comme `V[début]`
+  /// pour un `%` classique), ce qui reste cohérent : c'est un dénominateur de
+  /// valeur absolue, pas un écart.
+  ///
+  /// Gardes (tout `null` plutôt qu'un chiffre trompeur) :
+  /// - [values]/[externalFlows]/[gridDates] de longueurs DIFFÉRENTES → séries
+  ///   incohérentes (grille rompue, ne devrait jamais arriver par
+  ///   construction des appelants) : on refuse de deviner, tout `null`.
+  /// - `N < 2` → pas de fenêtre, rien à comparer : tout `null`.
+  /// - `N == 0` → tout `null`.
+  /// - `denom <= 0` → `periodGainPercent` `null` (division par zéro/valeur non
+  ///   significative), `periodGain` reste, lui, calculé.
+  /// - Fenêtre à durée nulle (`t[fin] == t[début]`, ne devrait pas arriver
+  ///   avec `N >= 2` sur une grille de dates distinctes) → pondération
+  ///   Modified Dietz ignorée (`denom = V[début]` seul), même garde-fou que
+  ///   `totalSpan <= 0`.
+  ///
+  /// ANNUALISATION (≥ 2 ans, cf. [RealGains.isAnnualized]) — POURQUOI : le
+  /// Modified Dietz ci-dessus est conçu pour mesurer une performance sur une
+  /// fenêtre COURTE (mois/trimestre/année), où rapporter le gain au capital
+  /// MOYEN pondéré dans le temps reste lisible. Sur « Max » d'un patrimoine
+  /// construit progressivement depuis 10+ ans, ce capital moyen (ex. ~20 k€)
+  /// est très inférieur au capital final (ex. ~66 k€) — le `%` cumulé qui en
+  /// résulte (ex. +183 %) est mathématiquement correct mais illisible et
+  /// contredit visuellement le « Gains totaux » affiché juste à côté (calcul
+  /// différent, cf. [computeRealTotalGain]). Ramené à l'année (ex. +9,1 %/an),
+  /// le même chiffre redevient comparable à un indice — c'est la lecture que
+  /// l'utilisateur attend sur une fenêtre longue.
+  ///
+  /// Règle basée sur la DURÉE RÉELLE de [gridDates] (`spanDays`), JAMAIS sur
+  /// le libellé de période sélectionné : un journal ne couvrant que 6 mois
+  /// affiché sous le filtre « Max » doit rester cumulé — l'annualiser
+  /// extrapolerait un rendement annuel à partir de 6 mois d'historique, une
+  /// fausse précision. Seuil `spanDays >= 730` (2 ans, borne INCLUSE) :
+  /// en-deçà, la fenêtre reste assez courte pour que le cumulé se lise sans
+  /// besoin de ramener à l'année.
+  ///
+  /// Formule standard (rendement composé annuel) : `years = spanDays /
+  /// 365.25` ; `r = periodGainPercent / 100` ; `annualized = ((1+r)^(1/years)
+  /// − 1) × 100`.
+  ///
+  /// Garde `1 + r <= 0` (perte cumulée ≥ 100 %) : la racine `1/years`-ième
+  /// d'un nombre négatif ou nul n'a pas de sens mathématique réel — on GARDE
+  /// le `%` cumulé tel quel et [RealGains.isAnnualized] reste `false` (pas de
+  /// suffixe « /an » sur un chiffre qui n'est PAS annualisé). Idem si
+  /// `years <= 0` (fenêtre dégénérée, ne devrait pas arriver avec `N >= 2`
+  /// sur des dates distinctes, mais on reste défensif plutôt que de diviser
+  /// par zéro/produire un NaN silencieux).
+  static RealGains computeRealGains({
+    required List<double> values,
+    required List<double> externalFlows,
+    required List<DateTime> gridDates,
+  }) {
+    if (values.length != externalFlows.length ||
+        values.length != gridDates.length) {
+      return RealGains.empty;
+    }
+    final n = values.length;
+    if (n < 2) return RealGains.empty; // pas de fenêtre (n==0 inclus)
+
+    final periodGain =
+        (values[n - 1] - values[0]) - (externalFlows[n - 1] - externalFlows[0]);
+
+    final t0 = gridDates.first;
+    final tn = gridDates.last;
+    final totalSpanMs = tn.difference(t0).inMilliseconds.toDouble();
+
+    var denom = values[0];
+    if (totalSpanMs > 0) {
+      for (var i = 1; i < n; i++) {
+        final w =
+            tn.difference(gridDates[i]).inMilliseconds.toDouble() / totalSpanMs;
+        denom += w * (externalFlows[i] - externalFlows[i - 1]);
+      }
+    }
+    // ×100 : convention PARTAGÉE avec le reste de l'app (periodChangePercent,
+    // unrealizedGainPercent…) — consommée telle quelle par
+    // Formatters.formatPercentFr, qui n'applique AUCUNE mise à l'échelle.
+    final cumulativePercent = denom > 0 ? periodGain / denom * 100 : null;
+
+    // Annualisation (≥ 2 ans, cf. commentaire ci-dessus) — n'agit que sur le
+    // `%` : periodGain (montant absolu) n'a jamais de notion « par an ».
+    var periodGainPercent = cumulativePercent;
+    var isAnnualized = false;
+    if (cumulativePercent != null) {
+      final spanDays = tn.difference(t0).inMilliseconds / 86400000.0;
+      if (spanDays >= 730) {
+        final years = spanDays / 365.25;
+        final r = cumulativePercent / 100;
+        if (years > 0 && 1 + r > 0) {
+          periodGainPercent = (pow(1 + r, 1 / years) - 1) * 100;
+          isAnnualized = true;
+        }
+        // Sinon (years <= 0 ou 1+r <= 0) : cumulativePercent conservé tel
+        // quel, isAnnualized reste false (cf. garde documentée ci-dessus).
+      }
+    }
+
+    return RealGains(
+      periodGain: periodGain,
+      periodGainPercent: periodGainPercent,
+      isAnnualized: isAnnualized,
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Gains mode réel — TOTAL (B7 correction financière, design §7.3, décision
+  // « voie b ») : ÉTAT COURANT, base coût, INDÉPENDANT de la fenêtre/grille —
+  // PAS dérivé de [reconstructRealNetWorth]/[buildExternalFlowsCurve]. PUR,
+  // sans I/O — [replayLedger] est le SEUL rejeu du journal (invariant
+  // anti-divergence, cf. `position_projection.dart`), le non-réalisé lit
+  // directement les positions déjà valorisées par l'appelant.
+  // ---------------------------------------------------------------------------
+
+  /// Calcule le gain TOTAL en ÉTAT COURANT du mode 2 « évolution réelle » —
+  /// voir [RealTotalGain]. Trois termes sommés (EUR) :
+  ///
+  /// 1. NON-RÉALISÉ : `Σ pos.unrealizedGain × fx` sur [positions] — une
+  ///    position sans PRU connu (`unrealizedGain == null`, y compris un
+  ///    `openingBalance` TITRE sans `unitPrice`) est EXCLUE des DEUX termes
+  ///    (numérateur ET capital, cf. plus bas) et ajoutée à
+  ///    [RealTotalGain.noBasisSymbols] — jamais silencieusement comptée pour
+  ///    zéro (ce serait une plus-value fictive). `fx` = devise de COTATION de
+  ///    la position ([Asset.isUsd]), comme le reste du mode 2.
+  /// 2. RÉALISÉ : `Σ replayLedger(txsBySymbol[sym]).realizedGain × fx` — la
+  ///    plus-value bookée sur les VENTES, quel que soit l'état actuel du
+  ///    symbole (y compris un titre totalement soldé, absent de [positions]).
+  ///    `fx` = devise de cotation reprise de [positions] si une position
+  ///    existe pour ce symbole, sinon de la première transaction du journal
+  ///    (même repli que les contrôleurs pour un titre soldé sans position
+  ///    résiduelle).
+  /// 3. REVENUS : `Σ amount` des mouvements `dividend`/`interest`/`charge` de
+  ///    TOUS les comptes de [txsByAccount] (partition STRICTE — aucun autre
+  ///    kind, cf. en-tête `position_projection.dart`) — `amount` déjà SIGNÉ
+  ///    (`charge` négatif sauf rebate). `fx` = devise de RÈGLEMENT
+  ///    (`settlementCurrency ?? currency`), PAS la cotation (c'est un
+  ///    mouvement cash).
+  ///
+  /// `%` : `capital = valeurIncluse − totalGain`, où `valeurIncluse = Σ
+  /// pos.totalValue × fx` (valeur de marché actuelle, PAS le coût — sur les
+  /// SEULES positions à PRU connu, mêmes exclusions qu'au terme 1). `capital`
+  /// est donc DÉFINITIONNEL : il garantit `valeurIncluse = capital +
+  /// totalGain` PAR CONSTRUCTION (invariant testé), pas une vraie « valeur
+  /// investie » indépendante. `totalGainPercent = totalGain / capital × 100`
+  /// (même convention ×100 que [computeRealGains.periodGainPercent]), `null`
+  /// si `capital <= 0`.
+  ///
+  /// ⚠️ Périmètre : [positions] ne porte PAS le cash pur du patrimoine (le
+  /// wallet l'ajoute séparément à l'affichage, cf. `TotalValueCard`) — cette
+  /// fonction ne le voit donc jamais, ni dans `valeurIncluse` ni dans
+  /// `capital`. `transferOut` n'a AUCUN traitement spécial ici : le fold de
+  /// [replayLedger] a déjà retiré sa base de coût au prorata (contribution
+  /// nette 0, ni PV réalisée ni cash) — cohérent avec la sortie de titres
+  /// sans cession qu'il modélise.
+  static RealTotalGain computeRealTotalGain({
+    required List<PositionWithMarketData> positions,
+    required Map<String, List<AssetTransaction>> txsBySymbol,
+    required Map<String, List<AssetTransaction>> txsByAccount,
+    required double usdToEurRate,
+    double cashEur = 0.0,
+  }) {
+    final noBasisSymbols = <String>{};
+    var totalGain = 0.0;
+    // Le CASH fait partie de la valeur détenue, donc du capital investi
+    // (`capital = valeur − gains`). L'OMETTRE amputerait le dénominateur du
+    // `%` de tout le cash non investi et SURÉVALUERAIT la performance (ex.
+    // 10 000 € versés, 5 000 € en titres valant 6 000 € : sans le cash,
+    // capital = 5 000 → +20 % au lieu de +10 %). Le cash n'a jamais de base de
+    // coût ambiguë : sa valeur EST son capital, il n'apporte aucun gain
+    // (les intérêts/frais sont déjà comptés en revenus ci-dessous).
+    var valueIncluded = cashEur;
+
+    // (1) Non-réalisé — positions à PRU connu seulement.
+    for (final pos in positions) {
+      final unrealized = pos.unrealizedGain;
+      if (unrealized == null) {
+        noBasisSymbols.add(pos.symbol);
+        continue;
+      }
+      final fx = pos.asset.isUsd ? usdToEurRate : 1.0;
+      totalGain += unrealized * fx;
+      valueIncluded += pos.totalValue * fx;
+    }
+
+    // Devise de cotation par symbole : position ACTUELLE si elle existe
+    // (autoritative), sinon repli 1ʳᵉ transaction du journal (titre soldé
+    // sans position résiduelle — même motif que les contrôleurs).
+    final currencyBySymbol = <String, String>{
+      for (final p in positions) p.symbol: p.asset.currency,
+    };
+
+    // (2) Réalisé — rejeu PAR SYMBOLE, indépendant de l'état courant.
+    for (final entry in txsBySymbol.entries) {
+      if (entry.value.isEmpty) continue;
+      final symbol = entry.key;
+      final realized = replayLedger(entry.value).realizedGain;
+      final currency = currencyBySymbol[symbol] ?? entry.value.first.currency;
+      final fx = currency.toUpperCase() == 'USD' ? usdToEurRate : 1.0;
+      totalGain += realized * fx;
+    }
+
+    // (3) Revenus — partition stricte dividend/interest/charge, fx règlement.
+    for (final txs in txsByAccount.values) {
+      for (final tx in txs) {
+        if (tx.kind != TransactionKind.dividend &&
+            tx.kind != TransactionKind.interest &&
+            tx.kind != TransactionKind.charge) {
+          continue;
+        }
+        final amt =
+            double.tryParse((tx.amount ?? '').replaceAll(',', '.').trim()) ??
+                0.0;
+        final settlement = tx.settlementCurrency ?? tx.currency;
+        final fx = settlement.toUpperCase() == 'USD' ? usdToEurRate : 1.0;
+        totalGain += amt * fx;
+      }
+    }
+
+    final capital = valueIncluded - totalGain;
+    // ×100 : même convention que periodGainPercent ci-dessus (cf. commentaire
+    // de computeRealGains) — Formatters.formatPercentFr n'échelonne rien.
+    final totalGainPercent = capital > 0 ? totalGain / capital * 100 : null;
+
+    return RealTotalGain(
+      totalGain: totalGain,
+      totalGainPercent: totalGainPercent,
+      noBasisSymbols: noBasisSymbols,
+    );
   }
 
   // ---------------------------------------------------------------------------

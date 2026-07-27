@@ -147,11 +147,32 @@ class AccountController extends ChangeNotifier {
   // « dernier cours connu » (pas un vrai historique de marché) — badge UI.
   Set<String> _realCurveApproxSymbols = {};
 
-  // Courbe des apports nets cumulés (B7 Lot 3b, design doc 18 §7.2/§11.4) :
-  // ALIGNÉE index-par-index sur [_chartDates]/[_realChartValues]. PÉRIMÈTRE
-  // du compte SEUL, pas de cash pur (un compte titres n'a pas de pendant
-  // cash pur — contrairement au wallet, cf. wallet_controller).
+  // Courbe des FLUX EXTERNES CUMULÉS du compte (B7 correction financière,
+  // design §11.4 — ex-« apports nets », désormais [HistoryAggregator.
+  // buildExternalFlowsCurve]) : ALIGNÉE index-par-index sur
+  // [_chartDates]/[_realChartValues]. PÉRIMÈTRE du compte SEUL, pas de cash
+  // pur (un compte titres n'a pas de pendant cash pur — contrairement au
+  // wallet, cf. wallet_controller). Le NOM du champ est conservé pour limiter
+  // le remue-ménage — seul le LABEL affiché change (« Capital investi »).
   List<double> _realContributionsValues = [];
+  // Gain de PÉRIODE (B7 correction financière, design §7.3) : dérivé de
+  // [_realChartValues]/[_realContributionsValues] via
+  // [HistoryAggregator.computeRealGains] (Modified Dietz) — voir [RealGains].
+  double? _realPeriodGain;
+  double? _realPeriodGainPercent;
+  // `true` si [_realPeriodGainPercent] est ANNUALISÉ (fenêtre ≥ 2 ans) plutôt
+  // que cumulé — cf. [RealGains.isAnnualized]. Pilote le suffixe « /an » côté
+  // UI (TotalValueCard.percentIsAnnualized).
+  bool _realPeriodGainIsAnnualized = false;
+  // Gain TOTAL (état courant, base coût, INDÉPENDANT de la fenêtre affichée)
+  // via [HistoryAggregator.computeRealTotalGain] — voir [RealTotalGain].
+  // Passe les positions DU COMPTE (legacy incluses si leur PRU est connu),
+  // jamais gaté par la période sélectionnée.
+  double? _realTotalGain;
+  double? _realTotalGainPercent;
+  // Symboles EXCLUS du calcul ci-dessus faute de PRU connu — cf.
+  // [RealTotalGain.noBasisSymbols], destiné à l'avertissement UI (Lot C).
+  Set<String> _realNoBasisSymbols = {};
 
   double _usdToEurRate; // initialisé par le constructeur (0.92 par défaut)
 
@@ -224,6 +245,26 @@ class AccountController extends ChangeNotifier {
   /// index-par-index sur [chartDates]/[realChartValues]. Vide tant qu'aucun
   /// calcul mode 2 n'a abouti.
   List<double> get realContributionsValues => _realContributionsValues;
+
+  /// Gains sur la période affichée (mode réel), isolés des apports/retraits —
+  /// cf. [HistoryAggregator.computeRealGains]. `null` tant qu'aucun calcul
+  /// mode 2 n'a abouti, ou fenêtre < 2 points.
+  double? get realPeriodGain => _realPeriodGain;
+  double? get realPeriodGainPercent => _realPeriodGainPercent;
+
+  /// `true` si [realPeriodGainPercent] est ANNUALISÉ (fenêtre ≥ 2 ans) — cf.
+  /// [HistoryAggregator.computeRealGains]/[RealGains.isAnnualized].
+  bool get realPeriodGainIsAnnualized => _realPeriodGainIsAnnualized;
+
+  /// Gains TOTAUX en état courant (base coût), INDÉPENDANTS de la période
+  /// sélectionnée — cf. [HistoryAggregator.computeRealTotalGain]. `null` tant
+  /// qu'aucun calcul mode 2 n'a abouti.
+  double? get realTotalGain => _realTotalGain;
+  double? get realTotalGainPercent => _realTotalGainPercent;
+
+  /// Symboles EXCLUS du calcul des gains totaux faute de PRU connu — cf.
+  /// [HistoryAggregator.computeRealTotalGain].
+  Set<String> get realNoBasisSymbols => _realNoBasisSymbols;
 
   double get usdToEurRate => _usdToEurRate;
   Map<String, double> get assetValues => _assetValues;
@@ -586,6 +627,7 @@ class AccountController extends ChangeNotifier {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
       _realContributionsValues = [];
+      _resetRealGains();
       _safeNotify();
       return;
     }
@@ -653,6 +695,7 @@ class AccountController extends ChangeNotifier {
         _realChartValues = [];
         _realCurveApproxSymbols = {};
         _realContributionsValues = [];
+        _resetRealGains();
       }
 
       _isLoadingHistory = false;
@@ -663,6 +706,20 @@ class AccountController extends ChangeNotifier {
       _isLoadingHistory = false;
       _safeNotify();
     }
+  }
+
+  /// Remet les champs de gains mode réel à `null` (+ [_realNoBasisSymbols]
+  /// vidé) — à appeler PARTOUT où [_realChartValues]/[_realContributionsValues]
+  /// sont réinitialisés (courbe réelle absente/périmée), pour ne jamais
+  /// laisser un gain calculé sur une ancienne courbe affiché à côté d'une
+  /// courbe vidée.
+  void _resetRealGains() {
+    _realPeriodGain = null;
+    _realPeriodGainPercent = null;
+    _realPeriodGainIsAnnualized = false;
+    _realTotalGain = null;
+    _realTotalGainPercent = null;
+    _realNoBasisSymbols = {};
   }
 
   /// Calcule le mode 2 « évolution réelle » du COMPTE (B7, design doc 18) :
@@ -690,6 +747,7 @@ class AccountController extends ChangeNotifier {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
       _realContributionsValues = [];
+      _resetRealGains();
       return;
     }
 
@@ -714,6 +772,7 @@ class AccountController extends ChangeNotifier {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
       _realContributionsValues = [];
+      _resetRealGains();
       return;
     }
 
@@ -795,14 +854,50 @@ class AccountController extends ChangeNotifier {
     _realChartValues = reconstructed.values;
     _realCurveApproxSymbols = approxSymbols;
 
-    // Courbe des apports nets du compte (B7 Lot 3b) : pas de cash pur à
-    // composer ici (périmètre compte seul, cf. commentaire de
-    // [_realContributionsValues]).
-    _realContributionsValues = HistoryAggregator.buildContributionsCurve(
+    // Courbe des flux externes complets du compte (design §11.4, ex-« apports
+    // nets ») : pas de cash pur à composer ici (périmètre compte seul, cf.
+    // commentaire de [_realContributionsValues]).
+    _realContributionsValues = HistoryAggregator.buildExternalFlowsCurve(
+      txsBySymbol: txsBySymbol,
       txsByAccount: {_activeAccount!.id: txs},
-      gridDates: _chartDates,
+      symbolToData: fullSymbolToData,
+      assetBySymbol: assetBySymbol,
       usdToEurRate: _usdToEurRate,
+      gridDates: _chartDates,
     );
+
+    // Gain de PÉRIODE (Modified Dietz) : DOIT être calculé APRÈS que les deux
+    // courbes ci-dessus sont posées — [computeRealGains] les suppose déjà
+    // alignées index-par-index (contrat de [_realChartValues]/
+    // [_realContributionsValues]).
+    final periodGains = HistoryAggregator.computeRealGains(
+      values: _realChartValues,
+      externalFlows: _realContributionsValues,
+      gridDates: _chartDates,
+    );
+    _realPeriodGain = periodGains.periodGain;
+    _realPeriodGainPercent = periodGains.periodGainPercent;
+    _realPeriodGainIsAnnualized = periodGains.isAnnualized;
+
+    // Gain TOTAL (état courant, base coût) : calcul INDÉPENDANT des courbes
+    // ci-dessus — positions DU COMPTE (legacy incluses si leur PRU est
+    // connu), affiché quelle que soit la période sélectionnée.
+    // Cash DÉRIVÉ du compte (devise de règlement du compte → EUR) : fait
+    // partie de la valeur détenue, donc du capital investi. L'omettre
+    // surévaluerait le `%` (cf. computeRealTotalGain).
+    final derivedCashEur = (double.tryParse(_derivedCash ?? '0') ?? 0.0) *
+        (_activeAccount!.currency.toUpperCase() == 'USD' ? _usdToEurRate : 1.0);
+
+    final totalGain = HistoryAggregator.computeRealTotalGain(
+      positions: currentPositions,
+      txsBySymbol: txsBySymbol,
+      txsByAccount: {_activeAccount!.id: txs},
+      usdToEurRate: _usdToEurRate,
+      cashEur: derivedCashEur,
+    );
+    _realTotalGain = totalGain.totalGain;
+    _realTotalGainPercent = totalGain.totalGainPercent;
+    _realNoBasisSymbols = totalGain.noBasisSymbols;
   }
 
   /// Appelé par la vue lorsque l'utilisateur sélectionne une nouvelle période.
