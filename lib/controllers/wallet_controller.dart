@@ -37,9 +37,10 @@ class WalletController extends ChangeNotifier {
   final ExchangeRateService _exchangeService;
   final SnapshotStorage _snapshotStorage;
   final AllocationTargetStorage _allocationTargetStorage;
-  /// Lecture du journal (lot cash-ledger) : sert UNIQUEMENT à décider l'opt-in
-  /// d'agrégation du cash dérivé des comptes titres (cf. [journalHasCashAnchor]
-  /// dans [loadAllData]) — aucune écriture ici.
+  /// Lecture du journal (lot cash-ledger, élargi par B8/doc 19) : sert
+  /// UNIQUEMENT à décider le RÉGIME de chaque compte (cf.
+  /// [journalHasCashAnchor] dans [loadAllData]) — pour les comptes titres ET,
+  /// depuis B8, pour les comptes cash. Aucune écriture ici.
   final TransactionStorage _txStorage;
 
   /// Nom du wallet par défaut (fourni par la vue qui a accès au contexte).
@@ -86,15 +87,30 @@ class WalletController extends ChangeNotifier {
   List<Account> _accounts = [];
   Map<String, double> _accountValues = {}; // accountId → totalValueEur
   List<PositionWithMarketData> _allPositionsData = [];
-  // accountId → solde de liquidités EUR. Peuplé par DEUX sources DISJOINTES
-  // (partition stricte par account.type, jamais les deux pour le même compte
-  // — cf. loadAllData) :
-  //   - comptes kind=cash : cashBalance manuel (modèle inchangé) ;
-  //   - comptes titres (lot cash-ledger) : cash DÉRIVÉ du journal
-  //     (getAccountDerivedCash), UNIQUEMENT si le journal contient un ancrage
-  //     espèces (journalHasCashAnchor) — opt-in, sinon un journal composé
-  //     seulement de buy/sell donnerait un solde négatif et FAUX (design §3/§6.7).
+  // accountId → solde de liquidités EUR. Peuplé par DEUX sources DISJOINTES,
+  // partitionnées par le SEUL discriminant [journalHasCashAnchor] — B8/doc 19
+  // §1 : la partition ne porte PLUS sur `account.type`, et la règle est la
+  // MÊME pour les deux familles de comptes (cf. loadAllData) :
+  //   - compte ANCRÉ (≥ 1 mouvement d'ancrage espèces au journal), cash OU
+  //     titres : cash DÉRIVÉ du journal (getAccountDerivedCash) ;
+  //   - compte NON ancré de type cash : `cashBalance` déclaratif LEGACY
+  //     (régime d'avant B8, strictement inchangé — aucune migration, §3) ;
+  //   - compte NON ancré de type titres : ABSENT de cette map (un journal
+  //     composé seulement de buy/sell donnerait un solde négatif et FAUX,
+  //     design cash-ledger §3/§6.7).
+  // Un compte tombe dans EXACTEMENT une branche → double comptage impossible
+  // par construction (invariant doc 19 §6.5).
   final Map<String, double> _cashBalances = {};
+
+  /// Ids des comptes dont le journal porte au moins un ANCRAGE ESPÈCES
+  /// ([journalHasCashAnchor]) — mémorisé par [loadAllData] en même temps que
+  /// [_txsByAccountForHistory], dont il partage exactement la fraîcheur (les
+  /// deux sont relus au même endroit, à partir des mêmes journaux).
+  ///
+  /// Ce n'est PAS un second discriminant (invariant doc 19 §6.6) : c'est la
+  /// MÉMOÏSATION du résultat de [journalHasCashAnchor], jamais une règle
+  /// parallèle — aucun autre prédicat de régime n'existe dans ce contrôleur.
+  Set<String> _anchoredAccountIds = {};
 
   /// Comptes masqués de la liste affichée en attente de confirmation de
   /// suppression (motif « suppression différée + Annuler »). Tant qu'un id y
@@ -151,11 +167,12 @@ class WalletController extends ChangeNotifier {
   // index-par-index sur [_chartDates] (même grille de dates, garantie par
   // construction — cf. _computeRealNetWorthCurve).
   //
-  // [_txsByAccountForHistory] : journal COMPLET des comptes NON-CASH, capturé
-  // par loadAllData (nonCashTxsResults, déjà fetché pour le gating
-  // cash-ledger opt-in) et réutilisé ici pour énumérer TOUS les symboles
-  // historiques (y compris soldés, absents de [_allPositionsData]) sans
-  // reformuler un accès storage.
+  // [_txsByAccountForHistory] : journal COMPLET de TOUS les comptes (comptes
+  // CASH INCLUS depuis B8/doc 19 §4.4 — c'est ce qui permet au journal d'un
+  // livret d'atteindre le mode 2), capturé par loadAllData (txsResults, déjà
+  // fetché pour décider le régime de chaque compte) et réutilisé ici pour
+  // énumérer TOUS les symboles historiques (y compris soldés, absents de
+  // [_allPositionsData]) sans reformuler un accès storage.
   Map<String, List<AssetTransaction>> _txsByAccountForHistory = {};
   List<double> _realChartValues = [];
   // Symboles dont la valeur, à au moins une date, provient d'un repli
@@ -385,26 +402,17 @@ class WalletController extends ChangeNotifier {
       Map<String, List<PositionWithMarketData>> accountPositions = {};
 
       // ⭐ Étape A : charger les positions de tous les comptes investissement
-      // et collecter l'ensemble des symboles UNIQUES. Les comptes cash sont
-      // traités à part (valeur directe, pas de cotation).
+      // et collecter l'ensemble des symboles UNIQUES. Les comptes cash n'ont
+      // aucune position (leur valeur EST leur solde d'espèces, cf. Étape C) et
+      // aucune cotation.
       final Map<String, List<Position>> rawPositionsByAccount = {};
       final Set<String> uniqueSymbols = {};
 
-      // ⭐ Comptes CASH (+ cash dérivé des comptes titres, lot cash-ledger) :
-      // récupérer EN PARALLÈLE les taux des devises uniques utilisées par
-      // TOUS les comptes ayant un solde de liquidités à convertir, puis
-      // appliquer la conversion. Un seul lot de requêtes de taux pour les
-      // deux familles de comptes (jamais le même compte dans les deux listes
-      // — partition stricte par account.type).
-      final cashAccounts = accounts
-          .where((a) => a.type == AccountType.cash)
-          .toList();
-      final nonCashAccounts = accounts
-          .where((a) => a.type != AccountType.cash)
-          .toList();
+      // ⭐ Taux de change des soldes d'espèces : un seul lot de requêtes pour
+      // les devises UNIQUES de TOUS les comptes (les deux familles reçoivent
+      // désormais le même traitement du cash, cf. ci-dessous).
       final uniqueCashCurrencies = {
-        ...cashAccounts.map((a) => a.currency.toUpperCase()),
-        ...nonCashAccounts.map((a) => a.currency.toUpperCase()),
+        for (final a in accounts) a.currency.toUpperCase(),
       }.toList();
       final cashRatesList = await Future.wait(
         uniqueCashCurrencies.map((c) => _exchangeService.getRateToEur(c)),
@@ -414,54 +422,76 @@ class WalletController extends ChangeNotifier {
         cashRateByCurrency[uniqueCashCurrencies[i]] = cashRatesList[i];
       }
 
-      // ⭐ CASH DÉRIVÉ DES COMPTES TITRES (lot cash-ledger — risque §6.7, double
-      // comptage). Calculé ICI, EN PARALLÈLE (comme les cotations ci-dessous),
+      // ⭐ RÉGIME DU CASH — UNE SEULE RÈGLE, LA MÊME POUR LES DEUX FAMILLES DE
+      // COMPTES (B8, doc 19 §1/§4.4 ; anciennement : deux chemins distincts
+      // partitionnés par `account.type`). Le SEUL discriminant est
+      // [journalHasCashAnchor] :
+      //
+      //   - ANCRÉ (≥ 1 deposit/withdrawal/interest/charge, ou openingBalance
+      //     ESPÈCES) → cash DÉRIVÉ du journal (`derived_cash × fx`), que le
+      //     compte soit de type cash ou titres — MÊME chemin, MÊME code ;
+      //   - NON ancré + type cash → `cash_balance × fx`, régime LEGACY
+      //     déclaratif STRICTEMENT inchangé (aucune migration : un compte cash
+      //     existant y reste jusqu'à ce que l'utilisateur pose lui-même un
+      //     ancrage, doc 19 §3 / invariant §6.9) ;
+      //   - NON ancré + type titres → rien (un journal composé uniquement de
+      //     buy/sell donnerait un solde dérivé négatif et FAUX, aucun dépôt/
+      //     retrait/intérêt/frais/solde initial espèces n'ayant jamais été
+      //     enregistré — opt-in du lot cash-ledger, cf. position_projection).
+      //
+      // Un compte tombe dans EXACTEMENT une branche ⇒ double comptage
+      // impossible par construction (invariant doc 19 §6.5, risque §8.1
+      // BLOQUANT). Calculé ICI, EN PARALLÈLE (comme les cotations ci-dessous),
       // pour l'injecter plus loin dans `accountValues`/`_cashBalances` SANS
       // await dans la boucle de construction (invariant de l'Étape C).
       //
-      // Opt-in (journalHasCashAnchor) : un journal composé uniquement de
-      // buy/sell donnerait un solde dérivé négatif et FAUX (aucun dépôt/retrait/
-      // intérêt/frais/solde initial espèces jamais enregistré) — on ne
-      // l'agrège que si le journal atteste au moins un mouvement d'ancrage
-      // espèces. Même garde que l'affichage opt-in du solde sur la page compte
-      // (cf. position_projection.dart). `derived.cash == null` = compte jamais
-      // projeté (aucun mouvement du tout) → rien à agréger non plus.
+      // Coût assumé (doc 19 §4.4) : un getByAccount/getAccountDerivedCash de
+      // plus par compte CASH à chaque chargement — requêtes locales indexées
+      // sur des journaux typiquement courts.
       final derivedCashResults = await Future.wait(
-        nonCashAccounts.map((a) => _storage.getAccountDerivedCash(a.id)),
+        accounts.map((a) => _storage.getAccountDerivedCash(a.id)),
       );
-      final nonCashTxsResults = await Future.wait(
-        nonCashAccounts.map((a) => _txStorage.getByAccount(a.id)),
+      final txsResults = await Future.wait(
+        accounts.map((a) => _txStorage.getByAccount(a.id)),
       );
-      // Mode 2 (B7 Lot 2) : conserve le journal COMPLET par compte non-cash,
-      // réutilisé par _loadHistory pour énumérer TOUS les symboles du journal
-      // (y compris soldés) — AVANT tout filtrage/gating cash-ledger ci-dessous
-      // (le gating d'ancrage ne s'applique qu'à l'agrégation cash affichée,
-      // pas à l'énumération des symboles pour le fetch d'historique).
+      // Mode 2 (B7 Lot 2, élargi par B8) : conserve le journal COMPLET par
+      // compte — TOUS les comptes désormais, comptes cash inclus, c'est ce qui
+      // fait entrer le journal d'un livret dans la reconstruction réelle et
+      // dans computeRealTotalGain. Capturé AVANT tout gating (le gating
+      // d'ancrage ne s'applique qu'à l'agrégation cash affichée, pas à
+      // l'énumération des symboles pour le fetch d'historique).
       _txsByAccountForHistory = {
-        for (int i = 0; i < nonCashAccounts.length; i++)
-          nonCashAccounts[i].id: nonCashTxsResults[i],
+        for (int i = 0; i < accounts.length; i++) accounts[i].id: txsResults[i],
       };
-      final Map<String, double> derivedCashEurByAccount = {};
-      for (int i = 0; i < nonCashAccounts.length; i++) {
-        final acc = nonCashAccounts[i];
-        final derived = derivedCashResults[i];
-        if (derived.cash == null) continue;
-        if (!journalHasCashAnchor(nonCashTxsResults[i])) continue;
-        final raw = Decimal.tryParse(derived.cash!)?.toDouble() ?? 0.0;
+      _anchoredAccountIds = {
+        for (int i = 0; i < accounts.length; i++)
+          if (journalHasCashAnchor(txsResults[i])) accounts[i].id,
+      };
+      // accountId → solde d'espèces EN EUR (les deux régimes confondus).
+      // _cashBalances et accountValues sont stockés EN EUR pour rester
+      // cohérents avec le reste de l'agrégation du patrimoine.
+      final Map<String, double> cashEurByAccount = {};
+      for (int i = 0; i < accounts.length; i++) {
+        final acc = accounts[i];
         final rate = cashRateByCurrency[acc.currency.toUpperCase()] ?? 1.0;
-        derivedCashEurByAccount[acc.id] = raw * rate;
+        if (_anchoredAccountIds.contains(acc.id)) {
+          final derived = derivedCashResults[i].cash;
+          // `derived == null` = compte jamais projeté. Inatteignable dès qu'un
+          // ancrage existe (toute écriture de mouvement reprojette le cash,
+          // cf. LedgerService) — garde défensive : on n'agrège alors RIEN
+          // plutôt que de retomber en douce sur `cash_balance`, ce qui
+          // mélangerait les deux régimes.
+          if (derived == null) continue;
+          cashEurByAccount[acc.id] =
+              (Decimal.tryParse(derived)?.toDouble() ?? 0.0) * rate;
+        } else if (acc.type == AccountType.cash) {
+          cashEurByAccount[acc.id] = (acc.cashBalance ?? 0.0) * rate;
+        }
       }
+      _cashBalances.addAll(cashEurByAccount);
 
       for (var account in accounts) {
         if (account.type == AccountType.cash) {
-          final rawBalance = account.cashBalance ?? 0.0;
-          final cashRate =
-              cashRateByCurrency[account.currency.toUpperCase()] ?? 1.0;
-          // _cashBalances et accountValues sont stockés EN EUR pour rester
-          // cohérents avec le reste de l'agrégation du patrimoine.
-          final balanceEur = rawBalance * cashRate;
-          accountValues[account.id] = balanceEur;
-          _cashBalances[account.id] = balanceEur;
           accountPositions[account.id] = []; // Pas de positions pour cash
           continue;
         }
@@ -503,11 +533,19 @@ class WalletController extends ChangeNotifier {
       // ⭐ Étape C : construire les valeurs des comptes/positions en lisant la
       // map de cotations (plus aucun await dans ces boucles de calcul).
       // Flag de complétude : passe à false dès qu'une cotation est manquante.
-      // Les comptes cash sont sautés (continue) — un wallet 100 % cash
-      // reste marketDataComplete = true.
+      // Les comptes cash n'ont aucune cotation — un wallet 100 % cash reste
+      // marketDataComplete = true.
       bool marketDataComplete = true;
       for (var account in accounts) {
-        if (account.type == AccountType.cash) continue;
+        if (account.type == AccountType.cash) {
+          // Valeur du compte = son solde d'espèces, DANS LES DEUX RÉGIMES
+          // (dérivé du journal si ancré, `cash_balance` sinon — cf. la règle
+          // unique plus haut). Absent de la map = compte ancré jamais projeté
+          // (garde défensive ci-dessus) → 0, jamais un repli silencieux sur le
+          // solde déclaratif.
+          accountValues[account.id] = cashEurByAccount[account.id] ?? 0.0;
+          continue;
+        }
 
         final positions = rawPositionsByAccount[account.id] ?? [];
         double accountTotal = 0;
@@ -558,14 +596,12 @@ class WalletController extends ChangeNotifier {
 
         // Cash dérivé opt-in (lot cash-ledger, précalculé plus haut EN
         // PARALLÈLE — aucun await ici) : ajouté au total DU COMPTE (le cash
-        // parqué sur un compte titres fait partie du patrimoine, au même
-        // titre qu'une position) ET à `_cashBalances`, jamais les deux
-        // familles pour le même compte (cf. garde ci-dessus, `continue` sur
-        // kind=cash) → double comptage impossible par construction.
-        final derivedCashEur = derivedCashEurByAccount[account.id];
+        // parqué sur un compte titres fait partie du patrimoine, au même titre
+        // qu'une position). Déjà écrit dans `_cashBalances` par la règle
+        // unique plus haut — une seule écriture, un seul chemin.
+        final derivedCashEur = cashEurByAccount[account.id];
         if (derivedCashEur != null) {
           accountTotal += derivedCashEur;
-          _cashBalances[account.id] = derivedCashEur;
         }
 
         accountValues[account.id] = accountTotal;
@@ -970,8 +1006,19 @@ class WalletController extends ChangeNotifier {
       return;
     }
 
-    // Cas avec uniquement des comptes cash (pas de positions) : graphique plat
+    // Cas SANS aucune position mais AVEC du cash (typiquement un patrimoine
+    // 100 % comptes cash).
     if (_allPositionsData.isEmpty && _cashBalances.isNotEmpty) {
+      // B8 (doc 19 §4.4) : dès qu'AU MOINS UN compte cash est ANCRÉ, son
+      // journal porte une histoire réelle (escalier de versements/intérêts) —
+      // la branche « courbe plate » cède alors la main à la reconstruction
+      // datée, sur une grille SYNTHÉTIQUE (aucune série de prix ici). Aucun
+      // compte ancré ⇒ comportement d'avant B8, bit pour bit (invariant §6.9).
+      if (_hasAnchoredCashAccount) {
+        await _loadCashOnlyHistory(accountPositions);
+        return;
+      }
+
       final totalCash = _cashBalances.values.fold(0.0, (a, b) => a + b);
       final now = DateTime.now();
       final dates = <DateTime>[];
@@ -1058,6 +1105,118 @@ class WalletController extends ChangeNotifier {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // B8 (doc 19) — patrimoine SANS aucun titre mais avec au moins un compte
+  // cash ANCRÉ : grille de dates SYNTHÉTIQUE + reconstruction réelle.
+  // ---------------------------------------------------------------------------
+
+  /// Vrai si au moins un compte cash du wallet actif porte un ancrage espèces
+  /// à son journal — le cas d'usage central de B8 (« un livret journalisé »).
+  /// Dérivé du SEUL discriminant [journalHasCashAnchor] (mémoïsé dans
+  /// [_anchoredAccountIds] par [loadAllData]).
+  bool get _hasAnchoredCashAccount => _accounts.any(
+        (a) =>
+            a.type == AccountType.cash && _anchoredAccountIds.contains(a.id),
+      );
+
+  /// Budget de points de la grille synthétique (doc 19 §4.3/§8.5) : au-delà,
+  /// [HistoryAggregator.buildDateGrid] sous-échantillonne à pas régulier
+  /// plutôt que de produire un point par jour (« Max » sur 10 ans ≈ 3 650
+  /// points, coûteux au rendu `fl_chart`).
+  static const int _syntheticGridMaxPoints = 400;
+
+  /// Début de la période sélectionnée, ou `null` pour « Max » (pas de borne
+  /// gauche de période : c'est le journal qui borne). `days < 0` = Max,
+  /// `days == 0` = YTD (cf. [ChartPeriod]).
+  DateTime? _selectedPeriodStart(DateTime now) {
+    final days = _selectedPeriod.days;
+    if (days < 0) return null;
+    if (days == 0) return DateTime(now.year, 1, 1);
+    return now.subtract(Duration(days: days));
+  }
+
+  /// Borne gauche de la grille synthétique (doc 19 §4.3 règle 2) :
+  /// `max(début de période, premier mouvement du journal)` — avant le premier
+  /// mouvement la valeur est 0, pas une extrapolation, et
+  /// [HistoryAggregator.buildDateGrid] ne connaît pas le journal.
+  DateTime _syntheticGridFrom(DateTime now) {
+    final periodStart = _selectedPeriodStart(now);
+    DateTime? firstMovement;
+    for (final txs in _txsByAccountForHistory.values) {
+      for (final tx in txs) {
+        if (firstMovement == null || tx.date.isBefore(firstMovement)) {
+          firstMovement = tx.date;
+        }
+      }
+    }
+    if (firstMovement == null) return periodStart ?? now;
+    if (periodStart == null) return firstMovement;
+    return periodStart.isAfter(firstMovement) ? periodStart : firstMovement;
+  }
+
+  /// Historique d'un patrimoine SANS aucune position mais dont au moins un
+  /// compte cash est ANCRÉ (B8, doc 19 §4.4).
+  ///
+  /// La grille naît ici de [HistoryAggregator.buildDateGrid] parce qu'aucune
+  /// série de prix n'existe pour l'échantillonner — et elle reste la SEULE
+  /// grille du calcul : mode 1, mode 2 et courbe de flux la partagent (doc 19
+  /// §4.3 règle 3 / §8.3 MAJEUR — deux grilles concurrentes désaligneraient
+  /// valeur et flux, donc l'écart affiché).
+  ///
+  /// Le mode 1 y garde sa sémantique inchangée (rétroprojection de la valeur
+  /// ACTUELLE : courbe PLATE, d'où variation de période nulle) ; seule sa
+  /// longueur suit désormais la période sélectionnée au lieu des 7 jours en
+  /// dur de la branche legacy. C'est le mode 2 qui porte l'escalier réel.
+  Future<void> _loadCashOnlyHistory(
+    Map<String, List<PositionWithMarketData>> accountPositions,
+  ) async {
+    _isLoadingHistory = true;
+    _safeNotify();
+
+    try {
+      final now = DateTime.now();
+      final totalCash = _cashBalances.values.fold(0.0, (a, b) => a + b);
+      final gridDates = HistoryAggregator.buildDateGrid(
+        from: _syntheticGridFrom(now),
+        to: now,
+        maxPoints: _syntheticGridMaxPoints,
+      );
+
+      _chartDates = gridDates;
+      _chartValues = [for (var i = 0; i < gridDates.length; i++) totalCash];
+      _snapshotSpots = [];
+      _periodChange = 0;
+      _periodChangePercent = 0;
+
+      // Mode 2 : aucune série de prix à passer (aucun titre) — le fetch de
+      // delta interne ne portera sur rien. Même try/catch non bloquant que la
+      // branche nominale : une erreur laisse la courbe réelle absente sans
+      // perturber le mode 1.
+      try {
+        await _computeRealNetWorthCurve(const {});
+      } catch (e, st) {
+        AppLogger.warning(
+          'Impossible de calculer la courbe réelle du patrimoine (mode 2)',
+          e,
+          st,
+        );
+        _realChartValues = [];
+        _realCurveApproxSymbols = {};
+        _realContributionsValues = [];
+        _resetRealGains();
+      }
+
+      _isLoadingHistory = false;
+      _safeNotify();
+      // Aucune position : variations par compte nulles (un compte cash reste
+      // à 0 de toute façon, cf. computeAccountsPeriodChanges / doc 19 §4.3).
+      _computeAccountsPeriodChanges(accountPositions, const {});
+    } catch (e) {
+      _isLoadingHistory = false;
+      _safeNotify();
+    }
+  }
+
   void _aggregateGlobalHistoricalData(
     Map<String, AssetHistoricalData?> symbolToData,
   ) {
@@ -1112,15 +1271,16 @@ class WalletController extends ChangeNotifier {
     _realNoBasisSymbols = {};
   }
 
-  /// Calcule le mode 2 « évolution réelle » (B7 Lot 2, design doc 18 §9) :
-  /// énumère TOUS les symboles du journal (comptes non-cash, y compris les
-  /// titres soldés — absents de [_allPositionsData]), élargit le fetch
-  /// d'historique au DELTA manquant, applique le repli « dernier cours » pour
-  /// les symboles détenus sans historique, puis compose avec le cash dérivé
-  /// (via [HistoryAggregator.reconstructRealNetWorth]) et le cash PUR
-  /// (comptes cash, ajouté en CONSTANTE — jamais le cash dérivé une seconde
-  /// fois, cf. [_txsByAccountForHistory] et la garde de partition
-  /// `account.type` dans [loadAllData]).
+  /// Calcule le mode 2 « évolution réelle » (B7 Lot 2, design doc 18 §9 ;
+  /// élargi aux comptes cash par B8, doc 19) : énumère TOUS les symboles du
+  /// journal (y compris les titres soldés — absents de [_allPositionsData]),
+  /// élargit le fetch d'historique au DELTA manquant, applique le repli
+  /// « dernier cours » pour les symboles détenus sans historique, puis compose
+  /// avec le cash dérivé de TOUS les comptes ANCRÉS (via
+  /// [HistoryAggregator.reconstructRealNetWorth], qui applique lui-même le
+  /// gating [journalHasCashAnchor]) et le cash PUR des seuls comptes cash NON
+  /// ancrés (ajouté en CONSTANTE — jamais le cash dérivé une seconde fois, cf.
+  /// la partition par ancrage dans [loadAllData]).
   ///
   /// [symbolToData] est la map DÉJÀ récupérée par le mode 1 pour les
   /// positions actuelles — réutilisée ici pour ne refetcher QUE le delta
@@ -1153,12 +1313,16 @@ class WalletController extends ChangeNotifier {
     }
 
     // Aucun titre JOURNALISÉ dans tout le patrimoine (positions 100 % legacy,
-    // saisies sans mouvement) : la reconstruction ne porterait qu'un cash pur
-    // plat, indiscernable du mode 1 et laissant croire à tort que les positions
-    // legacy valent 0. On n'expose alors PAS de courbe réelle (`hasRealCurve`
-    // reste faux → aucun bascule proposé). Un patrimoine 100 % cash passe déjà
-    // par les branches de sortie anticipée de _loadHistory (jamais ici).
-    if (txsBySymbol.isEmpty) {
+    // saisies sans mouvement) NI aucun compte cash ancré : la reconstruction ne
+    // porterait qu'un cash pur plat, indiscernable du mode 1 et laissant croire
+    // à tort que les positions legacy valent 0. On n'expose alors PAS de courbe
+    // réelle (`hasRealCurve` reste faux → aucun bascule proposé).
+    //
+    // B8 (doc 19 §4.4) : la garde est désormais CONJOINTE. Un patrimoine « un
+    // livret ancré, zéro titre » — le cas d'usage central du lot — a bien une
+    // histoire à reconstruire (l'escalier de son journal) ; sans cet
+    // élargissement il n'afficherait JAMAIS le mode 2.
+    if (txsBySymbol.isEmpty && !_hasAnchoredCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
       _realContributionsValues = [];
@@ -1230,15 +1394,23 @@ class WalletController extends ChangeNotifier {
       gridDates: _chartDates,
     );
 
-    // Cash PUR (comptes AccountType.cash, sans journal — hors périmètre de
-    // reconstructRealNetWorth) : ajouté EN CONSTANTE. Le cash DÉRIVÉ des
-    // comptes NON-CASH est DÉJÀ dans `reconstructed.values` (via
-    // txsByAccount, gating M1 inclus) — ne JAMAIS le resommer ici. _cashBalances
-    // contient les deux familles sous des clés disjointes par account.type
-    // (cf. loadAllData) : ne sommer QUE les comptes cash évite le
-    // double-comptage par construction.
+    // Cash PUR : comptes AccountType.cash NON ANCRÉS uniquement (périmètre
+    // RESSERRÉ par B8, doc 19 §4.3/§8.1 — anciennement : tous les comptes
+    // cash), ajouté EN CONSTANTE puisqu'un compte legacy n'a aucune histoire
+    // datée à projeter.
+    //
+    // ⚠️ PIÈGE N°1 [BLOQUANT] — DOUBLE COMPTAGE DU CASH. Le cash DÉRIVÉ de
+    // TOUT compte ANCRÉ (titres comme cash, depuis B8) est DÉJÀ dans
+    // `reconstructed.values` : txsByAccount == _txsByAccountForHistory indexe
+    // désormais TOUS les comptes, et reconstructRealNetWorth y applique
+    // lui-même le gating journalHasCashAnchor. Un compte cash ancré qui
+    // atterrirait AUSSI ici serait compté DEUX FOIS. Les deux chemins sont
+    // mutuellement exclusifs par construction (un compte est ancré ou ne
+    // l'est pas) — c'est ce `!_anchoredAccountIds.contains(...)` qui le
+    // garantit côté appelant.
     final pureCashEur = _accounts
-        .where((a) => a.type == AccountType.cash)
+        .where((a) =>
+            a.type == AccountType.cash && !_anchoredAccountIds.contains(a.id))
         .fold(0.0, (sum, a) => sum + (_cashBalances[a.id] ?? 0.0));
 
     _realChartValues = HistoryAggregator.addConstantPureCash(
@@ -1285,10 +1457,12 @@ class WalletController extends ChangeNotifier {
       txsBySymbol: txsBySymbol,
       txsByAccount: txsByAccount,
       usdToEurRate: _usdToEurRate,
-      // TOUT le cash du patrimoine (déjà en EUR) : comptes cash purs ET cash
-      // dérivé des comptes titres — clés disjointes par construction dans
-      // _cashBalances (cf. loadAllData), donc aucun double-comptage. Entre
-      // dans le CAPITAL investi, jamais dans le gain.
+      // TOUT le cash du patrimoine (déjà en EUR), chaque compte dans SON
+      // régime (dérivé si ancré, legacy sinon) : _cashBalances porte une
+      // valeur et une seule par compte (cf. la règle unique de loadAllData),
+      // donc aucun double-comptage. Entre dans le CAPITAL investi, jamais
+      // dans le gain — les intérêts/frais d'un livret ancré, eux, entrent
+      // désormais au terme « revenus » via txsByAccount (doc 19 §0.4.3).
       cashEur: _cashBalances.values.fold(0.0, (a, b) => a + b),
     );
     _realTotalGain = totalGain.totalGain;

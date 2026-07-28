@@ -365,8 +365,14 @@ class AccountController extends ChangeNotifier {
   Future<void> _initService() async {
     if (_activeAccount == null) return;
     await _loadAllPrices();
-    await _loadAccountHistory();
+    // AVANT l'historique (ordre inversé par B8, doc 19 §4.4) : [_derivedCash]
+    // alimente le CAPITAL du gain total mode 2 (`cashEur` de
+    // [HistoryAggregator.computeRealTotalGain], cf. [_computeAccountRealCurve])
+    // — le charger après laissait ce capital à 0 au premier affichage, et
+    // rendrait un compte cash journalisé (dont le cash EST toute la valeur)
+    // franchement faux.
     await _loadDerivedCash();
+    await _loadAccountHistory();
   }
 
   /// Recharge le cash dérivé du compte actif ET l'opt-in d'affichage (lot
@@ -623,6 +629,25 @@ class AccountController extends ChangeNotifier {
 
   Future<void> _loadAccountHistory() async {
     if (_positionsData.isEmpty) {
+      // B8 (doc 19 §4.4) : un compte CASH ANCRÉ n'a aucune position mais a bel
+      // et bien une histoire — son journal. Il ne doit donc plus tomber dans
+      // le repli « aucun historique du tout » : sa grille naît de
+      // [HistoryAggregator.buildDateGrid] faute de toute série de prix où
+      // s'échantillonner. Restreint aux comptes de type cash à dessein : un
+      // compte TITRES sans position n'a pas de grille de prix non plus, mais
+      // son mode 2 porterait des titres soldés dont l'arbitrage de grille
+      // (prix vs synthétique) n'est pas tranché — hors périmètre de ce lot.
+      // Tout autre compte sans position (compte titres vide, compte cash
+      // LEGACY) garde le comportement d'avant B8, bit pour bit.
+      final account = _activeAccount;
+      final cashTxs = (account != null && account.type == AccountType.cash)
+          ? await _txStorage.getByAccount(account.id)
+          : const <AssetTransaction>[];
+      if (account != null && journalHasCashAnchor(cashTxs)) {
+        await _loadCashAccountHistory(account, cashTxs);
+        return;
+      }
+
       _isLoadingHistory = false;
       _chartValues = [];
       _chartDates = [];
@@ -712,6 +737,115 @@ class AccountController extends ChangeNotifier {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // B8 (doc 19) — compte CASH ANCRÉ : grille de dates SYNTHÉTIQUE + escalier
+  // réel. Aucune position, donc aucune série de prix où s'échantillonner.
+  // ---------------------------------------------------------------------------
+
+  /// Budget de points de la grille synthétique (doc 19 §4.3/§8.5) : au-delà,
+  /// [HistoryAggregator.buildDateGrid] sous-échantillonne à pas régulier
+  /// plutôt que de produire un point par jour (« Max » sur 10 ans ≈ 3 650
+  /// points, coûteux au rendu `fl_chart`). Même valeur que côté patrimoine
+  /// (`wallet_controller.dart`), volontairement dupliquée plutôt que partagée
+  /// via un module tiers : les deux contrôleurs n'ont aucune dépendance l'un
+  /// vers l'autre.
+  static const int _syntheticGridMaxPoints = 400;
+
+  /// Début de la période sélectionnée, ou `null` pour « Max » (pas de borne
+  /// gauche de période : c'est le journal qui borne). `days < 0` = Max,
+  /// `days == 0` = YTD (cf. [ChartPeriod]).
+  DateTime? _selectedPeriodStart(DateTime now) {
+    final days = _selectedPeriod.days;
+    if (days < 0) return null;
+    if (days == 0) return DateTime(now.year, 1, 1);
+    return now.subtract(Duration(days: days));
+  }
+
+  /// Borne gauche de la grille synthétique (doc 19 §4.3 règle 2) :
+  /// `max(début de période, premier mouvement du journal)` — avant le premier
+  /// mouvement la valeur est 0, pas une extrapolation, et
+  /// [HistoryAggregator.buildDateGrid] ne connaît pas le journal.
+  DateTime _syntheticGridFrom(List<AssetTransaction> txs, DateTime now) {
+    final periodStart = _selectedPeriodStart(now);
+    DateTime? firstMovement;
+    for (final tx in txs) {
+      if (firstMovement == null || tx.date.isBefore(firstMovement)) {
+        firstMovement = tx.date;
+      }
+    }
+    if (firstMovement == null) return periodStart ?? now;
+    if (periodStart == null) return firstMovement;
+    return periodStart.isAfter(firstMovement) ? periodStart : firstMovement;
+  }
+
+  /// Historique d'un compte CASH ANCRÉ (B8, doc 19 §4.4) : aucune position,
+  /// donc aucune grille de prix — la grille naît de
+  /// [HistoryAggregator.buildDateGrid] et reste la SEULE du calcul (mode 1,
+  /// mode 2 et courbe de flux la partagent : deux grilles concurrentes
+  /// désaligneraient valeur et flux, doc 19 §4.3 règle 3 / §8.3 MAJEUR).
+  ///
+  /// Le mode 1 y garde sa sémantique habituelle — rétroprojection de la valeur
+  /// ACTUELLE, donc une courbe PLATE au solde dérivé du jour (variation de
+  /// période nulle) ; c'est le mode 2 qui porte l'escalier réel du journal.
+  ///
+  /// [txs] est le journal DÉJÀ lu par [_loadAccountHistory] (test d'ancrage) —
+  /// réutilisé ici pour borner la grille à gauche, sans relecture.
+  Future<void> _loadCashAccountHistory(
+    Account account,
+    List<AssetTransaction> txs,
+  ) async {
+    _isLoadingHistory = true;
+    _historyError = null;
+    _periodChange = null;
+    _periodChangePercent = null;
+    _safeNotify();
+
+    try {
+      final now = DateTime.now();
+      _chartDates = HistoryAggregator.buildDateGrid(
+        from: _syntheticGridFrom(txs, now),
+        to: now,
+        maxPoints: _syntheticGridMaxPoints,
+      );
+
+      // Solde dérivé COURANT du compte, en EUR — lu au stockage plutôt que
+      // dans [_derivedCash] pour ne dépendre d'aucun ordre d'appel.
+      final derived = await _storage.getAccountDerivedCash(account.id);
+      final cashEur = (double.tryParse(derived.cash ?? '0') ?? 0.0) *
+          (account.currency.toUpperCase() == 'USD' ? _usdToEurRate : 1.0);
+      _chartValues = [for (var i = 0; i < _chartDates.length; i++) cashEur];
+      _periodChange = 0;
+      _periodChangePercent = 0;
+
+      // Mode 2 : aucune position ni série de prix à passer (le compte n'a
+      // aucun titre). Même try/catch non bloquant que la branche nominale.
+      try {
+        await _computeAccountRealCurve(
+          const <PositionWithMarketData>[],
+          const <AssetHistoricalData?>[],
+        );
+      } catch (e, st) {
+        AppLogger.warning(
+          'Impossible de calculer la courbe réelle du compte (mode 2)',
+          e,
+          st,
+        );
+        _realChartValues = [];
+        _realCurveApproxSymbols = {};
+        _realContributionsValues = [];
+        _resetRealGains();
+      }
+
+      _isLoadingHistory = false;
+      _safeNotify();
+    } catch (e) {
+      AppLogger.error('Erreur chargement historique (compte cash): $e');
+      _historyError = e.toString();
+      _isLoadingHistory = false;
+      _safeNotify();
+    }
+  }
+
   /// Remet les champs de gains mode réel à `null` (+ [_realNoBasisSymbols]
   /// vidé) — à appeler PARTOUT où [_realChartValues]/[_realContributionsValues]
   /// sont réinitialisés (courbe réelle absente/périmée), pour ne jamais
@@ -772,7 +906,14 @@ class AccountController extends ChangeNotifier {
     // trompeuse en regard du mode 1 qui, lui, valorise ces positions. On
     // n'expose alors PAS de courbe réelle (`hasRealCurve` reste faux → aucun
     // bascule proposé), plutôt que d'afficher un zéro cassé.
-    if (txsBySymbol.isEmpty) {
+    //
+    // B8 (doc 19 §4.4) : SAUF sur un compte CASH ANCRÉ, où l'absence de titre
+    // est la NORME et où le journal porte au contraire toute l'histoire du
+    // compte. La garde reste stricte pour un compte TITRES sans titre
+    // journalisé (le raisonnement ci-dessus y vaut toujours).
+    final isJournaledCashAccount =
+        _activeAccount!.type == AccountType.cash && journalHasCashAnchor(txs);
+    if (txsBySymbol.isEmpty && !isJournaledCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
       _realContributionsValues = [];

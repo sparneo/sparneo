@@ -1133,4 +1133,113 @@ void main() {
       await expectLater(initFuture, completes);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // B8 (doc 19) — compte CASH journalisé : le compte cash devient un compte
+  // comme les autres dès qu'un ancrage espèces existe.
+  // -------------------------------------------------------------------------
+
+  group('compte cash journalisé (B8 lot 2)', () {
+    test(
+        'RÉGIME LEGACY : compte cash SANS ancrage → aucun historique '
+        '(comportement d\'avant B8, strictement inchangé)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(db, accountKind: AccountKind.cash);
+      final ctrl = makeCtrl(db);
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasCashAnchor, isFalse);
+      expect(ctrl.chartDates, isEmpty);
+      expect(ctrl.chartValues, isEmpty);
+      expect(ctrl.hasRealCurve, isFalse);
+      expect(ctrl.realContributionsValues, isEmpty);
+      expect(ctrl.realTotalGain, isNull);
+    });
+
+    test(
+        'compte cash ANCRÉ → grille synthétique + escalier réel du journal',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(db, accountKind: AccountKind.cash);
+
+      final ledger = LedgerService(database: db);
+      await ledger.emitCashOpeningBalance(
+        accountId: _accountId,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 60)),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-acc-dep',
+        accountId: _accountId,
+        kind: TransactionKind.deposit,
+        amount: '500',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 10)),
+      ));
+
+      final ctrl = makeCtrl(db);
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasCashAnchor, isTrue);
+      // Une SEULE grille, partagée par les trois séries.
+      expect(ctrl.chartDates.length, greaterThan(2));
+      expect(ctrl.chartValues.length, ctrl.chartDates.length);
+      expect(ctrl.realChartValues.length, ctrl.chartDates.length);
+      expect(ctrl.realContributionsValues.length, ctrl.chartDates.length);
+
+      // Mode 1 : plat au solde dérivé courant (rétroprojection).
+      expect(ctrl.chartValues, everyElement(closeTo(1500.0, 1e-9)));
+      // Mode 2 : escalier RÉEL sur la fenêtre 30 j par défaut.
+      expect(ctrl.hasRealCurve, isTrue);
+      expect(ctrl.realChartValues.first, closeTo(1000.0, 1e-9));
+      expect(ctrl.realChartValues.last, closeTo(1500.0, 1e-9));
+    });
+
+    test(
+        'compte cash ANCRÉ : les intérêts/frais entrent dans le gain total',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(db, accountKind: AccountKind.cash);
+
+      final ledger = LedgerService(database: db);
+      await ledger.emitCashOpeningBalance(
+        accountId: _accountId,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 60)),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-acc-int',
+        accountId: _accountId,
+        kind: TransactionKind.interest,
+        amount: '25',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 20)),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-acc-fee',
+        accountId: _accountId,
+        kind: TransactionKind.charge,
+        amount: '-5',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 3)),
+      ));
+
+      final ctrl = makeCtrl(db);
+      await ctrl.initAccounts();
+
+      // 25 d\'intérêts − 5 de frais = 20 (aucun titre sur ce compte).
+      expect(ctrl.realTotalGain, isNotNull);
+      expect(ctrl.realTotalGain!, closeTo(20.0, 1e-9));
+      // Capital = valeur incluse − gain = 1 020 − 20 = 1 000.
+      expect(ctrl.realTotalGainPercent!, closeTo(2.0, 1e-6));
+    });
+  });
 }

@@ -13,6 +13,7 @@ import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
+import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/valuation_snapshot.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
@@ -176,7 +177,7 @@ Future<void> setupSingleWalletWithCash({
   required AppDatabase db,
   required String walletId,
   required String accountId,
-  required double cashBalance,
+  required double? cashBalance,
 }) async {
   final storage = AccountStorage(database: db);
   final wallet = Wallet(id: walletId, name: 'Mon portefeuille');
@@ -1405,6 +1406,439 @@ void main() {
             reason:
                 'Le total du wallet2 (200 EUR) ne doit pas être persisté sous wallet1');
       }
+    });
+  });
+
+  // =========================================================================
+  // B8 (doc 19) — comptes cash JOURNALISÉS : la partition de régime passe de
+  // `account.type` à `journalHasCashAnchor`, identique pour les deux familles
+  // de comptes.
+  // =========================================================================
+
+  group('WalletController – comptes cash journalisés (B8 lot 2)', () {
+    // -----------------------------------------------------------------------
+    // LE test de non-régression : décision (b) « aucune migration » (doc 19
+    // §3) — un compte cash SANS ancrage espèces reste bit-identique à avant B8.
+    // -----------------------------------------------------------------------
+    test(
+        'RÉGIME LEGACY [invariant 9] : compte cash sans ancrage → valeur, '
+        'allocation, courbe et total STRICTEMENT inchangés', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await setupSingleWalletWithCash(
+        db: db,
+        walletId: 'w-b8-legacy',
+        accountId: 'acc-b8-legacy',
+        cashBalance: 2500.0,
+      );
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      // Valeur : `cash_balance` lu tel quel (régime déclaratif).
+      expect(controller.accountValues['acc-b8-legacy'], closeTo(2500.0, 1e-9));
+      expect(controller.cashBalances['acc-b8-legacy'], closeTo(2500.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(2500.0, 1e-9));
+
+      // Allocation : une seule catégorie « liquidités » à 100 %.
+      expect(controller.assetTypeAllocations.length, 1);
+      expect(controller.assetTypeAllocations.single.isCash, isTrue);
+      expect(
+          controller.assetTypeAllocations.single.value, closeTo(2500.0, 1e-9));
+      expect(controller.assetTypeAllocations.single.percent,
+          closeTo(100.0, 1e-9));
+
+      // Courbe : branche « uniquement du cash » — plate sur 7 points, mode 2
+      // recopié du mode 1, aucun gain réel, aucune courbe de flux.
+      expect(controller.chartDates.length, 7);
+      expect(controller.chartValues, everyElement(closeTo(2500.0, 1e-9)));
+      expect(controller.realChartValues, equals(controller.chartValues));
+      expect(controller.realContributionsValues, isEmpty);
+      expect(controller.realPeriodGain, isNull);
+      expect(controller.realTotalGain, isNull);
+      expect(controller.periodChange, 0);
+      expect(controller.periodChangePercent, 0);
+    });
+
+    test(
+        'RÉGIME LEGACY [invariant 9] : compte cash sans ancrage à côté d\'un '
+        'compte titres → total et catégorie « liquidités » inchangés',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-b8-mix', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-mix-cash',
+        walletId: 'w-b8-mix',
+        name: 'Livret',
+        kind: AccountKind.cash,
+        cashBalance: 1000.0,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-mix-cto',
+        walletId: 'w-b8-mix',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      await storage.savePosition(
+        'acc-b8-mix-cto',
+        Position(
+          accountId: 'acc-b8-mix-cto',
+          asset: Asset(symbol: 'B8MIX', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+
+      final controller = _makeController(
+        db: db,
+        marketService: _FakeMarketDataService(
+          quotesBySymbol: {
+            'B8MIX':
+                AssetQuoteData(symbol: 'B8MIX', price: 50.0, currency: 'EUR'),
+          },
+        ),
+      );
+      await controller.loadAllData();
+
+      expect(controller.accountValues['acc-b8-mix-cash'],
+          closeTo(1000.0, 1e-9));
+      expect(controller.accountValues['acc-b8-mix-cto'], closeTo(500.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(1500.0, 1e-9));
+
+      final cashCategory =
+          controller.assetTypeAllocations.where((a) => a.isCash).toList();
+      expect(cashCategory.length, 1);
+      expect(cashCategory.single.value, closeTo(1000.0, 1e-9));
+    });
+
+    // -----------------------------------------------------------------------
+    // Régime JOURNALISÉ
+    // -----------------------------------------------------------------------
+    test(
+        'compte cash ANCRÉ → sa valeur est le cash DÉRIVÉ du journal, pas '
+        'cash_balance', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      // cash_balance déclaratif volontairement DIFFÉRENT du journal : il doit
+      // être ignoré une fois l'ancrage posé.
+      await setupSingleWalletWithCash(
+        db: db,
+        walletId: 'w-b8-anch',
+        accountId: 'acc-b8-anch',
+        cashBalance: 300.0,
+      );
+
+      final ledger = LedgerService(database: db);
+      await ledger.emitCashOpeningBalance(
+        accountId: 'acc-b8-anch',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 60)),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-anch-int',
+        accountId: 'acc-b8-anch',
+        kind: TransactionKind.interest,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 15)),
+      ));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      expect(controller.accountValues['acc-b8-anch'], closeTo(1050.0, 1e-9));
+      expect(controller.cashBalances['acc-b8-anch'], closeTo(1050.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(1050.0, 1e-9));
+      // Surtout PAS le solde déclaratif hérité.
+      expect(controller.accountValues['acc-b8-anch'],
+          isNot(closeTo(300.0, 1e-9)));
+    });
+
+    test(
+        'catégorie « liquidités » de l\'allocation : conservée (ni perdue ni '
+        'doublée) qu\'un compte cash soit ancré ou non', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-b8-alloc', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-alloc-anch',
+        walletId: 'w-b8-alloc',
+        name: 'Livret ancré',
+        kind: AccountKind.cash,
+        cashBalance: 999.0, // ignoré (ancré)
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-alloc-legacy',
+        walletId: 'w-b8-alloc',
+        name: 'Livret legacy',
+        kind: AccountKind.cash,
+        cashBalance: 500.0,
+      ));
+
+      await LedgerService(database: db).emitCashOpeningBalance(
+        accountId: 'acc-b8-alloc-anch',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 40)),
+      );
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      expect(controller.totalPatrimoine, closeTo(1500.0, 1e-9));
+      final cashCategory =
+          controller.assetTypeAllocations.where((a) => a.isCash).toList();
+      expect(cashCategory.length, 1);
+      // 1000 (dérivé) + 500 (legacy) — chacun compté UNE fois.
+      expect(cashCategory.single.value, closeTo(1500.0, 1e-9));
+      expect(cashCategory.single.percent, closeTo(100.0, 1e-9));
+    });
+
+    test(
+        'patrimoine « un livret ancré seul, zéro titre » → une courbe réelle '
+        'EST proposée, en escalier (pas une constante)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await setupSingleWalletWithCash(
+        db: db,
+        walletId: 'w-b8-solo',
+        accountId: 'acc-b8-solo',
+        cashBalance: null,
+      );
+
+      final ledger = LedgerService(database: db);
+      await ledger.emitCashOpeningBalance(
+        accountId: 'acc-b8-solo',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 60)),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-solo-dep',
+        accountId: 'acc-b8-solo',
+        kind: TransactionKind.deposit,
+        amount: '500',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 10)),
+      ));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      expect(controller.hasRealCurve, isTrue);
+      // Grille synthétique : une seule grille, partagée par les deux courbes.
+      expect(controller.chartDates.length, greaterThan(2));
+      expect(controller.realChartValues.length, controller.chartDates.length);
+      expect(controller.realContributionsValues.length,
+          controller.chartDates.length);
+      // Escalier RÉEL : 1 000 au début de la fenêtre (30 j par défaut), 1 500
+      // à la fin — surtout pas une constante rétroprojetée à 1 500.
+      expect(controller.realChartValues.first, closeTo(1000.0, 1e-9));
+      expect(controller.realChartValues.last, closeTo(1500.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(1500.0, 1e-9));
+    });
+
+    test(
+        'gain total : les intérêts/frais d\'un livret ancré entrent désormais '
+        'dans computeRealTotalGain', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await setupSingleWalletWithCash(
+        db: db,
+        walletId: 'w-b8-gain',
+        accountId: 'acc-b8-gain',
+        cashBalance: null,
+      );
+
+      final ledger = LedgerService(database: db);
+      await ledger.emitCashOpeningBalance(
+        accountId: 'acc-b8-gain',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 60)),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-gain-int',
+        accountId: 'acc-b8-gain',
+        kind: TransactionKind.interest,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 20)),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-gain-fee',
+        accountId: 'acc-b8-gain',
+        kind: TransactionKind.charge,
+        amount: '-10',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 5)),
+      ));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      // 50 d'intérêts − 10 de frais = 40 de gain total (aucun titre).
+      expect(controller.realTotalGain, isNotNull);
+      expect(controller.realTotalGain!, closeTo(40.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(1040.0, 1e-9));
+    });
+
+    // -----------------------------------------------------------------------
+    // Le risque n°1 du lot (doc 19 §8.1) — au niveau CONTRÔLEUR.
+    // -----------------------------------------------------------------------
+    test(
+        'ANTI-DOUBLE-COMPTAGE [invariant 5] : un compte cash ancré ne '
+        'contribue jamais deux fois (ni au total, ni à la courbe réelle)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-b8-dbl', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-dbl-anch',
+        walletId: 'w-b8-dbl',
+        name: 'Livret ancré',
+        kind: AccountKind.cash,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-dbl-legacy',
+        walletId: 'w-b8-dbl',
+        name: 'Livret legacy',
+        kind: AccountKind.cash,
+        cashBalance: 500.0,
+      ));
+
+      await LedgerService(database: db).emitCashOpeningBalance(
+        accountId: 'acc-b8-dbl-anch',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime.now().subtract(const Duration(days: 90)),
+      );
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      // 1 000 (dérivé, via txsByAccount) + 500 (legacy, en constante).
+      expect(controller.totalPatrimoine, closeTo(1500.0, 1e-9));
+      expect(controller.hasRealCurve, isTrue);
+      // Si le livret ancré passait AUSSI par addConstantPureCash, on lirait
+      // 2 500 ici (et 2 000 s'il y était compté deux fois dans _cashBalances).
+      expect(controller.realChartValues.last, closeTo(1500.0, 1e-9));
+      expect(controller.realChartValues.last,
+          closeTo(controller.totalPatrimoine, 1e-6));
+    });
+
+    test(
+        'ANTI-DOUBLE-COMPTAGE [invariant 5] sur la grille de PRIX : titres '
+        'journalisés + livret ancré + livret legacy → point final == total',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-b8-real', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-real-cto',
+        walletId: 'w-b8-real',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-real-anch',
+        walletId: 'w-b8-real',
+        name: 'Livret ancré',
+        kind: AccountKind.cash,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-b8-real-legacy',
+        walletId: 'w-b8-real',
+        name: 'Livret legacy',
+        kind: AccountKind.cash,
+        cashBalance: 200.0,
+      ));
+      await storage.savePosition(
+        'acc-b8-real-cto',
+        Position(
+          accountId: 'acc-b8-real-cto',
+          asset: Asset(symbol: 'SYMR', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+
+      final ledger = LedgerService(database: db);
+      // CTO : 1 000 d'espèces déclarées puis 500 dépensés en titres → 500.
+      await ledger.emitCashOpeningBalance(
+        accountId: 'acc-b8-real-cto',
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-b8-real-buy',
+        accountId: 'acc-b8-real-cto',
+        symbol: 'SYMR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '50',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      ));
+      // Livret ancré : 800, projeté par SON journal (jamais en constante).
+      await ledger.emitCashOpeningBalance(
+        accountId: 'acc-b8-real-anch',
+        amount: '800',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+
+      final base = DateTime(2024, 1, 10);
+      final controller = _makeController(
+        db: db,
+        marketService: _FakeMarketDataService(
+          quotesBySymbol: {
+            'SYMR': AssetQuoteData(symbol: 'SYMR', price: 60.0, currency: 'EUR'),
+          },
+          historicalBySymbol: {
+            'SYMR': AssetHistoricalData(
+              symbol: 'SYMR',
+              dates: [base, base.add(const Duration(days: 1)),
+                  base.add(const Duration(days: 2))],
+              prices: const [50.0, 55.0, 60.0],
+            ),
+          },
+        ),
+      );
+      await controller.loadAllData();
+
+      // 10×60 + 500 (cash CTO) + 800 (livret ancré) + 200 (livret legacy).
+      expect(controller.accountValues['acc-b8-real-cto'], closeTo(1100.0, 1e-9));
+      expect(
+          controller.accountValues['acc-b8-real-anch'], closeTo(800.0, 1e-9));
+      expect(controller.accountValues['acc-b8-real-legacy'],
+          closeTo(200.0, 1e-9));
+      expect(controller.totalPatrimoine, closeTo(2100.0, 1e-9));
+
+      // La grille de PRIX fait autorité (aucune grille synthétique ici).
+      expect(controller.chartDates.length, 3);
+      expect(controller.hasRealCurve, isTrue);
+      expect(controller.realChartValues.length, 3);
+      // Point final : 600 (titres) + 500 + 800 (dérivés, via txsByAccount)
+      // + 200 (constante legacy). Un livret ancré compté deux fois donnerait
+      // 2 900 ; oublié des deux chemins, 1 300.
+      expect(controller.realChartValues.last, closeTo(2100.0, 1e-9));
+      expect(controller.realChartValues.last,
+          closeTo(controller.totalPatrimoine, 1e-6));
     });
   });
 }
