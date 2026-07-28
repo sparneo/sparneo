@@ -890,8 +890,8 @@ class _WalletViewState extends State<WalletView> {
                     children: [
                       // Pas de badge « glissez pour supprimer » : la suppression
                       // de compte est découvrable via l'overflow ⋮ de la barre
-                      // d'AccountView et le bouton du dialogue de solde cash
-                      // (aligné sur la liste des positions, cf. convention U4).
+                      // d'AccountView, cash comme titres (aligné sur la liste
+                      // des positions, cf. convention U4).
                       // Le balayage reste un raccourci non annoncé.
                       Text(
                         l10n.myAccounts,
@@ -935,32 +935,26 @@ class _WalletViewState extends State<WalletView> {
                         ),
                         onDismissed: (_) => _onAccountDismissed(account),
                         onTap: () async {
-                          if (account.type == AccountType.cash) {
-                            // Pour cash : ouvrir le dialogue de modification du
-                            // solde (qui héberge aussi la suppression du compte).
-                            await _editCashBalance(account);
-                          } else {
-                            // Pour investissement : naviguer vers les détails. La
-                            // page peut renvoyer resultDeleted (corbeille de sa
-                            // barre) : on emprunte alors le MÊME chemin différé
-                            // que le balayage, et on sort AVANT loadAllData —
-                            // sinon le rechargement du stockage (commit non encore
-                            // effectué) ferait réapparaître le compte, écrasant le
-                            // masquage et l'undo.
-                            final result = await Navigator.push<String>(
-                              context,
-                              MaterialPageRoute(
-                                builder: (context) =>
-                                    AccountView(initialAccountId: account.id),
-                              ),
-                            );
-                            if (!mounted) return;
-                            if (result == AccountView.resultDeleted) {
-                              _onAccountDismissed(account);
-                              return;
-                            }
-                            await _controller.loadAllData();
+                          // Cash comme titres : naviguer vers les détails. La
+                          // page peut renvoyer resultDeleted (corbeille de sa
+                          // barre) : on emprunte alors le MÊME chemin différé
+                          // que le balayage, et on sort AVANT loadAllData —
+                          // sinon le rechargement du stockage (commit non encore
+                          // effectué) ferait réapparaître le compte, écrasant le
+                          // masquage et l'undo.
+                          final result = await Navigator.push<String>(
+                            context,
+                            MaterialPageRoute(
+                              builder: (context) =>
+                                  AccountView(initialAccountId: account.id),
+                            ),
+                          );
+                          if (!mounted) return;
+                          if (result == AccountView.resultDeleted) {
+                            _onAccountDismissed(account);
+                            return;
                           }
+                          await _controller.loadAllData();
                         },
                       );
                     },

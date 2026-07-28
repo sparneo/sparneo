@@ -76,7 +76,17 @@ class AccountView extends StatefulWidget {
   /// Annuler (miroir de [PositionDetailPage.resultDeleted]).
   static const String resultDeleted = 'deleted';
 
-  const AccountView({super.key, this.initialAccountId});
+  /// Contrôleur pré-construit et déjà chargé (`initAccounts()` déjà résolu),
+  /// réservé aux tests widget : la vue l'utilise TEL QUEL, sans appeler
+  /// `initAccounts()`/`loadExchangeRate()` (le test charge son état via une
+  /// base en mémoire AVANT de pumper le widget — ouvrir une base réelle À
+  /// L'INTÉRIEUR d'un `testWidgets` est connu pour bloquer indéfiniment
+  /// [dart:isolate], cf. `statement_import_page_test.dart`). Toujours `null`
+  /// en production.
+  @visibleForTesting
+  final AccountController? debugController;
+
+  const AccountView({super.key, this.initialAccountId, this.debugController});
 
   @override
   State<AccountView> createState() => _AccountViewState();
@@ -102,9 +112,20 @@ class _AccountViewState extends State<AccountView> {
   /// que d'afficher un graphe vide.
   bool get _useRealCurve => _showRealCurve && _ctrl.hasRealCurve;
 
+  /// Vrai pour un compte de type [AccountType.cash] (livret, compte courant) :
+  /// repli « compte sans titre » (B8, doc 19 §4.5) — pas de positions à
+  /// afficher, le solde espèces devient la valeur mise en avant de l'écran.
+  bool get _isCashAccount => _ctrl.activeAccount?.type == AccountType.cash;
+
   @override
   void initState() {
     super.initState();
+    if (widget.debugController != null) {
+      // Test widget : contrôleur déjà chargé, on l'utilise tel quel (cf.
+      // AccountView.debugController).
+      _ctrl = widget.debugController!;
+      return;
+    }
     _ctrl = AccountController(initialAccountId: widget.initialAccountId);
     _ctrl.initAccounts();
     _ctrl.loadExchangeRate();
@@ -1062,102 +1083,110 @@ class _AccountViewState extends State<AccountView> {
                   ),
                 ],
 
-                // Section graphique (si positions existent)
-                if (_ctrl.positionsData.isNotEmpty) ...[
+                // Section graphique : positions (mode 1) OU grille synthétique
+                // d'un compte cash ancré (B8, doc 19 §4.3/4.4 — chartDates naît
+                // alors du journal, pas des séries de prix).
+                if (_ctrl.positionsData.isNotEmpty ||
+                    _ctrl.chartDates.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   _buildAccountChartSection(),
                 ],
 
-                // Header "Mes positions" avec bouton + et tooltip
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(
-                        l10n.myPositions,
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      // ⭐ BOUTON + POUR AJOUTER
-                      IconButton(
-                        icon: const Icon(Icons.add_circle_outline),
-                        color: Theme.of(context).colorScheme.primary,
-                        tooltip: l10n.addPositionTooltip,
+                // « Mes positions » (en-tête + liste + état vide) : un compte
+                // cash (livret, compte courant) n'a aucune position à afficher
+                // ni à ajouter — repli « compte sans titre » (B8, doc 19 §4.5).
+                if (!_isCashAccount) ...[
+                  // Header "Mes positions" avec bouton + et tooltip
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(
+                          l10n.myPositions,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        // ⭐ BOUTON + POUR AJOUTER
+                        IconButton(
+                          icon: const Icon(Icons.add_circle_outline),
+                          color: Theme.of(context).colorScheme.primary,
+                          tooltip: l10n.addPositionTooltip,
+                          onPressed:
+                              _ctrl.activeAccount?.type ==
+                                  AccountType.preciousMetal
+                              ? _showAddPreciousMetalDialog
+                              : _showAddPositionDialog,
+                        ),
+                      ],
+                    ),
+                  ),
+
+                  // Liste des positions ouvertes (ou état vide si aucun avoir
+                  // détenu — les soldées, filtrées plus haut, ne comptent pas).
+                  if (openPositions.isEmpty)
+                    EmptyState(
+                      icon: Icons.inventory_2_outlined,
+                      title: l10n.emptyPositionsTitle,
+                      message: l10n.emptyPositionsBody,
+                      action: FilledButton(
                         onPressed:
-                            _ctrl.activeAccount?.type ==
-                                AccountType.preciousMetal
+                            _ctrl.activeAccount?.type == AccountType.preciousMetal
                             ? _showAddPreciousMetalDialog
                             : _showAddPositionDialog,
+                        child: Text(l10n.emptyPositionsCta),
                       ),
-                    ],
-                  ),
-                ),
-
-                // Liste des positions ouvertes (ou état vide si aucun avoir
-                // détenu — les soldées, filtrées plus haut, ne comptent pas).
-                if (openPositions.isEmpty)
-                  EmptyState(
-                    icon: Icons.inventory_2_outlined,
-                    title: l10n.emptyPositionsTitle,
-                    message: l10n.emptyPositionsBody,
-                    action: FilledButton(
-                      onPressed:
-                          _ctrl.activeAccount?.type == AccountType.preciousMetal
-                          ? _showAddPreciousMetalDialog
-                          : _showAddPositionDialog,
-                      child: Text(l10n.emptyPositionsCta),
-                    ),
-                  )
-                else
-                  ListView.separated(
-                    shrinkWrap: true,
-                    physics: const NeverScrollableScrollPhysics(),
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
-                    itemCount: openPositions.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 8),
-                    itemBuilder: (context, index) {
-                      final positionData = openPositions[index];
-                      return Dismissible(
-                        key: Key(positionData.symbol),
-                        direction: DismissDirection.endToStart,
-                        background: Container(
-                          alignment: Alignment.centerRight,
-                          padding: const EdgeInsets.only(right: 20),
-                          color: Theme.of(context).colorScheme.error,
-                          child: Icon(
-                            Icons.delete,
-                            color: Theme.of(context).colorScheme.onError,
+                    )
+                  else
+                    ListView.separated(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                      itemCount: openPositions.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 8),
+                      itemBuilder: (context, index) {
+                        final positionData = openPositions[index];
+                        return Dismissible(
+                          key: Key(positionData.symbol),
+                          direction: DismissDirection.endToStart,
+                          background: Container(
+                            alignment: Alignment.centerRight,
+                            padding: const EdgeInsets.only(right: 20),
+                            color: Theme.of(context).colorScheme.error,
+                            child: Icon(
+                              Icons.delete,
+                              color: Theme.of(context).colorScheme.onError,
+                            ),
                           ),
-                        ),
-                        confirmDismiss: (direction) async {
-                          // D2 (dialogue partagé avec l'action de la page de
-                          // détail) : si la position a un journal, l'utilisateur
-                          // doit savoir que N mouvements seront aussi supprimés.
-                          final accountId = _ctrl.activeAccount?.id;
-                          if (accountId == null) return false;
-                          return confirmDeletePosition(
-                            context: context,
-                            txStorage: _txStorage,
-                            accountId: accountId,
-                            symbol: positionData.symbol,
-                          );
-                        },
-                        onDismissed: (_) => _onPositionDismissed(positionData),
-                        child: PositionCard(
-                          position: positionData.position,
-                          currentPrice: positionData.currentPrice,
-                          periodChange: positionData.periodChange,
-                          periodChangePercent: positionData.periodChangePercent,
-                          onTap: () => _navigateToDetail(positionData),
-                          usdToEurRate: _ctrl.usdToEurRate,
-                          // Badge « Cours du JJ/MM » : non-null uniquement pour un
-                          // cours servi depuis le cache (dernier cours connu). En
-                          // direct lastUpdated est null → aucun badge.
-                          lastUpdated: positionData.lastUpdated,
-                        ),
-                      );
-                    },
-                  ),
+                          confirmDismiss: (direction) async {
+                            // D2 (dialogue partagé avec l'action de la page de
+                            // détail) : si la position a un journal, l'utilisateur
+                            // doit savoir que N mouvements seront aussi supprimés.
+                            final accountId = _ctrl.activeAccount?.id;
+                            if (accountId == null) return false;
+                            return confirmDeletePosition(
+                              context: context,
+                              txStorage: _txStorage,
+                              accountId: accountId,
+                              symbol: positionData.symbol,
+                            );
+                          },
+                          onDismissed: (_) => _onPositionDismissed(positionData),
+                          child: PositionCard(
+                            position: positionData.position,
+                            currentPrice: positionData.currentPrice,
+                            periodChange: positionData.periodChange,
+                            periodChangePercent: positionData.periodChangePercent,
+                            onTap: () => _navigateToDetail(positionData),
+                            usdToEurRate: _ctrl.usdToEurRate,
+                            // Badge « Cours du JJ/MM » : non-null uniquement pour un
+                            // cours servi depuis le cache (dernier cours connu). En
+                            // direct lastUpdated est null → aucun badge.
+                            lastUpdated: positionData.lastUpdated,
+                          ),
+                        );
+                      },
+                    ),
+                ],
 
                 // ⭐ GRAPHIQUE DE RÉPARTITION DES ACTIFS
                 if (_ctrl.hasMultipleAssets) ...[
@@ -1183,18 +1212,31 @@ class _AccountViewState extends State<AccountView> {
     final l10n = AppLocalizations.of(context)!;
     if (_ctrl.activeAccount == null) return const SizedBox.shrink();
 
-    double totalValueEur = 0;
-    for (final positionData in _ctrl.positionsData) {
-      final price = positionData.currentPrice ?? 0;
-      final qtyNum = double.tryParse(positionData.quantity) ?? 0;
-      double value = price * qtyNum;
-      if (positionData.asset.currency.toUpperCase() == 'USD') {
-        value = value * _ctrl.usdToEurRate;
-      }
-      totalValueEur += value;
-    }
-
     final account = _ctrl.activeAccount!;
+
+    double totalValueEur;
+    if (_isCashAccount) {
+      // Un livret n'a aucune position : sa valeur EST son solde espèces
+      // (dérivé du journal si ancré, `cash_balance` legacy sinon — même règle
+      // que WalletController.loadAllData, B8 doc 19 §4.4/§4.5).
+      final cashRaw = _ctrl.hasCashAnchor
+          ? double.tryParse(_ctrl.derivedCash ?? '0') ?? 0
+          : account.cashBalance ?? 0.0;
+      totalValueEur = account.currency.toUpperCase() == 'USD'
+          ? cashRaw * _ctrl.usdToEurRate
+          : cashRaw;
+    } else {
+      totalValueEur = 0;
+      for (final positionData in _ctrl.positionsData) {
+        final price = positionData.currentPrice ?? 0;
+        final qtyNum = double.tryParse(positionData.quantity) ?? 0;
+        double value = price * qtyNum;
+        if (positionData.asset.currency.toUpperCase() == 'USD') {
+          value = value * _ctrl.usdToEurRate;
+        }
+        totalValueEur += value;
+      }
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1247,10 +1289,17 @@ class _AccountViewState extends State<AccountView> {
   /// hasCashAnchor]) — un compte-titres avec uniquement des achats ne doit
   /// JAMAIS montrer un solde espèces (faux négatif interdit, cf. risque
   /// §6.7 de la spec). Sinon, wording discret « Espèces non suivies ».
+  ///
+  /// PROMUE (B8, doc 19 §4.5) sur un compte cash : c'est alors TOUTE la
+  /// valeur du compte (pas une ligne accessoire sous des positions), donc
+  /// affichée en plus grand — icône, texte et bouton d'action mis en avant —
+  /// plutôt qu'en simple ligne grise secondaire (traitement conservé pour un
+  /// compte titres avec du cash accessoire).
   Widget _buildCashRow(Account account) {
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
     final hasAnchor = _ctrl.hasCashAnchor;
+    final emphasized = account.type == AccountType.cash;
 
     final label = hasAnchor
         ? l10n.cashDerivedLabel(
@@ -1267,24 +1316,27 @@ class _AccountViewState extends State<AccountView> {
     // la ligne plutôt que d'afficher un solde partiel silencieux.
     final foreignCount = _ctrl.foreignCashMovementCount;
 
+    final labelStyle = emphasized
+        ? theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)
+        : theme.textTheme.bodyMedium?.copyWith(
+            color: theme.colorScheme.onSurfaceVariant,
+          );
+
     return Row(
       children: [
         Icon(
           Icons.payments_outlined,
-          size: 16,
-          color: theme.colorScheme.onSurfaceVariant,
+          size: emphasized ? 24 : 16,
+          color: emphasized
+              ? theme.colorScheme.primary
+              : theme.colorScheme.onSurfaceVariant,
         ),
-        const SizedBox(width: 6),
+        SizedBox(width: emphasized ? 10 : 6),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                label,
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
+              Text(label, style: labelStyle),
               if (foreignCount > 0)
                 Text(
                   l10n.cashForeignExcludedNote(foreignCount),
@@ -1295,17 +1347,36 @@ class _AccountViewState extends State<AccountView> {
             ],
           ),
         ),
-        TextButton.icon(
-          onPressed: hasAnchor
-              ? _openAdjustCashBalance
-              : _openSetInitialCashBalance,
-          icon: Icon(hasAnchor ? Icons.tune : Icons.add_circle_outline, size: 16),
-          label: Text(
-            hasAnchor
-                ? l10n.adjustCashBalanceAction
-                : l10n.setInitialCashBalanceAction,
+        if (emphasized)
+          FilledButton.tonalIcon(
+            onPressed: hasAnchor
+                ? _openAdjustCashBalance
+                : _openSetInitialCashBalance,
+            icon: Icon(
+              hasAnchor ? Icons.tune : Icons.add_circle_outline,
+              size: 16,
+            ),
+            label: Text(
+              hasAnchor
+                  ? l10n.adjustCashBalanceAction
+                  : l10n.setInitialCashBalanceAction,
+            ),
+          )
+        else
+          TextButton.icon(
+            onPressed: hasAnchor
+                ? _openAdjustCashBalance
+                : _openSetInitialCashBalance,
+            icon: Icon(
+              hasAnchor ? Icons.tune : Icons.add_circle_outline,
+              size: 16,
+            ),
+            label: Text(
+              hasAnchor
+                  ? l10n.adjustCashBalanceAction
+                  : l10n.setInitialCashBalanceAction,
+            ),
           ),
-        ),
       ],
     );
   }
