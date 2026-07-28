@@ -110,7 +110,19 @@ class _AccountViewState extends State<AccountView> {
   /// si l'utilisateur a basculé sur « évolution réelle » mais que la série
   /// s'avère indisponible, on retombe silencieusement sur le mode 1 plutôt
   /// que d'afficher un graphe vide.
-  bool get _useRealCurve => _showRealCurve && _ctrl.hasRealCurve;
+  ///
+  /// Sur un compte CASH, le mode 1 (« Vos positions ») est un cas dégénéré :
+  /// un compte cash n'a jamais de position, sa valeur y est donc TOUJOURS le
+  /// solde ACTUEL répété sur toute la grille (`_loadCashAccountHistory`,
+  /// `account_controller.dart`) — une droite plate par construction, dans
+  /// 100 % des cas, jamais informative (contrairement à un compte titres où
+  /// les cours historiques font varier ce mode même à quantités fixes).
+  /// Offrir un choix dont une branche est tautologiquement inutile n'a pas de
+  /// sens : dès qu'une courbe réelle existe, on la force, sans dépendre de
+  /// [_showRealCurve] (dont le sélecteur est d'ailleurs masqué, cf.
+  /// `_buildAccountChartSection`).
+  bool get _useRealCurve =>
+      (_showRealCurve || _isCashAccount) && _ctrl.hasRealCurve;
 
   /// Vrai pour un compte de type [AccountType.cash] (livret, compte courant) :
   /// repli « compte sans titre » (B8, doc 19 §4.5) — pas de positions à
@@ -1413,8 +1425,13 @@ class _AccountViewState extends State<AccountView> {
             _buildPeriodSelector(),
             // Sélecteur de mode courbe (performance / évolution réelle, B7
             // design doc 18), MÊME motif que wallet_view Lot 3a : n'apparaît
-            // que si une courbe réelle est disponible pour ce compte.
-            if (_ctrl.hasRealCurve) ...[
+            // que si une courbe réelle est disponible pour ce compte ET que le
+            // choix a un sens. Masqué sur un compte CASH (B8) : le mode
+            // « Vos positions » y est TOUJOURS une droite plate au solde
+            // actuel (aucune position, donc rien à faire varier) — offrir un
+            // sélecteur dont une branche est tautologiquement inutile n'a pas
+            // de sens, cf. [_useRealCurve] qui force alors le mode réel.
+            if (_ctrl.hasRealCurve && !_isCashAccount) ...[
               const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,

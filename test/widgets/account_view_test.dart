@@ -267,6 +267,16 @@ void main() {
         // journal, B8 doc 19 §4.3/4.4) — auparavant gatée sur positionsData
         // (toujours vide pour un compte cash), donc jamais visible.
         expect(find.byType(PeriodSelector), findsOneWidget);
+
+        // Le sélecteur Performance/Évolution réelle est MASQUÉ sur un compte
+        // cash : le mode « Performance » y est TOUJOURS une droite plate au
+        // solde actuel (aucune position à faire varier), donc un choix dont
+        // une branche est tautologiquement inutile — le mode réel est forcé
+        // sans qu'il y ait de bascule à proposer (retour manuel du 28/07).
+        expect(ctrl.hasRealCurve, isTrue);
+        expect(find.byType(SegmentedButton<bool>), findsNothing);
+        expect(find.text(l10n.chartModePerformance), findsNothing);
+        expect(find.text(l10n.chartModeRealEvolution), findsNothing);
       },
     );
   });
