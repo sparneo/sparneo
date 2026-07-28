@@ -49,10 +49,26 @@ class AccountJournalPage extends StatefulWidget {
   final String accountId;
   final String accountName;
 
+  /// Réservés aux tests : permettent d'injecter des fakes (storage/ledger) sans
+  /// ouvrir de base SQLite réelle dans un `testWidgets` — ouvrir/fermer une base
+  /// réelle dans la zone à horloge factice d'un test widget est connu pour
+  /// bloquer indéfiniment (cf. account_view_test.dart, statement_import_page_
+  /// test.dart). `null` en production : chaque service retombe alors sur sa
+  /// connexion par défaut (comportement inchangé).
+  @visibleForTesting
+  final TransactionStorage? debugTransactionStorage;
+  @visibleForTesting
+  final AccountStorage? debugAccountStorage;
+  @visibleForTesting
+  final LedgerService? debugLedgerService;
+
   const AccountJournalPage({
     super.key,
     required this.accountId,
     required this.accountName,
+    this.debugTransactionStorage,
+    this.debugAccountStorage,
+    this.debugLedgerService,
   });
 
   @override
@@ -60,9 +76,12 @@ class AccountJournalPage extends StatefulWidget {
 }
 
 class _AccountJournalPageState extends State<AccountJournalPage> {
-  final TransactionStorage _txStorage = TransactionStorage();
-  final AccountStorage _accountStorage = AccountStorage();
-  final LedgerService _ledger = LedgerService();
+  late final TransactionStorage _txStorage =
+      widget.debugTransactionStorage ?? TransactionStorage();
+  late final AccountStorage _accountStorage =
+      widget.debugAccountStorage ?? AccountStorage();
+  late final LedgerService _ledger =
+      widget.debugLedgerService ?? LedgerService();
 
   List<AssetTransaction> _all = [];
   bool _isLoading = true;
@@ -225,6 +244,80 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     await _ledger.recordTransaction(result);
     if (mounted) {
       showAppSnackBar(context, l10n.transactionSaved, type: SnackType.success);
+      await _load();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Édition / suppression d'un mouvement d'espèces (calqué sur
+  // position_detail_page.dart, mêmes garde-fous). RÉSERVÉ aux mouvements
+  // SAISIS À LA MAIN (!isSystemGenerated, cf. _buildTile) : un openingBalance
+  // /adjustment/transferOut reste en LECTURE SEULE dans ce journal — ces kinds
+  // portent une sémantique câblée ailleurs (ancrage cash, PRU) qu'un dialogue
+  // générique casserait s'il les rendait éditables ici.
+  // ---------------------------------------------------------------------------
+
+  Future<void> _openEditTransaction(AssetTransaction tx) async {
+    final l10n = AppLocalizations.of(context)!;
+    final currency = _accountCurrency;
+    if (currency == null) return; // devise du compte pas encore chargée
+
+    final result = await showDialog<AssetTransaction>(
+      context: context,
+      builder: (_) => TransactionEditDialog(
+        accountId: widget.accountId,
+        symbol: null,
+        currency: currency,
+        // Mono-devise stricte (cf. _openAddCashTransaction).
+        settlementCurrency: null,
+        existing: tx,
+        allowedKinds: const {
+          TransactionKind.deposit,
+          TransactionKind.withdrawal,
+          TransactionKind.interest,
+          TransactionKind.charge,
+        },
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    // JAMAIS d'insert direct (même garde-fou que _openAddCashTransaction).
+    await _ledger.recordTransaction(result);
+    if (mounted) {
+      showAppSnackBar(context, l10n.transactionSaved, type: SnackType.success);
+      await _load();
+    }
+  }
+
+  Future<void> _confirmDeleteTransaction(AssetTransaction tx) async {
+    final l10n = AppLocalizations.of(context)!;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        content: Text(l10n.deleteTransactionConfirm),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(ctx).colorScheme.error,
+            ),
+            child: Text(l10n.delete),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    await _ledger.deleteTransaction(tx.id);
+    if (mounted) {
+      showAppSnackBar(
+        context,
+        l10n.transactionDeleted,
+        type: SnackType.success,
+      );
       await _load();
     }
   }
@@ -430,49 +523,78 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       subtitle = _kindLabel(l10n, tx.kind);
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Row(
-        children: [
-          // Icône kind
-          CircleAvatar(
-            radius: 18,
-            backgroundColor: amountColor.withValues(alpha: 0.12),
-            child: Icon(_kindIcon(tx.kind), size: 16, color: amountColor),
-          ),
-          const SizedBox(width: 12),
-          // Symbole + date + sous-titre
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  symbolLabel,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-                Text(
-                  _formatTxDate(tx.date),
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                Text(
-                  subtitle,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
+    // Mouvement système (openingBalance/adjustment/transferOut) : lecture
+    // seule dans CE journal (cf. TransactionKind.isSystemGenerated) — ni tap
+    // ni bouton supprimer, tuile visuellement inchangée. Seuls les 4 kinds
+    // cash saisis à la main (deposit/withdrawal/interest/charge, les mêmes que
+    // _openAddCashTransaction) sont éditables/supprimables ici.
+    //
+    // `tx.symbol == null` est une seconde garde NÉCESSAIRE : ce journal liste
+    // TOUTES les transactions du compte (TransactionStorage.getByAccount ne
+    // filtre que par account_id, pas par symbole) — sur un compte titres, les
+    // lignes buy/sell/dividend y apparaissent aussi et ne sont PAS
+    // isSystemGenerated. Sans cette garde, taper une ligne buy l'ouvrirait
+    // dans _openEditTransaction qui force symbol: null, la ré-émettant en
+    // mouvement cash pur et lui faisant perdre son rattachement au titre.
+    final editable = !tx.kind.isSystemGenerated && tx.symbol == null;
+
+    return InkWell(
+      onTap: editable ? () => _openEditTransaction(tx) : null,
+      borderRadius: BorderRadius.circular(8),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Row(
+          children: [
+            // Icône kind
+            CircleAvatar(
+              radius: 18,
+              backgroundColor: amountColor.withValues(alpha: 0.12),
+              child: Icon(_kindIcon(tx.kind), size: 16, color: amountColor),
             ),
-          ),
-          // Montant coloré
-          Text(
-            amountLabel,
-            style: TextStyle(color: amountColor, fontWeight: FontWeight.w600),
-          ),
-        ],
+            const SizedBox(width: 12),
+            // Symbole + date + sous-titre
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    symbolLabel,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    _formatTxDate(tx.date),
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            // Montant coloré
+            Text(
+              amountLabel,
+              style: TextStyle(color: amountColor, fontWeight: FontWeight.w600),
+            ),
+            if (editable)
+              IconButton(
+                icon: Icon(
+                  Icons.delete_outline,
+                  size: 18,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                tooltip: l10n.deleteTooltip,
+                onPressed: () => _confirmDeleteTransaction(tx),
+              ),
+          ],
+        ),
       ),
     );
   }
