@@ -400,6 +400,86 @@ class HistoryAggregator {
     return (dates: gridDates, values: values);
   }
 
+  /// Grille de dates SYNTHÉTIQUE, date-only UTC (design B8 §4.3, doc 19) —
+  /// SEUL nouveau cas : un patrimoine (ou un compte) sans AUCUN titre, donc
+  /// sans aucune [AssetHistoricalData], n'a nulle part où échantillonner
+  /// [reconstructRealNetWorth]. Aujourd'hui la grille naît exclusivement des
+  /// séries de prix (`hist.dates`, cf. les groupes de test
+  /// `reconstructRealNetWorth`) ; un livret journalisé seul en a besoin d'une
+  /// bâtie directement sur `[from, to]`.
+  ///
+  /// - [from] : borne gauche déjà résolue par l'APPELANT comme
+  ///   `max(début de période demandé, premier mouvement du journal)` — cette
+  ///   fonction ne rejoue AUCUN journal et ne connaît donc pas la date du
+  ///   premier mouvement ; elle ne fait QUE refuser de fabriquer un point
+  ///   avant [from] (design §4.3, règle 2 : « avant, la valeur est 0, pas une
+  ///   extrapolation »). Le calcul du max lui-même est la responsabilité du
+  ///   Lot 2 (contrôleurs), qui connaît le journal.
+  /// - [to] : borne droite (aujourd'hui, typiquement).
+  /// - [maxPoints] : budget de points. Pas ADAPTATIF (design §4.3 règle 3 /
+  ///   §8.5) : si la plage `to − from` en JOURS dépasse [maxPoints], la
+  ///   grille est sous-échantillonnée à un pas régulier plutôt qu'un point par
+  ///   jour — perf sur « Max » (~10 ans ≈ 3 650 points journaliers, coûteux
+  ///   côté rendu `fl_chart`, cf. design §8.5) — [to] reste TOUJOURS le
+  ///   dernier point (jamais de trou entre le dernier échantillon et
+  ///   aujourd'hui).
+  ///
+  /// Dates DATE-ONLY UTC (réutilise [_dateOnlyUtc], même normalisation que
+  /// [buildQuantityTimeline]/[buildCashTimeline] de `position_projection.dart`
+  /// — design §4.3 règle 1 / §8.4).
+  ///
+  /// ⚠️ Ne JAMAIS mélanger cette grille avec la grille de prix existante
+  /// (design §4.3 règle 3 / §8.3 [MAJEUR]) : dès qu'il existe une grille de
+  /// prix (au moins un titre), elle fait AUTORITÉ et cette grille synthétique
+  /// n'est PAS construite — sinon les courbes valeur et flux se
+  /// désaligneraient ([reconstructRealNetWorth]/[buildExternalFlowsCurve]
+  /// exigent une SEULE grille partagée, doc 18 [M5]). Cet arbitrage
+  /// (« ai-je une grille de prix ? ») est fait par l'APPELANT, pas ici : cette
+  /// fonction se contente de fabriquer LA grille synthétique quand on la lui
+  /// demande.
+  ///
+  /// Cas dégénéré : si `to` n'est pas strictement après `from` (plage nulle ou
+  /// inversée), renvoie `[from]` normalisé — un seul point, jamais de liste
+  /// vide (il y a toujours au moins « aujourd'hui ») ni de fabrication hors
+  /// bornes.
+  static List<DateTime> buildDateGrid({
+    required DateTime from,
+    required DateTime to,
+    required int maxPoints,
+  }) {
+    final start = _dateOnlyUtc(from);
+    final end = _dateOnlyUtc(to);
+    if (!end.isAfter(start)) {
+      return [start];
+    }
+
+    final totalDays = end.difference(start).inDays;
+    // Défensif : un budget < 1 n'a pas de sens (division par zéro plus bas) —
+    // ramené à 1 plutôt que de planter sur un appelant mal formé.
+    final effectiveMax = maxPoints < 1 ? 1 : maxPoints;
+
+    if (totalDays <= effectiveMax) {
+      // La plage tient dans le budget : un point par jour, comme aujourd'hui
+      // pour les grilles de prix.
+      return [for (var i = 0; i <= totalDays; i++) start.add(Duration(days: i))];
+    }
+
+    // Sous-échantillonnage à pas régulier : pas = plage / budget, arrondi AU
+    // DESSUS (le nombre de points reste ≤ budget + 1). `end` est ajouté en
+    // dernier de façon inconditionnelle : le dernier échantillon du pas
+    // régulier peut tomber avant `end`, et la valeur du jour ne doit jamais
+    // être absente de la courbe.
+    final stepDays = (totalDays / effectiveMax).ceil();
+    final dates = <DateTime>[];
+    var d = start;
+    while (d.isBefore(end)) {
+      dates.add(d);
+      d = d.add(Duration(days: stepDays));
+    }
+    dates.add(end);
+    return dates;
+  }
+
   // ---------------------------------------------------------------------------
   // Repli « dernier cours » + composition cash pur (mode 2, B7 Lot 2 — design
   // doc 18 §4/§11.5 m1). PUR, sans I/O — extrait de wallet_controller pour
@@ -457,10 +537,30 @@ class HistoryAggregator {
     );
   }
 
-  /// Ajoute un cash PUR (comptes `AccountType.cash`, sans journal — hors
-  /// périmètre de [reconstructRealNetWorth]) en CONSTANTE à chaque valeur
-  /// d'une série mode 2 déjà composée. Fonction À PART : le cash DÉRIVÉ des
-  /// comptes non-cash est DÉJÀ dans [values] (calculé par
+  /// Ajoute un cash PUR en CONSTANTE à chaque valeur d'une série mode 2 déjà
+  /// composée.
+  ///
+  /// Périmètre (RESSERRÉ par le design B8, doc 19 §4.3 — ANCIEN périmètre :
+  /// « comptes `AccountType.cash`, sans journal ») : comptes `AccountType.cash`
+  /// **SANS ancrage espèces au journal** ([journalHasCashAnchor] faux sur leur
+  /// journal, `position_projection.dart:477`). Les comptes cash ANCRÉS ne
+  /// passent PLUS par ici — ils sont projetés comme n'importe quel autre
+  /// compte via `txsByAccount` dans [reconstructRealNetWorth] (même gating
+  /// M1, même timeline [buildCashTimeline]), exactement comme un compte-titres
+  /// ancré.
+  ///
+  /// ⚠️ PIÈGE N°1 [BLOQUANT, doc 19 §8.1/§6.5] — DOUBLE COMPTAGE DU CASH : un
+  /// compte cash ANCRÉ ne doit JAMAIS apparaître à la fois dans [values]
+  /// (injecté par [reconstructRealNetWorth] via `txsByAccount`) ET dans
+  /// [pureCashEur] ici — les deux chemins sont mutuellement exclusifs par
+  /// construction de [journalHasCashAnchor] (un compte tombe dans EXACTEMENT
+  /// une branche), mais c'est à L'APPELANT de respecter cette partition en
+  /// choisissant quels comptes alimentent [pureCashEur] (Lot 2, contrôleurs) —
+  /// cette fonction ne reçoit qu'un total déjà agrégé et n'a donc AUCUN moyen
+  /// de vérifier elle-même l'absence de recoupement.
+  ///
+  /// Fonction À PART : le cash DÉRIVÉ des comptes non-cash (et désormais des
+  /// comptes cash ancrés) est DÉJÀ dans [values] (calculé par
   /// [reconstructRealNetWorth] via `txsByAccount`, gating M1 inclus) — ne
   /// JAMAIS le recalculer/rajouter ici, sous peine de double-comptage (design
   /// Lot 2 §4, piège documenté en tête de `position_projection.dart`).

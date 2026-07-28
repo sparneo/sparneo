@@ -1,9 +1,12 @@
 // test/logic/history_aggregator_test.dart
+import 'package:decimal/decimal.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
+import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
+import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 
@@ -812,5 +815,365 @@ void main() {
         expect(gains.periodGainPercent, closeTo(5.0, 1e-9));
       },
     );
+  });
+
+  // =========================================================================
+  // buildDateGrid (design B8, doc 19 §4.3/§7 Lot 1) : grille synthétique pour
+  // un patrimoine (ou compte) SANS AUCUN titre — pas de série de prix pour en
+  // dériver une grille. PUR, sans I/O.
+  // =========================================================================
+
+  group('HistoryAggregator.buildDateGrid', () {
+    test('plage tenant dans maxPoints : un point par jour, from et to inclus', () {
+      final grid = HistoryAggregator.buildDateGrid(
+        from: DateTime(2024, 1, 1),
+        to: DateTime(2024, 1, 5),
+        maxPoints: 365,
+      );
+
+      expect(grid, [
+        DateTime.utc(2024, 1, 1),
+        DateTime.utc(2024, 1, 2),
+        DateTime.utc(2024, 1, 3),
+        DateTime.utc(2024, 1, 4),
+        DateTime.utc(2024, 1, 5),
+      ]);
+    });
+
+    test('date-only UTC : heure/minute ignorées (normalisation cohérente avec '
+        '_dateOnlyUtc de position_projection.dart, doc 19 §4.3 règle 1)', () {
+      final grid = HistoryAggregator.buildDateGrid(
+        from: DateTime(2024, 1, 1, 23, 59),
+        to: DateTime(2024, 1, 2, 0, 1),
+        maxPoints: 365,
+      );
+
+      expect(grid, [DateTime.utc(2024, 1, 1), DateTime.utc(2024, 1, 2)]);
+      // Toutes les dates produites sont bien UTC, sans composante horaire.
+      for (final d in grid) {
+        expect(d.isUtc, isTrue);
+        expect(d.hour, 0);
+        expect(d.minute, 0);
+      }
+    });
+
+    test('borne gauche = from (déjà résolu par l\'appelant comme max(période, '
+        'premier mouvement), doc 19 §4.3 règle 2) : AUCUN point avant', () {
+      // Simule un appelant qui a résolu from = max(début de période demandé,
+      // premier mouvement du journal) — ici le journal ne remonte qu'au
+      // 10 mars 2024, bien après le début de période réclamé (2020).
+      final periodStart = DateTime(2020, 1, 1);
+      final firstMovement = DateTime(2024, 3, 10);
+      final from =
+          firstMovement.isAfter(periodStart) ? firstMovement : periodStart;
+
+      final grid = HistoryAggregator.buildDateGrid(
+        from: from,
+        to: DateTime(2024, 3, 12),
+        maxPoints: 365,
+      );
+
+      expect(grid.first, DateTime.utc(2024, 3, 10));
+      expect(
+        grid.any((d) => d.isBefore(DateTime.utc(2024, 3, 10))),
+        isFalse,
+        reason: 'avant le premier mouvement, la valeur est 0 — pas une '
+            'extrapolation, donc pas de point fabriqué',
+      );
+    });
+
+    test('plage dépassant maxPoints (perf « Max » ~10 ans, §8.5) : '
+        'sous-échantillonnée à un pas régulier, "to" TOUJOURS le dernier point', () {
+      final from = DateTime(2014, 1, 1);
+      final to = DateTime(2024, 1, 1); // ~3653 jours
+      const maxPoints = 200;
+
+      final grid = HistoryAggregator.buildDateGrid(
+        from: from,
+        to: to,
+        maxPoints: maxPoints,
+      );
+
+      // Budget respecté (à ±1 point près, le dernier segment pouvant être
+      // plus court que le pas).
+      expect(grid.length, lessThanOrEqualTo(maxPoints + 1));
+      expect(grid.first, DateTime.utc(2014, 1, 1));
+      expect(grid.last, DateTime.utc(2024, 1, 1));
+
+      // Sous-échantillonnage réel : jamais un point par jour sur cette plage.
+      for (var i = 1; i < grid.length - 1; i++) {
+        expect(
+          grid[i].difference(grid[i - 1]).inDays,
+          greaterThan(1),
+          reason: 'pas régulier attendu, pas un point par jour',
+        );
+      }
+    });
+
+    test('plage EXACTEMENT égale à maxPoints jours (borne incluse) : '
+        'encore un point par jour', () {
+      final from = DateTime(2024, 1, 1);
+      final to = from.add(const Duration(days: 30));
+
+      final grid = HistoryAggregator.buildDateGrid(
+        from: from,
+        to: to,
+        maxPoints: 30,
+      );
+
+      expect(grid.length, 31); // 30 jours d'écart + le point de départ
+    });
+
+    test('from == to : un seul point, pas de fabrication', () {
+      final d = DateTime(2024, 6, 15);
+      final grid =
+          HistoryAggregator.buildDateGrid(from: d, to: d, maxPoints: 100);
+
+      expect(grid, [DateTime.utc(2024, 6, 15)]);
+    });
+
+    test('from postérieur à to (plage inversée, défensif) : un seul point, '
+        'pas de crash', () {
+      final grid = HistoryAggregator.buildDateGrid(
+        from: DateTime(2024, 6, 20),
+        to: DateTime(2024, 6, 10),
+        maxPoints: 100,
+      );
+
+      expect(grid, [DateTime.utc(2024, 6, 20)]);
+    });
+  });
+
+  // =========================================================================
+  // Escalier de cash d'un compte cash ANCRÉ (design B8, doc 19 §4.3) —
+  // buildCashTimeline/cashAt/journalHasCashAnchor de position_projection.dart,
+  // DÉJÀ testés unitairement ailleurs (real_net_worth_test.dart) : ici on
+  // vérifie le scénario du lot B8, un livret avec openingBalance + deposit +
+  // withdrawal + interest datés.
+  // =========================================================================
+
+  group('Escalier de cash d\'un compte cash ancré (livret)', () {
+    test('openingBalance puis deposit/withdrawal/interest datés → escalier '
+        'attendu à chaque date, y compris AVANT tout mouvement', () {
+      final opening = AssetTransaction(
+        id: 'ob1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.openingBalance,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '500',
+        currency: 'EUR',
+        date: DateTime(2024, 2, 1),
+      );
+      final withdrawal = AssetTransaction(
+        id: 'w1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.withdrawal,
+        amount: '-200',
+        currency: 'EUR',
+        date: DateTime(2024, 3, 1),
+      );
+      final interest = AssetTransaction(
+        id: 'i1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.interest,
+        amount: '15',
+        currency: 'EUR',
+        date: DateTime(2024, 4, 1),
+      );
+
+      final txs = [opening, deposit, withdrawal, interest];
+      // Prérequis du scénario : ce journal ANCRE bien le compte (opening
+      // ESPÈCES est un mouvement d'ancrage, cf. position_projection.dart:477).
+      expect(journalHasCashAnchor(txs), isTrue);
+
+      final timeline = buildCashTimeline(txs);
+
+      // Avant tout mouvement : map vide (≡ 0, aucune poche connue).
+      expect(cashAt(timeline, DateTime(2023, 12, 31)), isEmpty);
+      // Après l'ouverture (1er janvier) : 1000.
+      expect(cashAt(timeline, DateTime(2024, 1, 15))['EUR'], Decimal.parse('1000'));
+      // Après le dépôt (1er février) : 1000 + 500 = 1500.
+      expect(cashAt(timeline, DateTime(2024, 2, 15))['EUR'], Decimal.parse('1500'));
+      // Après le retrait (1er mars) : 1500 − 200 = 1300.
+      expect(cashAt(timeline, DateTime(2024, 3, 15))['EUR'], Decimal.parse('1300'));
+      // Après les intérêts (1er avril) : 1300 + 15 = 1315.
+      expect(cashAt(timeline, DateTime(2024, 4, 15))['EUR'], Decimal.parse('1315'));
+    });
+  });
+
+  // =========================================================================
+  // reconstructRealNetWorth avec un compte cash ANCRÉ dans txsByAccount
+  // (design B8, doc 19 §4.3 : « aucune signature à changer — élargir
+  // simplement txsByAccount aux comptes cash côté appelant »). Non-régression
+  // sur le cas titres seuls (déjà couvert en détail par real_net_worth_test.
+  // dart) ET nouveau cas : un livret ancré SEUL, aucun titre.
+  // =========================================================================
+
+  group('HistoryAggregator.reconstructRealNetWorth — compte cash ancré '
+      '(design B8)', () {
+    test('non-régression : titres seuls, aucun compte cash → comportement '
+        'inchangé', () {
+      final buyTx = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final hist = _histData('AAPL', [DateTime(2024, 1, 2)], [100.0]);
+
+      final r = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: {
+          'AAPL': [buyTx],
+        },
+        txsByAccount: {
+          'acc1': [buyTx],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        usdToEurRate: 1.0,
+        gridDates: [DateTime(2024, 1, 2)],
+      );
+
+      // Compte NON ancré (que des buy) : cash non injecté, seule la valeur
+      // titre compte — comportement identique à avant B8.
+      expect(r.values.single, 1000.0);
+    });
+
+    test('NOUVEAU : un livret ancré SEUL (zéro titre) contribue via le '
+        'journal, comme un escalier réel — PAS comme une constante '
+        'rétroprojetée (cas d\'usage central de B8, doc 19 §0.3)', () {
+      final opening = AssetTransaction(
+        id: 'ob1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.openingBalance,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final interest = AssetTransaction(
+        id: 'i1',
+        accountId: 'livret1',
+        symbol: null,
+        kind: TransactionKind.interest,
+        amount: '20',
+        currency: 'EUR',
+        date: DateTime(2024, 6, 1),
+      );
+
+      // Aucun titre → aucune grille de prix : buildDateGrid fournit la
+      // grille synthétique (le SEUL nouveau cas d'usage de la fonction).
+      final gridDates = HistoryAggregator.buildDateGrid(
+        from: DateTime(2024, 1, 1),
+        to: DateTime(2024, 12, 31),
+        maxPoints: 365,
+      );
+
+      final r = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: const {},
+        txsByAccount: {
+          'livret1': [opening, interest],
+        },
+        symbolToData: const {},
+        assetBySymbol: const {},
+        usdToEurRate: 1.0,
+        gridDates: gridDates,
+      );
+
+      final idxBeforeInterest = gridDates.indexOf(DateTime.utc(2024, 5, 1));
+      final idxAfterInterest = gridDates.indexOf(DateTime.utc(2024, 7, 1));
+      expect(idxBeforeInterest, isNot(-1));
+      expect(idxAfterInterest, isNot(-1));
+
+      // Escalier réel : 2000 avant l'intérêt de juin, 2020 après — PAS une
+      // constante de 2020 rétroprojetée sur toute l'année (ce que ferait
+      // l'ANCIEN traitement via addConstantPureCash).
+      expect(r.values[idxBeforeInterest], 2000.0);
+      expect(r.values[idxAfterInterest], 2020.0);
+      expect(r.values.first, 2000.0); // 1er janvier : avant tout intérêt
+      expect(r.values.last, 2020.0); // 31 décembre : après l'intérêt
+    });
+  });
+
+  // =========================================================================
+  // ANTI-DOUBLE-COMPTAGE DU CASH — piège n°1 [BLOQUANT], doc 19 §6.5/§8.1 :
+  // un compte cash ANCRÉ ne doit contribuer QUE via txsByAccount
+  // (reconstructRealNetWorth), JAMAIS aussi via addConstantPureCash. Ce test
+  // doit échouer clairement si un futur lot régresse sur cet invariant (ex.
+  // un contrôleur qui recommencerait à sommer TOUS les comptes cash dans
+  // pureCashEur sans filtrer par journalHasCashAnchor).
+  // =========================================================================
+
+  group('Anti-double-comptage du cash (invariant §6.5, PIÈGE N°1 [BLOQUANT])', () {
+    test('un compte cash ancré compté DEUX FOIS (reconstructRealNetWorth + '
+        'addConstantPureCash) diverge du compte correct (une seule fois)', () {
+      final opening = AssetTransaction(
+        id: 'ob1',
+        accountId: 'livretAncre',
+        symbol: null,
+        kind: TransactionKind.openingBalance,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      // Prérequis du scénario : ce compte EST ancré (sinon le piège ne se
+      // pose pas — un compte non ancré est de toute façon hors de
+      // txsByAccount pour le cash, cf. gating M1).
+      expect(journalHasCashAnchor([opening]), isTrue);
+
+      final gridDates = [DateTime(2024, 1, 1), DateTime(2024, 1, 10)];
+
+      // Chemin CORRECT (design B8 §1) : le compte ancré passe par
+      // txsByAccount UNIQUEMENT — reconstructRealNetWorth en dérive le cash
+      // une seule fois.
+      final correct = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: const {},
+        txsByAccount: {
+          'livretAncre': [opening],
+        },
+        symbolToData: const {},
+        assetBySymbol: const {},
+        usdToEurRate: 1.0,
+        gridDates: gridDates,
+      );
+      expect(correct.values, [1000.0, 1000.0]);
+
+      // Chemin FAUTIF (régression du piège n°1) : le MÊME compte ancré est
+      // EN PLUS injecté en constante via addConstantPureCash — exactement
+      // l'erreur qu'un appelant du Lot 2 doit éviter en filtrant les comptes
+      // cash par journalHasCashAnchor avant de composer pureCashEur.
+      final wronglyDoubleCounted =
+          HistoryAggregator.addConstantPureCash(correct.values, 1000.0);
+
+      // Les deux résultats ne doivent JAMAIS coïncider : si ce test se
+      // mettait à échouer parce que `wronglyDoubleCounted == correct.values`,
+      // ce serait le signe d'une régression AILLEURS qui aurait swallow le
+      // double comptage, pas une preuve qu'il est devenu inoffensif.
+      expect(wronglyDoubleCounted, isNot(equals(correct.values)));
+      expect(wronglyDoubleCounted, [2000.0, 2000.0]);
+
+      // Documentation exécutable de l'invariant : composé CORRECTEMENT
+      // (aucun compte non ancré supplémentaire ici → pureCashEur = 0), le
+      // résultat final doit rester identique à `correct` seul.
+      final properlyComposed =
+          HistoryAggregator.addConstantPureCash(correct.values, 0.0);
+      expect(properlyComposed, correct.values);
+    });
   });
 }
