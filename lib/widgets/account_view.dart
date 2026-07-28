@@ -788,6 +788,30 @@ class _AccountViewState extends State<AccountView> {
     }
   }
 
+  /// Ouvre le journal du compte et rafraîchit au retour (fallback, même
+  /// pattern que [_navigateToDetail]) : `AccountJournalPage` écrit via son
+  /// propre [LedgerService]/[TransactionStorage], indépendants du contrôleur
+  /// de cette vue — sans ce rafraîchissement, un dépôt/retrait/intérêt/frais
+  /// tout juste ajouté n'apparaît nulle part tant qu'on ne quitte pas l'écran
+  /// (bug préexistant à B8, découvert par la passe manuelle du 28/07 : sur un
+  /// compte titres le cash dérivé n'est qu'une ligne discrète, sur un compte
+  /// cash c'est TOUTE la valeur affichée — le bug y devient flagrant).
+  Future<void> _openJournal() async {
+    final account = _ctrl.activeAccount;
+    if (account == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => AccountJournalPage(
+          accountId: account.id,
+          accountName: account.name,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    await _ctrl.initAccounts();
+  }
+
   void _navigateToDetail(PositionWithMarketData positionData) async {
     final result = await Navigator.push<String>(
       context,
@@ -986,15 +1010,7 @@ class _AccountViewState extends State<AccountView> {
           IconButton(
             icon: const Icon(Icons.receipt_long),
             tooltip: l10n.openJournalTooltip,
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => AccountJournalPage(
-                  accountId: _ctrl.activeAccount!.id,
-                  accountName: _ctrl.activeAccount!.name,
-                ),
-              ),
-            ),
+            onPressed: () => _openJournal(),
           ),
           // Indicateur discret : pendant un rafraîchissement, l'icône refresh
           // laisse place à un petit spinner (et le bouton est neutralisé pour
