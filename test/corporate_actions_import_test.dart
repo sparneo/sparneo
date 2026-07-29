@@ -16,7 +16,6 @@ import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/services/statement_import_service.dart';
-import 'package:portfolio_tracker/widgets/account_view.dart' show isHeldPosition;
 
 const _isin = 'FR0000000001'; // ISIN factice
 

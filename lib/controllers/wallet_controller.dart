@@ -120,6 +120,28 @@ class WalletController extends ChangeNotifier {
   /// parallèle — aucun autre prédicat de régime n'existe dans ce contrôleur.
   Set<String> _anchoredAccountIds = {};
 
+  /// Borne gauche de la grille du graphique : date du PREMIER mouvement, tous
+  /// comptes confondus, mais UNIQUEMENT sur la période « Max ». Les autres
+  /// périodes ont déjà une fenêtre bornée par leur durée qu'il ne faut pas
+  /// rogner. `null` = grille complète (comportement d'origine), y compris pour
+  /// un patrimoine 100 % legacy dont aucun journal n'est daté.
+  ///
+  /// POURQUOI : la grille naît de l'historique de COTATION (Yahoo `range=max`
+  /// pour cette période), qui remonte à l'introduction du support — d'où 22 ans
+  /// de ligne plate à zéro devant un patrimoine ouvert en 2023 (constaté le
+  /// 29/07). Dérivé de [_txsByAccountForHistory], déjà chargé par
+  /// [loadAllData] : aucun état ni aucune lecture supplémentaires.
+  DateTime? get _gridFrom {
+    if (_selectedPeriod != ChartPeriod.max) return null;
+    DateTime? first;
+    for (final txs in _txsByAccountForHistory.values) {
+      for (final tx in txs) {
+        if (first == null || tx.date.isBefore(first)) first = tx.date;
+      }
+    }
+    return first;
+  }
+
   /// Comptes masqués de la liste affichée en attente de confirmation de
   /// suppression (motif « suppression différée + Annuler »). Tant qu'un id y
   /// figure, le compte est retiré de [_accounts] ET filtré à la source de chaque
@@ -187,6 +209,13 @@ class WalletController extends ChangeNotifier {
   // « dernier cours connu » (pas un vrai historique de marché) — pour un
   // futur badge UI (Lot 3, design §4/§11.5 m1).
   Set<String> _realCurveApproxSymbols = {};
+  // Positions ACTUELLEMENT détenues (tout le patrimoine) mais ABSENTES du
+  // journal (saisies à la main, sans aucun mouvement associé) — donc EXCLUES
+  // de la reconstruction ci-dessus (`_allPositionsData` dont le symbole n'est
+  // pas clé de `txsBySymbol`, cf. [_computeRealNetWorthCurve]). Alimente
+  // l'avertissement de complétude UI, conditionnel ET chiffré. Miroir wallet
+  // de [AccountController._realExcludedLegacyCount].
+  int _realExcludedLegacyCount = 0;
   // Courbe des FLUX EXTERNES CUMULÉS (B7 correction financière, design
   // §11.4 — ex-« apports nets », désormais [HistoryAggregator.
   // buildExternalFlowsCurve], flux complets pas seulement le cash pur) :
@@ -276,6 +305,11 @@ class WalletController extends ChangeNotifier {
   /// connu » plutôt que d'un véritable historique de marché (design §4/§11.5
   /// m1) — destiné à un futur badge « valeurs approchées » (Lot 3).
   Set<String> get realCurveApproxSymbols => _realCurveApproxSymbols;
+
+  /// Nombre de positions détenues (tout le patrimoine) sans AUCUN mouvement
+  /// journalisé, donc absentes de [realChartValues] — cf.
+  /// [_realExcludedLegacyCount]. `0` = rien n'est exclu.
+  int get realExcludedLegacyCount => _realExcludedLegacyCount;
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
@@ -1023,6 +1057,7 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur un patrimoine vide (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       // Aucun journal à agréger ici (patrimoine vide) : vidée pour rester
       // cohérente avec _realChartValues (évite un tableau apports périmé
       // d'une longueur différente si le patrimoine devient vide après avoir
@@ -1067,6 +1102,7 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur du cash plat (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       // Aucun compte non-cash ici (que du cash) : pas de journal à agréger,
       // même motif que ci-dessus.
       _realContributionsValues = [];
@@ -1121,6 +1157,7 @@ class WalletController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realExcludedLegacyCount = 0;
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -1232,6 +1269,7 @@ class WalletController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realExcludedLegacyCount = 0;
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -1255,6 +1293,7 @@ class WalletController extends ChangeNotifier {
       allPositionsData: _allPositionsData,
       cashBalances: _cashBalances,
       usdToEurRate: _usdToEurRate,
+      gridFrom: _gridFrom,
     );
 
     if (result.chartDates.isEmpty) {
@@ -1327,6 +1366,7 @@ class WalletController extends ChangeNotifier {
     if (_chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -1343,6 +1383,14 @@ class WalletController extends ChangeNotifier {
       }
     }
 
+    // Positions détenues (tout le patrimoine) mais SANS AUCUN mouvement
+    // journalisé : exclues de la reconstruction — comptées ICI, avant les
+    // retours anticipés ci-dessous, pour rester cohérentes avec `txsBySymbol`
+    // au même instant (cf. [_realExcludedLegacyCount]).
+    _realExcludedLegacyCount = _allPositionsData
+        .where((p) => !txsBySymbol.containsKey(p.symbol))
+        .length;
+
     // Aucun titre JOURNALISÉ dans tout le patrimoine (positions 100 % legacy,
     // saisies sans mouvement) NI aucun compte cash ancré : la reconstruction ne
     // porterait qu'un cash pur plat, indiscernable du mode 1 et laissant croire
@@ -1356,6 +1404,7 @@ class WalletController extends ChangeNotifier {
     if (txsBySymbol.isEmpty && !_hasAnchoredCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;

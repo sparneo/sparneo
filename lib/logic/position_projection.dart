@@ -166,6 +166,30 @@ class LedgerStep {
   /// (= `amount` parsé ; `0` si `amount` absent/vide).
   final Decimal deltaCash;
 
+  /// Variation de la BASE DE COÛT provoquée par ce mouvement (= `runningCost`
+  /// après − avant), en devise de COTATION, APRÈS tous les clamps du switch.
+  ///
+  /// C'est, par définition, « combien de capital ce mouvement fait entrer ou
+  /// sortir » : `q×p+frais` pour un achat, `q×p` pour une position déclarée,
+  /// `0` pour une attribution gratuite, et la quote-part WAC exacte pour une
+  /// vente ou un `transferOut` partiel. Sert à la courbe « Capital investi »
+  /// ([HistoryAggregator.buildExternalFlowsCurve]), qui doit se réconcilier au
+  /// centime avec le gain total base-coût — d'où la RESTITUTION du calcul du
+  /// moteur plutôt qu'une réimplémentation côté appelant (invariant
+  /// anti-divergence de l'en-tête de ce fichier).
+  ///
+  /// `double` (et non [Rational]) : cette valeur n'alimente que des séries
+  /// d'affichage, elles-mêmes en `double`. L'arithmétique EXACTE reste
+  /// intégralement interne à [replayLedger].
+  final double costDelta;
+
+  /// Vrai si le mouvement DÉCLARE un prix unitaire. Permet de distinguer
+  /// « coût nul VOULU » (attribution gratuite : `adjustment` sans prix) de
+  /// « base de coût INCONNUE » (position initiale saisie sans PRU) — deux cas
+  /// que [costDelta] ramène tous deux à `0` mais qui n'appellent PAS le même
+  /// traitement côté courbe de flux.
+  final bool hasDeclaredUnitPrice;
+
   /// État cash par devise après ce mouvement — COPIE DÉFENSIVE immuable. La
   /// map interne du fold ([replayLedger]) est mutée en place à chaque
   /// itération : sans cette copie, tous les steps émis aliaseraient l'état
@@ -181,6 +205,8 @@ class LedgerStep {
     required this.settlementCurrency,
     required this.deltaCash,
     required this.cashAfter,
+    this.costDelta = 0.0,
+    this.hasDeclaredUnitPrice = false,
   });
 }
 
@@ -239,9 +265,10 @@ LedgerReplayResult replayLedger(
       cash[settlement] = (cash[settlement] ?? Decimal.zero) + amt;
     }
 
-    // Capture AVANT le switch — sert uniquement à calculer le delta EFFECTIF
+    // Capture AVANT le switch — sert uniquement à calculer les deltas EFFECTIFS
     // (post-clamp) pour [onStep] ; ne participe à AUCUN calcul du switch.
     final qtyBeforeStep = runningQty;
+    final costBeforeStep = runningCost;
 
     switch (tx.kind) {
       case TransactionKind.buy:
@@ -338,6 +365,9 @@ LedgerReplayResult replayLedger(
         settlementCurrency: settlement,
         deltaCash: hasAmount ? amt : Decimal.zero,
         cashAfter: Map<String, Decimal>.unmodifiable(cash),
+        costDelta: (runningCost - costBeforeStep).toDouble(),
+        hasDeclaredUnitPrice:
+            tx.unitPrice != null && tx.unitPrice!.trim().isNotEmpty,
       ));
     }
   }
@@ -357,6 +387,37 @@ LedgerReplayResult replayLedger(
 PositionProjection projectPosition(List<AssetTransaction> txs) {
   final r = replayLedger(txs);
   return PositionProjection(r.quantity, r.averagePrice);
+}
+
+/// Vrai si une position doit compter comme un AVOIR DÉTENU — DÉPLACÉ ici
+/// (originellement défini dans `account_view.dart`, qui le RÉ-EXPORTE
+/// désormais depuis ce fichier pour ne rien casser côté appelants existants)
+/// afin d'être réutilisable depuis la couche `logic/`
+/// ([HistoryAggregator.computeRealTotalGain]) SANS faire dépendre `logic/`
+/// de `widgets/` (la couche `logic` ne doit jamais importer `widgets`, cf.
+/// en-tête de ce fichier). Prédicat pur, zéro I/O.
+///
+/// Masquées :
+///   - position SOLDÉE (quantité nette ~0, issue p. ex. d'un import
+///     d'historique complet ou d'un transfert intégral) — elle reste en base
+///     (plus-value réalisée / export fiscal) mais n'est plus un avoir ;
+///   - RÉSIDU NON COTÉ SANS VALEUR : `quotable == false` (titre délisté / purgé
+///     de la source) dont la valeur de marché est nulle (aucun dernier cours).
+///
+/// TOUJOURS affichée : une position COTÉE de faible valeur (un titre à 25 €),
+/// ou une position non cotée valorisée par un dernier cours connu (> 0).
+bool isHeldPosition({
+  required String quantity,
+  required bool quotable,
+  required double? currentPrice,
+}) {
+  final qty = double.tryParse(quantity) ?? 0;
+  if (qty.abs() <= 1e-6) return false;
+  if (!quotable) {
+    final marketValue = (currentPrice ?? 0) * qty;
+    if (marketValue.abs() <= 1e-6) return false;
+  }
+  return true;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -21,6 +21,18 @@ import 'package:portfolio_tracker/utils/logger.dart';
 /// journalier, cf. design §11.5 m3).
 DateTime _dateOnlyUtc(DateTime d) => DateTime.utc(d.year, d.month, d.day);
 
+/// Vrai si [quantity] (String brute d'un [AssetTransaction]) porte une
+/// quantité de titres EXPLOITABLE — null, vide, non numérique ou
+/// numériquement nulle (± 1e-6, même tolérance que [isHeldPosition]) rendent
+/// toutes `false`. Sert UNIQUEMENT à [HistoryAggregator.computeRealTotalGain]
+/// (terme 3, cas particulier « jambe cash d'une opération sur titre » —
+/// distingue un `adjustment`/`buy`/`sell` ESPÈCES lié à un titre, cf. sa doc,
+/// d'une attribution/correction/opération de TITRES).
+bool _hasExploitableQuantity(String? quantity) {
+  final q = double.tryParse((quantity ?? '').replaceAll(',', '.').trim());
+  return q != null && q.abs() > 1e-6;
+}
+
 /// Résultat de [HistoryAggregator.aggregateGlobalHistoricalData].
 typedef GlobalAggregationResult = ({
   List<DateTime> chartDates,
@@ -121,7 +133,9 @@ class RealTotalGain {
   /// sommer dividend+interest+charge exactement comme avant), ce champ ne
   /// change AUCUN calcul — il isole la part frais pour l'affichage (popup
   /// « Gains totaux »), sans quoi elle reste noyée dans l'agrégat des
-  /// revenus. `0.0` s'il n'y a aucun mouvement `charge`.
+  /// revenus. `0.0` s'il n'y a aucun mouvement `charge`. N'inclut JAMAIS les
+  /// `adjustment` jambe-cash décrits au terme (3) : ce sous-total reste
+  /// réservé au kind `charge`.
   final double chargesTotal;
 }
 
@@ -159,6 +173,48 @@ class HistoryAggregator {
       }
     }
     return closestIndex;
+  }
+
+  /// Restreint une grille de dates TRIÉE à celles du jour de [from] ou après.
+  ///
+  /// Sert à la période « Max » : la grille naît de l'historique de COTATION
+  /// (Yahoo `range=max`), qui remonte à l'introduction du titre — un ETF listé
+  /// en 2001 imposait 25 ans d'axe à un compte ouvert en 2023, dont 22 ans de
+  /// ligne plate à zéro. « Max » doit signifier « depuis le début de MON
+  /// suivi », pas « depuis la naissance du support ».
+  ///
+  /// [from] est ramené au DÉBUT DE SA JOURNÉE : le jour du premier mouvement
+  /// est inclus, quelle que soit l'heure de cotation des points de ce jour.
+  ///
+  /// POINT D'ANCRAGE : le dernier point STRICTEMENT ANTÉRIEUR est CONSERVÉ,
+  /// quand il existe. Sans lui, le premier point de la grille porte déjà les
+  /// mouvements du jour d'ouverture (position déclarée comprise) : la courbe
+  /// démarrerait à une valeur et un capital non nuls, et le « gain sur la
+  /// période Max » mesurerait depuis un état déjà entamé au lieu de partir de
+  /// zéro — constaté le 29/07 : +899,57 € sur Max contre +608,82 € de gain
+  /// total, soit exactement l'écart valeur−capital du jour d'ouverture.
+  /// Avec l'ancre, le patrimoine part de 0 et l'INVARIANT
+  /// `gain(Max) == gain total` est rétabli.
+  ///
+  /// Renvoie la grille INCHANGÉE si [from] est `null` (période autre que Max,
+  /// ou compte sans aucun mouvement daté) ou si le filtrage ne laisserait
+  /// aucun point (titre entièrement délisté avant le premier mouvement) : dans
+  /// ce cas de bord, mieux vaut la grille complète qu'un graphe vide.
+  static List<DateTime> applyGridFrom(List<DateTime> sorted, DateTime? from) {
+    if (from == null || sorted.isEmpty) return sorted;
+    final start = DateTime(from.year, from.month, from.day);
+
+    var firstAtOrAfter = sorted.length;
+    for (var i = 0; i < sorted.length; i++) {
+      if (!sorted[i].isBefore(start)) {
+        firstAtOrAfter = i;
+        break;
+      }
+    }
+    if (firstAtOrAfter >= sorted.length) return sorted; // rien après la borne
+    // Recule d'UN point (l'ancre à zéro) quand il en existe un avant la borne.
+    final anchored = firstAtOrAfter > 0 ? firstAtOrAfter - 1 : 0;
+    return sorted.sublist(anchored);
   }
 
   /// Version de account_view : SANS gardes aux bornes.
@@ -204,6 +260,7 @@ class HistoryAggregator {
     required List<PositionWithMarketData> allPositionsData,
     required Map<String, double> cashBalances,
     required double usdToEurRate,
+    DateTime? gridFrom,
   }) {
     final allDates = <DateTime>{};
     for (final data in symbolToData.values) {
@@ -223,7 +280,11 @@ class HistoryAggregator {
       );
     }
 
-    final sortedDates = allDates.toList()..sort();
+    // Borne gauche « Max » (cf. applyGridFrom) : appliquée AVANT le calcul des
+    // valeurs, pour que TOUT le reste (séries mode 1 et 2, flux, snapshots
+    // reprojetés, variation de période) naisse déjà sur la grille restreinte —
+    // aucun réindexage a posteriori.
+    final sortedDates = applyGridFrom(allDates.toList()..sort(), gridFrom);
     final dateValues = <DateTime, double>{};
 
     for (final targetDate in sortedDates) {
@@ -676,15 +737,46 @@ class HistoryAggregator {
   ///
   /// (b) FLUX TITRE : pour chaque symbole, [replayLedger] avec `onStep` —
   /// seuls [openingBalance]/[adjustment]/[transferOut] À `symbol != null`
-  /// contribuent, valorisés à `step.deltaQty × prix(sym, step.date)`
-  /// ([priceEurAt] sur [symbolToData], DÉJÀ post-repli « dernier cours » —
-  /// c'est la responsabilité de l'appelant, cf. [buildLastPriceFallback]).
+  /// contribuent, valorisés à leur BASE DE COÛT DÉCLARÉE ([LedgerStep.
+  /// costDelta], devise de cotation convertie au taux courant). Repli au cours
+  /// du jour ([priceEurAt] sur [symbolToData], DÉJÀ post-repli « dernier
+  /// cours » — responsabilité de l'appelant, cf. [buildLastPriceFallback])
+  /// pour le SEUL cas d'une position initiale sans PRU déclaré.
+  ///
+  /// POURQUOI le coût déclaré et non le cours du jour (réconciliation du
+  /// 29/07, remplace la « divergence assumée » du design B7) : valoriser une
+  /// position déclarée au cours de son jour d'entrée faisait diverger l'écart
+  /// des deux courbes du gain total affiché juste au-dessus (constaté :
+  /// 258,09 € sur 2 pièces héritées, soit `PRU déclaré − cours du jour`).
+  /// Avec la base de coût, `Valeur − Capital investi == gain total` tient au
+  /// centime, et l'écart initial des courbes traduit honnêtement la
+  /// plus-value latente ACQUISE AVANT le début du suivi.
   /// `deltaQty` est le delta EFFECTIF post-clamp (cf. [LedgerStep]) : un
   /// `transferOut` partiellement clampé (stock insuffisant) contribue son
-  /// effet RÉEL, pas la quantité déclarée. `buy`/`sell` sont EXCLUS ici aussi
-  /// (même raison qu'en (a) : transfert interne, contribution nette 0 — seuls
-  /// les FRAIS d'un achat/vente pèsent, et ils pèsent déjà dans [values] via
-  /// la base de coût/le prix, jamais dans cette courbe de flux).
+  /// effet RÉEL, pas la quantité déclarée. `buy`/`sell` PORTANT un `amount`
+  /// sont EXCLUS ici (même raison qu'en (a) : transfert interne, contribution
+  /// nette 0 — seuls les FRAIS pèsent, et ils pèsent déjà dans [values] via la
+  /// base de coût/le prix, jamais dans cette courbe de flux).
+  ///
+  /// (b bis) ACHAT/VENTE SANS JAMBE CASH EXPLOITÉE — un `buy`/`sell` est un
+  /// transfert interne (contribution nette 0, jambe cash prise en compte par
+  /// (a) via le solde espèces) SEULEMENT si SON COMPTE est ANCRÉ
+  /// ([journalHasCashAnchor], même prédicat EXACT que le gating de
+  /// [reconstructRealNetWorth] — les deux courbes ne peuvent donc jamais
+  /// diverger sur ce critère). Sur un compte NON ancré, sa jambe cash
+  /// n'existe nulle part en aval (aucune timeline cash construite pour lui,
+  /// cf. le gating de [reconstructRealNetWorth]) : qu'il porte ou non un
+  /// `amount`, le capital vient bel et bien de l'EXTÉRIEUR du périmètre suivi
+  /// et doit compter comme flux EXTERNE, à son prix RÉELLEMENT TRAITÉ
+  /// (`qty × unitPrice ± fee`, devise de cotation — jamais `amount`, qui
+  /// n'a aucune contrepartie cash à réconcilier ici : c'est la convention
+  /// base-de-coût, cf. plus bas, qui fait tenir l'invariant `Valeur −
+  /// Capital investi == gain total`). Sans ce terme, un titre acquis hors
+  /// trésorerie suivie (achat au comptoir, or physique…) apparaîtrait comme
+  /// un gain pur — régression constatée le 29/07 sur un `buy` PORTANT un
+  /// `amount` mais sans AUCUN mouvement d'ancrage sur son compte : la
+  /// jambe cash annoncée par `amount` n'était en réalité prise en compte
+  /// nulle part.
   ///
   /// Les contributions titre sont accumulées PAR DATE (date-only UTC, comme
   /// [buildQuantityTimeline]) puis PREFIX-SOMMÉES en breakpoints triés, avant
@@ -697,10 +789,16 @@ class HistoryAggregator {
   /// Anti-double-comptage (invariant central, cf. en-tête
   /// `position_projection.dart`) : `openingBalance` TITRE a `amount == null`
   /// (jamais capté par (a)) ; `openingBalance` ESPÈCES a `deltaQty == 0`
-  /// (jamais capté par (b)) ; `buy`/`sell` contribuent `0` des deux côtés. Un
-  /// prix manquant (résiduel malgré le repli) donne une valorisation `0` en
-  /// (b) — vue IDENTIQUEMENT par [reconstructRealNetWorth] (même
-  /// `symbolToData`), l'écart valeur/flux reste donc net de cet aléa.
+  /// (jamais capté par (b)) ; `buy`/`sell` D'UN COMPTE ANCRÉ contribuent `0`
+  /// des deux côtés (leur jambe cash est réellement projetée par (a), via la
+  /// timeline construite sur ce compte). Sur un compte NON ancré, (b bis)
+  /// bascule la contribution du côté (b) : elle non plus n'est alors comptée
+  /// qu'une fois, (a) ne portant par construction AUCUNE timeline pour ce
+  /// compte (cf. gating [journalHasCashAnchor] de [reconstructRealNetWorth],
+  /// répliqué à l'identique ici). Un prix manquant (résiduel malgré le
+  /// repli) donne une valorisation `0` en (b) — vue IDENTIQUEMENT par
+  /// [reconstructRealNetWorth] (même `symbolToData`), l'écart valeur/flux
+  /// reste donc net de cet aléa.
   ///
   /// Change : même compromis v1 que le reste du mode 2 (§6) — USD converti via
   /// [usdToEurRate] au taux COURANT.
@@ -729,6 +827,17 @@ class HistoryAggregator {
     ];
     final cashTimeline = buildCashTimeline(cashFlows);
 
+    // Comptes ANCRÉS (design (b bis), réconciliation du 29/07) — précalculé
+    // UNE FOIS, exactement le même prédicat [journalHasCashAnchor] que le
+    // gating de [reconstructRealNetWorth], pour que les deux courbes ne
+    // puissent jamais diverger sur ce critère. Un compte absent de cet
+    // ensemble n'a AUCUNE timeline cash en aval : son `buy`/`sell` n'est
+    // alors jamais un transfert interne, quel que soit son `amount`.
+    final anchoredAccountIds = <String>{
+      for (final entry in txsByAccount.entries)
+        if (journalHasCashAnchor(entry.value)) entry.key,
+    };
+
     // (b) Flux TITRE — accumulation par date-only UTC, un seul rejeu par
     // symbole (réutilise le fold unique de replayLedger, aucune arithmétique
     // dupliquée).
@@ -746,12 +855,91 @@ class HistoryAggregator {
               step.kind == TransactionKind.transferOut;
           if (!isFlowKind) return; // buy/sell : transfert interne, 0 ici
 
-          final price = priceEurAt(data, asset, step.date, usdToEurRate);
-          final contrib = step.deltaQty.toDouble() * price;
+          // BASE DE COÛT DÉCLARÉE (et non le cours du jour) — réconciliation
+          // du 29/07. `costDelta` est la variation exacte de base de coût
+          // calculée par le moteur ([LedgerStep.costDelta]) : coût déclaré
+          // d'une position initiale, `0` d'une attribution gratuite, quote-part
+          // WAC d'un `transferOut` partiel. C'est ce qui fait tenir
+          // `Valeur − Capital investi == gain total base-coût` À TOUT INSTANT,
+          // et donc l'écart des deux courbes == le chiffre de la carte.
+          //
+          // REPLI au cours du jour pour une position initiale SANS PRU déclaré
+          // (base de coût inconnue, `costDelta == 0` faute de prix) : la
+          // compter à 0 ferait passer TOUTE sa valeur pour du gain. Le repli
+          // fait au contraire partir l'écart de zéro — neutre, faute de mieux.
+          // Ce repli ne s'applique QU'À `openingBalance` : un `adjustment` sans
+          // prix est une attribution GRATUITE, dont le coût nul est VOULU (le
+          // gain qui en résulte est réel), et un `transferOut` n'a pas besoin
+          // de prix (sa quote-part WAC est toujours définie).
+          final needsMarketFallback =
+              step.kind == TransactionKind.openingBalance &&
+                  !step.hasDeclaredUnitPrice;
+          final double contrib;
+          if (needsMarketFallback) {
+            final price = priceEurAt(data, asset, step.date, usdToEurRate);
+            contrib = step.deltaQty.toDouble() * price;
+          } else {
+            // `costDelta` est en devise de COTATION (cf. en-tête
+            // `position_projection`) — même conversion que la base de coût.
+            final fx = (asset?.isUsd ?? false) ? usdToEurRate : 1.0;
+            contrib = step.costDelta * fx;
+          }
           final day = _dateOnlyUtc(step.date);
           byDate[day] = (byDate[day] ?? 0.0) + contrib;
         },
       );
+
+      // (b bis) ACHAT/VENTE SANS JAMBE CASH EXPLOITÉE — un `buy`/`sell` reste
+      // un transfert interne (contribution nette 0 ici, jambe cash déjà prise
+      // en compte par (a)) SEULEMENT si `amount` est renseigné ET que SON
+      // COMPTE est ANCRÉ ([anchoredAccountIds], testé PAR TRANSACTION via
+      // `tx.accountId` — un même symbole peut être détenu sur plusieurs
+      // comptes, dont certains ancrés et d'autres non, cf.
+      // `aggregateGlobalHistoricalData`). Sur un compte NON ancré, (a) n'a
+      // construit AUCUNE timeline cash pour lui (même gating que
+      // [reconstructRealNetWorth]) : sa jambe cash — que `amount` en fasse
+      // état ou non — n'existe donc nulle part en aval, et le mouvement est
+      // un flux EXTERNE.
+      //
+      // Valorisé au prix RÉELLEMENT TRAITÉ (`qty × unitPrice ± fee`), pas au
+      // cours du jour comme en (b) NI au montant `amount` : c'est le montant
+      // qui a quitté (achat) ou rejoint (vente) la poche extérieure du
+      // périmètre suivi, et c'est la convention de la base de coût — d'où un
+      // écart résiduel nul face à [computeRealTotalGain] sur ces mouvements.
+      // Les frais restent hors flux dans le bon sens : un achat fait entrer
+      // `q×p+f` de capital pour `q×p` de valeur, soit exactement `−f` de
+      // gain, comme il se doit.
+      //
+      // ANTI-DOUBLE-COMPTAGE : un `buy`/`sell` PORTANT un `amount` SUR UN
+      // COMPTE ANCRÉ est ignoré ici (il reste un transfert interne, sa jambe
+      // cash étant réellement prise en compte par (a) via le solde espèces
+      // projeté de ce compte) — la condition réplique celle du gating de
+      // [reconstructRealNetWorth], jamais les deux courbes ne comptent la
+      // même jambe.
+      for (final tx in entry.value) {
+        if (tx.kind != TransactionKind.buy &&
+            tx.kind != TransactionKind.sell) {
+          continue;
+        }
+        final hasAmount = tx.amount != null && tx.amount!.trim().isNotEmpty;
+        final isAnchored = anchoredAccountIds.contains(tx.accountId);
+        if (hasAmount && isAnchored) continue;
+
+        double num_(String? s) =>
+            double.tryParse((s ?? '').replaceAll(',', '.').trim()) ?? 0.0;
+        final gross = num_(tx.quantity) * num_(tx.unitPrice);
+        final fee = num_(tx.fee);
+        // Devise de COTATION (le couple quantité/prix unitaire vit dans la
+        // devise du titre, cf. en-tête `position_projection`).
+        final fx = (asset?.isUsd ?? false) ? usdToEurRate : 1.0;
+        final contrib = tx.kind == TransactionKind.buy
+            ? (gross + fee) * fx
+            : -(gross - fee) * fx;
+        if (contrib == 0.0) continue;
+
+        final day = _dateOnlyUtc(tx.date);
+        byDate[day] = (byDate[day] ?? 0.0) + contrib;
+      }
     }
 
     final sortedDays = byDate.keys.toList()..sort();
@@ -910,16 +1098,48 @@ class HistoryAggregator {
     final n = values.length;
     if (n < 2) return RealGains.empty; // pas de fenêtre (n==0 inclus)
 
-    final periodGain =
-        (values[n - 1] - values[0]) - (externalFlows[n - 1] - externalFlows[0]);
+    // FENÊTRE EFFECTIVE — on ignore le préfixe où le patrimoine N'EXISTE PAS
+    // ENCORE (valeur ET flux cumulés nuls). Sur « Max », la grille vient de
+    // l'historique de COTATION du titre (Yahoo `range=max`, cf.
+    // yahoo_finance_provider) : un ETF listé en 2001 impose 25 ans de grille à
+    // un compte ouvert en 2023. Or Modified Dietz pondère chaque flux par
+    // `(tn − ti)/T` : étalé sur 25 ans, un versement vieux de 3 ans ne pèse
+    // plus que 12 % de lui-même, le dénominateur s'effondre et le `%` explose
+    // (constaté : +3 688 % pour +3 061 € de gain). Mesurer la performance sur
+    // une période où le portefeuille n'existait pas n'a aucun sens ; on
+    // restreint donc au premier point réellement porteur d'information.
+    //
+    // Le dernier point NUL est CONSERVÉ comme borne gauche (`start`) : il
+    // ancre la fenêtre juste avant le premier flux, qui pèse alors ~1 comme
+    // il se doit. `periodGain` est rigoureusement INCHANGÉ par ce bornage
+    // (valeur et flux y sont nuls, la soustraction donne le même écart), seul
+    // le dénominateur — et la durée servant à l'annualisation — sont corrigés.
+    //
+    // NON-RÉGRESSION par construction : sans préfixe nul (cas courant — toute
+    // fenêtre courte, ou tout compte antérieur à la grille), `start == 0` et
+    // le calcul est identique au précédent, à l'octet près.
+    var start = 0;
+    while (start + 1 < n &&
+        values[start] == 0.0 &&
+        externalFlows[start] == 0.0 &&
+        values[start + 1] == 0.0 &&
+        externalFlows[start + 1] == 0.0) {
+      start++;
+    }
+    // Patrimoine nul de bout en bout (aucun mouvement) : aucune fenêtre
+    // exploitable, on refuse de produire un `%` (garde `n < 2` transposée).
+    if (start >= n - 1) return RealGains.empty;
 
-    final t0 = gridDates.first;
+    final periodGain = (values[n - 1] - values[start]) -
+        (externalFlows[n - 1] - externalFlows[start]);
+
+    final t0 = gridDates[start];
     final tn = gridDates.last;
     final totalSpanMs = tn.difference(t0).inMilliseconds.toDouble();
 
-    var denom = values[0];
+    var denom = values[start];
     if (totalSpanMs > 0) {
-      for (var i = 1; i < n; i++) {
+      for (var i = start + 1; i < n; i++) {
         final w =
             tn.difference(gridDates[i]).inMilliseconds.toDouble() / totalSpanMs;
         denom += w * (externalFlows[i] - externalFlows[i - 1]);
@@ -971,10 +1191,17 @@ class HistoryAggregator {
   /// 1. NON-RÉALISÉ : `Σ pos.unrealizedGain × fx` sur [positions] — une
   ///    position sans PRU connu (`unrealizedGain == null`, y compris un
   ///    `openingBalance` TITRE sans `unitPrice`) est EXCLUE des DEUX termes
-  ///    (numérateur ET capital, cf. plus bas) et ajoutée à
-  ///    [RealTotalGain.noBasisSymbols] — jamais silencieusement comptée pour
-  ///    zéro (ce serait une plus-value fictive). `fx` = devise de COTATION de
-  ///    la position ([Asset.isUsd]), comme le reste du mode 2.
+  ///    (numérateur ET capital, cf. plus bas) et, SI ELLE EST EFFECTIVEMENT
+  ///    DÉTENUE ([isHeldPosition]), ajoutée à [RealTotalGain.noBasisSymbols]
+  ///    — jamais silencieusement comptée pour zéro (ce serait une plus-value
+  ///    fictive). Une position SOLDÉE sans PRU stocké (résidu d'un import
+  ///    d'historique complet) N'EST PAS versée dans [noBasisSymbols] : sa
+  ///    plus-value EST comptée, par le terme (2) qui rejoue le journal
+  ///    indépendamment de l'état courant — la réserve « partiel » n'a donc
+  ///    rien à signaler pour elle (réconciliation du 29/07, sinon 63 des 67
+  ///    positions sans PRU d'un compte réel — toutes soldées — déclenchaient
+  ///    à tort la puce alors que leur gain était déjà complet). `fx` = devise
+  ///    de COTATION de la position ([Asset.isUsd]), comme le reste du mode 2.
   /// 2. RÉALISÉ : `Σ replayLedger(txsBySymbol[sym]).realizedGain × fx` — la
   ///    plus-value bookée sur les VENTES, quel que soit l'état actuel du
   ///    symbole (y compris un titre totalement soldé, absent de [positions]).
@@ -989,6 +1216,55 @@ class HistoryAggregator {
   ///    (`settlementCurrency ?? currency`), PAS la cotation (c'est un
   ///    mouvement cash). La part `charge` de cette somme est EN PLUS isolée
   ///    dans [RealTotalGain.chargesTotal] (affichage seul, n'altère rien ici).
+  ///
+  ///    CAS PARTICULIER — jambe cash d'une opération sur titre : un
+  ///    `adjustment` portant un SYMBOLE, un `amount`, et AUCUNE quantité
+  ///    exploitable (`quantity` null/vide/numériquement nulle) compte AUSSI
+  ///    dans ce terme, même `fx` de règlement que ci-dessus (réconciliation
+  ///    du 29/07 — ex. réel : titres reçus gratuitement par `adjustment`
+  ///    quantité, sortis par `transferOut`, puis le compte crédité en espèces
+  ///    par un `adjustment` symbole+montant SANS quantité — le moteur cash
+  ///    lit `amount` quel que soit le kind (partition stricte, cf. en-tête
+  ///    `position_projection.dart`), donc ce montant est déjà entré dans la
+  ///    valeur/le solde ; sans ce terme il en sortait du gain, cassant
+  ///    l'invariant `valeur − capital == gain total` face à
+  ///    [buildExternalFlowsCurve]). EXCLUS explicitement :
+  ///      - `adjustment` À `symbol == null` : correction de SOLDE, déjà
+  ///        comptée comme apport externe par le filtre (a) de
+  ///        [buildExternalFlowsCurve] — la compter ici la doublerait ;
+  ///      - `adjustment` symbole AVEC quantité exploitable : attribution de
+  ///        titres (coût nul voulu ou déclaré), gérée par le terme (2)/le
+  ///        moteur titre, pas ici ;
+  ///      - `adjustment` symbole + quantité + montant (les trois à la fois) :
+  ///        donnée ambiguë (le montant ressemble alors à un prix d'acquisition,
+  ///        pas à un résultat) — la condition « aucune quantité exploitable »
+  ///        l'exclut déjà, explicitée pour ne pas être perdue de vue. N'entre
+  ///        JAMAIS dans [RealTotalGain.chargesTotal] (réservé au kind
+  ///        `charge`).
+  ///
+  ///    MÊME CAS PARTICULIER sur un `buy`/`sell` — un `buy`/`sell` portant un
+  ///    `amount` et AUCUNE quantité exploitable compte AUSSI dans ce terme
+  ///    (réconciliation du 29/07, même famille que l'`adjustment` ci-dessus —
+  ///    ex. réel : `sell` NL0011333752 quantité `'0'`, `amount: '7.74'`, un
+  ///    solde de liquidation). Le moteur cash lit `amount` quel que soit le
+  ///    kind (partition stricte) : cette somme est déjà entrée dans la valeur/
+  ///    le solde, et le moteur titre (terme 2, qui ne lit que les quantités)
+  ///    n'y voit rien — sans ce terme elle manquait au gain, cassant
+  ///    l'invariant face à [buildExternalFlowsCurve] sur un compte ANCRÉ.
+  ///    Un `buy`/`sell` À QUANTITÉ EXPLOITABLE n'est JAMAIS concerné : c'est
+  ///    une opération de marché ordinaire, dont le résultat vient déjà du
+  ///    rejeu du terme (2) — le compter ici le doublerait. N'entre jamais
+  ///    dans [RealTotalGain.chargesTotal] non plus.
+  ///
+  ///    ANTI-DOUBLE-COMPTAGE avec [buildExternalFlowsCurve] (b bis) : sur un
+  ///    compte ANCRÉ, (b bis) EXCLUT tout `buy`/`sell` portant un `amount`
+  ///    (jambe cash déjà projetée par (a) via le solde espèces de ce compte),
+  ///    donc aucun recoupement avec ce terme. Sur un compte NON ancré, (b bis)
+  ///    compte ce même `buy`/`sell` côté flux TITRE, mais valorisé à `qty ×
+  ///    unitPrice ± fee` (PAS `amount`) — nul quand `quantity` est nulle sauf
+  ///    frais résiduels, donc pas le MÊME euro compté deux fois, mais un écart
+  ///    résiduel POSSIBLE reste hors périmètre de ce correctif (compte non
+  ///    ancré, hors de l'invariant testé ici).
   ///
   /// `%` : `capital = valeurIncluse − totalGain`, où `valeurIncluse = Σ
   /// pos.totalValue × fx` (valeur de marché actuelle, PAS le coût — sur les
@@ -1031,7 +1307,17 @@ class HistoryAggregator {
     for (final pos in positions) {
       final unrealized = pos.unrealizedGain;
       if (unrealized == null) {
-        noBasisSymbols.add(pos.symbol);
+        // Ne signaler la réserve « partiel » que pour un avoir EFFECTIVEMENT
+        // DÉTENU (cf. doc ci-dessus) — une position soldée sans PRU stocké
+        // n'amputera JAMAIS totalGain (son gain vient du terme (2)), la
+        // réserve serait donc un faux positif.
+        if (isHeldPosition(
+          quantity: pos.quantity,
+          quotable: pos.asset.quotable,
+          currentPrice: pos.currentPrice,
+        )) {
+          noBasisSymbols.add(pos.symbol);
+        }
         continue;
       }
       final fx = pos.asset.isUsd ? usdToEurRate : 1.0;
@@ -1056,12 +1342,28 @@ class HistoryAggregator {
       totalGain += realized * fx;
     }
 
-    // (3) Revenus — partition stricte dividend/interest/charge, fx règlement.
+    // (3) Revenus — partition stricte dividend/interest/charge, fx règlement
+    // — PLUS le cas particulier « jambe cash d'une opération sur titre » (cf.
+    // doc ci-dessus) : un adjustment OU un buy/sell, symbole + amount SANS
+    // quantité exploitable. Un seul mouvement ne peut jamais relever de deux
+    // de ces trois familles à la fois (kinds disjoints), les conditions
+    // ci-dessous sont donc mutuellement exclusives par construction.
     for (final txs in txsByAccount.values) {
       for (final tx in txs) {
-        if (tx.kind != TransactionKind.dividend &&
-            tx.kind != TransactionKind.interest &&
-            tx.kind != TransactionKind.charge) {
+        final isRevenueKind = tx.kind == TransactionKind.dividend ||
+            tx.kind == TransactionKind.interest ||
+            tx.kind == TransactionKind.charge;
+        final isTitreCashLegAdjustment = tx.kind == TransactionKind.adjustment &&
+            tx.symbol != null &&
+            tx.amount != null &&
+            tx.amount!.trim().isNotEmpty &&
+            !_hasExploitableQuantity(tx.quantity);
+        final isTitreCashLegTrade = (tx.kind == TransactionKind.buy ||
+                tx.kind == TransactionKind.sell) &&
+            tx.amount != null &&
+            tx.amount!.trim().isNotEmpty &&
+            !_hasExploitableQuantity(tx.quantity);
+        if (!isRevenueKind && !isTitreCashLegAdjustment && !isTitreCashLegTrade) {
           continue;
         }
         final amt =
@@ -1071,6 +1373,8 @@ class HistoryAggregator {
         final fx = settlement.toUpperCase() == 'USD' ? usdToEurRate : 1.0;
         final converted = amt * fx;
         totalGain += converted;
+        // chargesTotal reste réservé au SEUL kind `charge` — un adjustment
+        // jambe-cash n'y contribue jamais (cf. doc [RealTotalGain.chargesTotal]).
         if (tx.kind == TransactionKind.charge) {
           chargesTotal += converted;
         }
@@ -1173,6 +1477,7 @@ class HistoryAggregator {
     required List<AssetHistoricalData?> results,
     required List<PositionWithMarketData> currentPositions,
     required double usdToEurRate,
+    DateTime? gridFrom,
   }) {
     final maxLen = min(results.length, currentPositions.length);
 
@@ -1205,7 +1510,8 @@ class HistoryAggregator {
       allDates.addAll(result.dates);
     }
 
-    final sortedDates = allDates.toList()..sort();
+    // Borne gauche « Max » (cf. applyGridFrom) — appliquée avant tout calcul.
+    final sortedDates = applyGridFrom(allDates.toList()..sort(), gridFrom);
 
     // Pré-calculer un index date→prix pour chaque position (évite la recherche
     // linéaire répétée). null pour les positions sans donnée historique.

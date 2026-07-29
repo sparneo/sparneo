@@ -797,6 +797,104 @@ void main() {
     });
 
     test(
+        'gain total — compte NON ancré (buy seul) : le cash dérivé négatif '
+        'FICTIF n\'entre PAS dans le capital (régression : il l\'amputait, '
+        'donnant des chiffres différents du niveau patrimoine pour le même '
+        'compte)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10', pru: 90)],
+      );
+      final ledger = LedgerService(database: db);
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-buy-gain-noanchor',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasCashAnchor, isFalse);
+
+      // Non-réalisé = (105 − 90) × 10 = 150, seul terme du gain ici.
+      expect(ctrl.realTotalGain, closeTo(150.0, 1e-9));
+      // Capital = valeur (1050, cash exclu) − gain (150) = 900, soit
+      // exactement le prix de revient. 150/900 = 16,67 %.
+      //
+      // C'est CE chiffre que la garde protège : avec le cash fictif (−900),
+      // valueIncluded tombait à 150, le capital à 0, et le `%` devenait NUL
+      // (`capital > 0` faux) — la carte n'affichait plus aucun pourcentage.
+      expect(ctrl.realTotalGainPercent, isNotNull);
+      expect(ctrl.realTotalGainPercent, closeTo(150 / 900 * 100, 1e-9));
+    });
+
+    test(
+        'gain total — contre-épreuve, compte ANCRÉ (dépôt + achat) : le cash '
+        'dérivé entre bien dans le capital (la garde n\'a pas tout coupé)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10', pru: 90)],
+      );
+      final ledger = LedgerService(database: db);
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-dep-gain',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-buy-gain-anchor',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasCashAnchor, isTrue);
+
+      // Gain inchangé (150) : la garde ne touche qu'au DÉNOMINATEUR.
+      expect(ctrl.realTotalGain, closeTo(150.0, 1e-9));
+      // Capital = valeur (titres 1050 + espèces 1100) − gain (150) = 2000,
+      // soit exactement le dépôt — l'argent réellement apporté. 150/2000 =
+      // 7,5 %, contre 16,67 % sur le compte non ancré : deux dénominateurs
+      // différents parce que deux réalités différentes, pas parce qu'une
+      // garde aurait tout coupé.
+      expect(ctrl.realTotalGainPercent, closeTo(150 / 2000 * 100, 1e-9));
+    });
+
+    test(
         'compte sans journal (legacy, design §11.6) : PAS de courbe réelle '
         '(hasRealCurve faux, aucun bascule) — mode 1 reste intact', () async {
       final db = await openTestDatabase();

@@ -659,6 +659,100 @@ void main() {
       },
     );
 
+    // -----------------------------------------------------------------------
+    // Préfixe « patrimoine inexistant » (régression du 29/07) — sur « Max », la
+    // grille vient de l'historique de COTATION du titre : un ETF listé en 2001
+    // impose 25 ans de grille à un compte ouvert en 2023, ce qui écrasait les
+    // pondérations Modified Dietz et faisait exploser le `%` (+3 688 %).
+    // -----------------------------------------------------------------------
+
+    test('préfixe entièrement nul : la fenêtre effective démarre au dernier '
+        'point nul, le % n\'est plus dilué par les années « à vide »', () {
+      // 20 ans de grille, patrimoine créé seulement sur les 2 dernières
+      // années : 1000 € apportés, valant 1200 € à la fin.
+      final dates = [
+        DateTime(2006, 1, 1),
+        DateTime(2016, 1, 1),
+        DateTime(2024, 1, 1), // dernier point nul → borne gauche effective
+        DateTime(2025, 1, 1), // apport de 1000
+        DateTime(2026, 1, 1),
+      ];
+      final gains = HistoryAggregator.computeRealGains(
+        values: [0.0, 0.0, 0.0, 1000.0, 1200.0],
+        externalFlows: [0.0, 0.0, 0.0, 1000.0, 1000.0],
+        gridDates: dates,
+      );
+
+      // periodGain est INCHANGÉ par le bornage (préfixe nul des deux séries).
+      expect(gains.periodGain, closeTo(200.0, 1e-9));
+
+      // Fenêtre effective 2024→2026 (2 ans). Le flux de 1000 tombe à
+      // mi-parcours → poids (2026-2025)/(2026-2024) = 0,5 → denom = 500.
+      // → 200 / 500 = +40 %. Sur la grille COMPLÈTE (20 ans), le poids aurait
+      // été ~0,05 → denom ~50 → +400 %, chiffre absurde que ce test verrouille.
+      expect(gains.periodGainPercent, closeTo(40.0, 0.5));
+      expect(gains.periodGainPercent, lessThan(100.0));
+    });
+
+    test('préfixe nul : l\'annualisé est calculé sur la durée EFFECTIVE, pas '
+        'sur la grille complète', () {
+      final dates = [
+        DateTime(2006, 1, 1),
+        DateTime(2024, 1, 1),
+        DateTime(2025, 1, 1),
+        DateTime(2026, 1, 1),
+      ];
+      final gains = HistoryAggregator.computeRealGains(
+        values: [0.0, 0.0, 1000.0, 1200.0],
+        externalFlows: [0.0, 0.0, 1000.0, 1000.0],
+        gridDates: dates,
+      );
+
+      // Fenêtre effective = 2 ans (>= 548 j) → annualisé produit, et STRICTEMENT
+      // inférieur au cumulé (composition sur 2 ans), pas dilué sur 20 ans.
+      expect(gains.periodGainPercentAnnualized, isNotNull);
+      expect(
+        gains.periodGainPercentAnnualized!,
+        lessThan(gains.periodGainPercent!),
+      );
+      // Sur 2 ans : (1+0,4)^(1/2) − 1 ≈ +18,3 %/an.
+      expect(gains.periodGainPercentAnnualized, closeTo(18.3, 1.0));
+    });
+
+    test('AUCUN préfixe nul (cas courant) : calcul strictement identique '
+        '(non-régression du bornage)', () {
+      final dates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 6, 1),
+        DateTime(2024, 12, 1),
+      ];
+      final gains = HistoryAggregator.computeRealGains(
+        values: [10000.0, 11000.0, 12500.0],
+        externalFlows: [8000.0, 8500.0, 8500.0],
+        gridDates: dates,
+      );
+
+      // periodGain = (12500-10000) - (8500-8000) = 2000.
+      expect(gains.periodGain, closeTo(2000.0, 1e-9));
+      // denom = 10000 + w × 500 avec w = (12/01 - 06/01)/(12/01 - 01/01),
+      // soit ~0,545 → ~10272 → ~19,5 %.
+      expect(gains.periodGainPercent, closeTo(19.47, 0.1));
+    });
+
+    test('séries entièrement nulles : tout null (aucune fenêtre exploitable)', () {
+      final gains = HistoryAggregator.computeRealGains(
+        values: [0.0, 0.0, 0.0],
+        externalFlows: [0.0, 0.0, 0.0],
+        gridDates: [
+          DateTime(2024, 1, 1),
+          DateTime(2025, 1, 1),
+          DateTime(2026, 1, 1),
+        ],
+      );
+
+      expect(gains.periodGain, isNull);
+      expect(gains.periodGainPercent, isNull);
+    });
   });
 
   // =========================================================================
@@ -1174,6 +1268,71 @@ void main() {
       final properlyComposed =
           HistoryAggregator.addConstantPureCash(correct.values, 0.0);
       expect(properlyComposed, correct.values);
+    });
+  });
+
+  // ===========================================================================
+  // Borne gauche « Max » (29/07) : la grille naît de l'historique de COTATION
+  // (Yahoo range=max), qui remonte à l'introduction du support — 22 ans de
+  // ligne plate à zéro devant un compte ouvert bien plus tard. « Max » doit
+  // signifier « depuis le début de MON suivi ».
+  // ===========================================================================
+
+  group('HistoryAggregator.applyGridFrom', () {
+    final grid = [
+      DateTime(2001, 1, 1),
+      DateTime(2015, 6, 1),
+      DateTime(2023, 5, 10, 17, 35),
+      DateTime(2024, 1, 1),
+    ];
+
+    test('from null : grille INCHANGÉE (périodes autres que Max)', () {
+      expect(HistoryAggregator.applyGridFrom(grid, null), same(grid));
+    });
+
+    test('grille vide : renvoyée telle quelle', () {
+      expect(HistoryAggregator.applyGridFrom(const [], DateTime(2024)), isEmpty);
+    });
+
+    test('coupe ce qui précède, en CONSERVANT un point d\'ancrage à zéro', () {
+      final trimmed =
+          HistoryAggregator.applyGridFrom(grid, DateTime(2023, 5, 10, 10));
+      // Le 2015 est gardé comme ANCRE (patrimoine encore à 0 ce jour-là) : sans
+      // lui, le premier point porterait déjà la position déclarée du 10/05 et
+      // « gain(Max) » ne partirait pas de zéro. Tout le reste (2001) est coupé.
+      expect(trimmed, [
+        DateTime(2015, 6, 1),
+        DateTime(2023, 5, 10, 17, 35),
+        DateTime(2024, 1, 1),
+      ]);
+    });
+
+    test('borne antérieure à TOUTE la grille : aucune ancre à ajouter, grille '
+        'complète', () {
+      expect(HistoryAggregator.applyGridFrom(grid, DateTime(1990)), grid);
+    });
+
+    test('invariant d\'ancrage : le premier point retenu est TOUJOURS '
+        'antérieur au premier mouvement (sauf s\'il n\'en existe aucun)', () {
+      final from = DateTime(2023, 5, 10, 10);
+      final trimmed = HistoryAggregator.applyGridFrom(grid, from);
+      expect(trimmed.first.isBefore(DateTime(2023, 5, 10)), isTrue);
+    });
+
+    test('le JOUR du premier mouvement est inclus même si le point coté est '
+        'antérieur en heure (normalisation à minuit)', () {
+      // Mouvement à 10h, cotation du même jour à 9h : le point DOIT rester —
+      // et il n'y a rien avant, donc pas d'ancre à ajouter.
+      final g = [DateTime(2023, 5, 10, 9), DateTime(2023, 5, 11)];
+      final trimmed =
+          HistoryAggregator.applyGridFrom(g, DateTime(2023, 5, 10, 10));
+      expect(trimmed, g);
+    });
+
+    test('aucun point après la borne : grille COMPLÈTE conservée (repli — un '
+        'graphe vide serait pire)', () {
+      final trimmed = HistoryAggregator.applyGridFrom(grid, DateTime(2030));
+      expect(trimmed, grid);
     });
   });
 }

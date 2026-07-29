@@ -146,6 +146,14 @@ class AccountController extends ChangeNotifier {
   // Symboles dont la valeur, à au moins une date, provient d'un repli
   // « dernier cours connu » (pas un vrai historique de marché) — badge UI.
   Set<String> _realCurveApproxSymbols = {};
+  // Positions ACTUELLEMENT détenues mais ABSENTES du journal (saisies à la
+  // main, sans aucun mouvement associé) — donc EXCLUES de la reconstruction
+  // ci-dessus (`currentPositions` dont le symbole n'est pas clé de
+  // `txsBySymbol`, cf. [_computeAccountRealCurve]). Alimente l'avertissement
+  // de complétude UI, désormais conditionnel ET chiffré (épuration UI,
+  // remplace l'ancienne phrase inconditionnelle) : `0` sur un compte cash, qui
+  // n'a par construction aucune position.
+  int _realExcludedLegacyCount = 0;
 
   // Courbe des FLUX EXTERNES CUMULÉS du compte (B7 correction financière,
   // design §11.4 — ex-« apports nets », désormais [HistoryAggregator.
@@ -199,6 +207,22 @@ class AccountController extends ChangeNotifier {
   /// FAUX tant qu'aucun ancrage n'atteste un suivi réel de la trésorerie).
   bool _hasCashAnchor = false;
 
+  /// Date du PREMIER mouvement du journal du compte actif, ou `null` si le
+  /// journal est vide (compte 100 % legacy saisi à la main). Alimente
+  /// [_gridFrom] — cf. [HistoryAggregator.applyGridFrom].
+  DateTime? _firstTxDate;
+
+  /// Borne gauche de la grille du graphique : la date du premier mouvement,
+  /// mais UNIQUEMENT sur la période « Max ». Les autres périodes ont déjà une
+  /// fenêtre bornée par leur propre durée (J/1M/…/5A) qu'il ne faut surtout
+  /// pas rogner. `null` = grille complète, comportement d'origine.
+  ///
+  /// POURQUOI : la grille naît de l'historique de COTATION (Yahoo `range=max`
+  /// pour cette période), qui remonte à l'introduction du support — d'où 22 ans
+  /// de ligne plate à zéro devant un compte ouvert en 2023 (constaté le 29/07).
+  DateTime? get _gridFrom =>
+      _selectedPeriod == ChartPeriod.max ? _firstTxDate : null;
+
   /// Nombre de mouvements du compte actif dont la devise de RÈGLEMENT effective
   /// (`settlementCurrency ?? currency`) diffère de la devise du compte ET
   /// alimente un bucket cash NON NUL (lignes legacy d'avant le découplage
@@ -243,6 +267,12 @@ class AccountController extends ChangeNotifier {
   /// connu » plutôt que d'un véritable historique de marché — destiné au
   /// badge « valeurs approchées ».
   Set<String> get realCurveApproxSymbols => _realCurveApproxSymbols;
+
+  /// Nombre de positions détenues sans AUCUN mouvement journalisé, donc
+  /// absentes de [realChartValues] — cf. [_realExcludedLegacyCount]. `0` =
+  /// rien n'est exclu (notamment tout compte cash, sans position par
+  /// construction).
+  int get realExcludedLegacyCount => _realExcludedLegacyCount;
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
@@ -397,6 +427,12 @@ class AccountController extends ChangeNotifier {
     if (_disposed) return;
     _hasCashAnchor = journalHasCashAnchor(txs);
     _derivedCash = derived.cash;
+    // Borne gauche de la période « Max » (cf. [_gridFrom]) : capturée ICI, où
+    // le journal est déjà en main, car l'agrégation qui la consomme tourne
+    // AVANT que la courbe réelle ne relise les mouvements.
+    _firstTxDate = txs.isEmpty
+        ? null
+        : txs.map((t) => t.date).reduce((a, b) => a.isBefore(b) ? a : b);
     _foreignCashMovementCount = _countForeignCashMovements(txs, account.currency);
     _safeNotify();
   }
@@ -665,6 +701,7 @@ class AccountController extends ChangeNotifier {
       _periodChangePercent = null;
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       _safeNotify();
@@ -700,6 +737,7 @@ class AccountController extends ChangeNotifier {
         results: results,
         currentPositions: currentPositions,
         usdToEurRate: _usdToEurRate,
+        gridFrom: _gridFrom,
       );
       final updatedPositions = HistoryAggregator.computeIndividualPeriodChanges(
         results: results,
@@ -733,6 +771,7 @@ class AccountController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realExcludedLegacyCount = 0;
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -842,6 +881,7 @@ class AccountController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
+        _realExcludedLegacyCount = 0;
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -895,6 +935,7 @@ class AccountController extends ChangeNotifier {
     if (_activeAccount == null || _chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -912,6 +953,14 @@ class AccountController extends ChangeNotifier {
       txsBySymbol.putIfAbsent(sym, () => []).add(tx);
     }
 
+    // Positions détenues mais SANS AUCUN mouvement journalisé : exclues de la
+    // reconstruction (aucun historique pour les projeter) — comptées ICI,
+    // avant les retours anticipés ci-dessous, pour rester cohérentes avec
+    // `txsBySymbol` au même instant (cf. [_realExcludedLegacyCount]).
+    _realExcludedLegacyCount = currentPositions
+        .where((p) => !txsBySymbol.containsKey(p.symbol))
+        .length;
+
     // Aucun titre JOURNALISÉ (compte 100 % legacy, saisi à la main sans
     // mouvement) : le mode 2 serait une courbe plate à 0 (rien à reconstruire),
     // trompeuse en regard du mode 1 qui, lui, valorise ces positions. On
@@ -927,6 +976,7 @@ class AccountController extends ChangeNotifier {
     if (txsBySymbol.isEmpty && !isJournaledCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
+      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -1041,8 +1091,20 @@ class AccountController extends ChangeNotifier {
     // Cash DÉRIVÉ du compte (devise de règlement du compte → EUR) : fait
     // partie de la valeur détenue, donc du capital investi. L'omettre
     // surévaluerait le `%` (cf. computeRealTotalGain).
-    final derivedCashEur = (double.tryParse(_derivedCash ?? '0') ?? 0.0) *
-        (_activeAccount!.currency.toUpperCase() == 'USD' ? _usdToEurRate : 1.0);
+    //
+    // GARDE D'ANCRAGE (invariant « faux négatif interdit », design
+    // cash-ledger §6.7) : sur un compte titres non ancré, [_derivedCash] est
+    // un solde négatif FICTIF (cf. doc de [_hasCashAnchor]) — l'injecter en
+    // `cashEur` amputait le capital du gain total, et faisait diverger les
+    // chiffres du MÊME compte selon l'écran d'où on le regarde, le niveau
+    // patrimoine passant lui une map déjà filtrée par l'ancrage
+    // ([WalletController._cashBalances]).
+    final derivedCashEur = _hasCashAnchor
+        ? (double.tryParse(_derivedCash ?? '0') ?? 0.0) *
+            (_activeAccount!.currency.toUpperCase() == 'USD'
+                ? _usdToEurRate
+                : 1.0)
+        : 0.0;
 
     final totalGain = HistoryAggregator.computeRealTotalGain(
       positions: currentPositions,

@@ -705,14 +705,14 @@ void main() {
       expect(values, isEmpty);
     });
 
-    test('openingBalance TITRE : valorisé au cours DU JOUR DU FLUX (pas le prix déclaré)', () {
+    test('openingBalance TITRE : valorisé à la BASE DE COÛT DÉCLARÉE (pas le cours du jour)', () {
       final opening = AssetTransaction(
         id: 'ob1',
         accountId: 'acc1',
         symbol: 'AAPL',
         kind: TransactionKind.openingBalance,
         quantity: '10',
-        unitPrice: '50', // PRU déclaré — NE DOIT PAS servir à la valorisation
+        unitPrice: '50', // PRU déclaré — c'est LUI qui valorise le flux
         amount: null,
         currency: 'EUR',
         date: DateTime(2024, 1, 1),
@@ -736,9 +736,10 @@ void main() {
         usdToEurRate: 1.0,
       );
 
-      // Avant le flux : 0. À partir du 1er janvier : 10 × 100 (cours du jour
-      // du flux) = 1000, PAS 10 × 50 (PRU déclaré).
-      expect(values, [0.0, 1000.0, 1000.0]);
+      // Avant le flux : 0. À partir du 1er janvier : 10 × 50 (PRU DÉCLARÉ)
+      // = 500, PAS 10 × 100 (cours du jour). C'est ce qui fait tenir
+      // « Valeur − Capital investi == gain total base-coût » (29/07).
+      expect(values, [0.0, 500.0, 500.0]);
     });
 
     test('transferOut PARTIELLEMENT clampé (M2) : contribue le delta EFFECTIF, pas le déclaré', () {
@@ -783,9 +784,11 @@ void main() {
         usdToEurRate: 1.0,
       );
 
-      // J1 : +10×100 = 1000. J5 : transferOut clampé à -10 (pas -15, stock
-      // insuffisant) × 120 = -1200 → cumul = 1000 - 1200 = -200.
-      expect(values, [1000.0, -200.0]);
+      // J1 : +10×50 = 500 de base de coût. J5 : transferOut clampé à 10 titres
+      // (pas 15, stock insuffisant) emporte la quote-part WAC correspondante,
+      // soit TOUTE la base de coût → cumul 0. La valorisation au cours du jour
+      // (120) n'intervient plus : c'est le capital, pas le marché, qui sort.
+      expect(values, [500.0, 0.0]);
     });
 
     test('buy/sell : flux 0 des deux côtés (transfert interne cash↔titre, pas un flux externe)', () {
@@ -875,8 +878,9 @@ void main() {
         usdToEurRate: 1.0,
       );
 
-      // Seul l'openingBalance (1000) compte — ni le dividende ni le frais.
-      expect(values, [1000.0, 1000.0]);
+      // Seul l'openingBalance (10 × 50 = 500 de base de coût) compte — ni le
+      // dividende ni le frais.
+      expect(values, [500.0, 500.0]);
     });
 
     test('openingBalance/adjustment ESPÈCES : DÉSORMAIS en flux (non-régression du bug ex-buildContributionsCurve)', () {
@@ -913,7 +917,7 @@ void main() {
       expect(values, [500.0, 400.0]);
     });
 
-    test('adjustment TITRE : valorisé au jour du flux, distinct de l\'adjustment ESPÈCES', () {
+    test('adjustment TITRE à coût nul (attribution gratuite) : AUCUN capital investi', () {
       final opening = AssetTransaction(
         id: 'ob1',
         accountId: 'acc1',
@@ -955,9 +959,12 @@ void main() {
         usdToEurRate: 1.0,
       );
 
-      // J1 : 10×100=1000. J3 : +5×105 (cours du jour, pas le prix nul déclaré
-      // par l'ajustement) = 525 → cumul 1525.
-      expect(values, [1000.0, 1525.0]);
+      // J1 : 10×50 = 500 de base de coût. J3 : l'attribution gratuite déclare
+      // un prix NUL (`unitPrice: '0'`) — elle n'apporte donc AUCUN capital, et
+      // la valeur qu'elle ajoute au patrimoine est intégralement du GAIN. Le
+      // cumul reste à 500. (Le repli au cours du jour est réservé à une
+      // position initiale SANS prix déclaré, cas « base de coût inconnue ».)
+      expect(values, [500.0, 500.0]);
     });
 
     test('aller-retour intraday : deux flux titre le MÊME jour se SOMMENT', () {
@@ -998,9 +1005,10 @@ void main() {
         usdToEurRate: 1.0,
       );
 
-      // (10+2) × 100 = 1200, les deux contributions du jour SOMMÉES (pas
-      // "dernière écrase" comme un escalier d'état).
-      expect(values.single, closeTo(1200.0, 1e-9));
+      // 10×50 (base de coût déclarée) + 2×0 (attribution gratuite) = 500 : les
+      // deux contributions du MÊME jour sont bien SOMMÉES (pas « la dernière
+      // écrase », comme le ferait un escalier d'état).
+      expect(values.single, closeTo(500.0, 1e-9));
     });
 
     test('USD : flux titre converti au taux courant', () {
@@ -1030,11 +1038,13 @@ void main() {
         usdToEurRate: 0.9,
       );
 
-      // 10 × 100 USD × 0.9 = 900 EUR.
-      expect(values.single, closeTo(900.0, 1e-9));
+      // Base de coût 10 × 50 USD = 500 USD × 0,9 = 450 EUR (le cours du jour,
+      // 100 USD, n'intervient plus).
+      expect(values.single, closeTo(450.0, 1e-9));
     });
 
-    test('prix manquant pour le symbole : contribue 0 (repli géré en amont par l\'appelant)', () {
+    test('prix de marché absent mais PRU DÉCLARÉ : le flux vaut quand même sa '
+        'base de coût (elle ne dépend plus du marché)', () {
       final opening = AssetTransaction(
         id: 'ob1',
         accountId: 'acc1',
@@ -1054,13 +1064,430 @@ void main() {
         txsByAccount: {
           'acc1': [opening],
         },
-        symbolToData: {'AAPL': null}, // pas de repli fourni ici
+        symbolToData: {'AAPL': null}, // aucune donnée de marché
         assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
         gridDates: [DateTime(2024, 1, 1)],
         usdToEurRate: 1.0,
       );
 
-      expect(values.single, 0.0);
+      // 10 × 50 : la base de coût déclarée est autoportante. Avant le passage
+      // au coût de revient (29/07), l'absence de cours donnait 0 ici.
+      expect(values.single, 500.0);
+    });
+
+    // -------------------------------------------------------------------------
+    // (b bis) ACHAT/VENTE SANS JAMBE CASH — régression du 29/07 : sur un compte
+    // sans trésorerie suivie (or physique acheté au comptoir), les `buy`
+    // n'ont pas d'`amount`, donc ne débitent aucune espèce. Les traiter en
+    // « transfert interne, net 0 » faisait apparaître tout le prix d'achat
+    // comme un GAIN PUR (écart valeur−flux gonflé du montant acheté).
+    // -------------------------------------------------------------------------
+
+    test('buy SANS amount : compté comme flux EXTERNE au prix traité (qty×PU+frais)', () {
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'OR',
+        kind: TransactionKind.buy,
+        quantity: '2',
+        unitPrice: '585',
+        fee: '12',
+        amount: null, // ← aucune jambe cash : capital venu de l'EXTÉRIEUR
+        currency: 'EUR',
+        date: DateTime(2024, 10, 8),
+      );
+      final hist = _histData(
+        'OR',
+        [DateTime(2024, 10, 8), DateTime(2024, 10, 9)],
+        [600.0, 620.0], // cours de marché ≠ prix traité : on doit ignorer
+      );
+
+      final values = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'OR': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        symbolToData: {'OR': hist},
+        assetBySymbol: {'OR': Asset(symbol: 'OR', currency: 'EUR')},
+        gridDates: [
+          DateTime(2024, 10, 7),
+          DateTime(2024, 10, 8),
+          DateTime(2024, 10, 9),
+        ],
+        usdToEurRate: 1.0,
+      );
+
+      // 2 × 585 + 12 = 1182 (prix RÉELLEMENT traité), pas 2 × 600 = 1200.
+      expect(values, [0.0, 1182.0, 1182.0]);
+    });
+
+    test('buy AVEC amount : reste un transfert interne, AUCUN flux externe '
+        '(non-régression, anti-double-comptage)', () {
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000', // ← jambe cash présente : financé EN INTERNE
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 5)],
+        [100.0, 100.0],
+      );
+
+      final values = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc1': [deposit, buy],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 5)],
+        usdToEurRate: 1.0,
+      );
+
+      // Seul le versement de 2000 est un flux externe : l'achat déplace de la
+      // trésorerie DÉJÀ comptée vers du titre (net 0 des deux côtés).
+      expect(values, [2000.0, 2000.0]);
+    });
+
+    // -------------------------------------------------------------------------
+    // Ancrage PAR COMPTE (réconciliation du 29/07) — un `buy`/`sell` PORTANT
+    // un `amount` n'est un transfert interne QUE si son compte est ANCRÉ
+    // ([journalHasCashAnchor]) : sans mouvement d'ancrage, la jambe cash
+    // annoncée par `amount` n'est projetée nulle part en aval
+    // (reconstructRealNetWorth exclut le cash d'un compte non ancré), donc
+    // (b bis) doit la traiter comme un flux externe malgré la présence
+    // d'`amount` — sans ça, le capital investi reste plat à zéro pendant que
+    // la valeur de la position grimpe, et toute la valeur passe pour du gain.
+    // -------------------------------------------------------------------------
+
+    test('buy AVEC amount SUR COMPTE NON ANCRÉ : redevient un flux EXTERNE — '
+        'le gain fantôme se rejouait aussi via un `amount` renseigné, pas '
+        'seulement en son absence (b bis seul)', () {
+      // Compte SANS AUCUN mouvement d'ancrage (pas de deposit/withdrawal/
+      // interest/charge/openingBalance espèces) : journalHasCashAnchor([buy])
+      // est FAUX bien que `buy` porte un `amount`.
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 10)],
+        [100.0, 100.0, 120.0],
+      );
+      final gridDates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 1, 2),
+        DateTime(2024, 1, 10),
+      ];
+
+      final flows = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: gridDates,
+        usdToEurRate: 1.0,
+      );
+
+      // 10 × 100 = 1000, prix RÉELLEMENT traité (pas `amount`, ignoré ici) :
+      // le capital vient de l'extérieur du compte, aucune timeline cash
+      // n'existant pour ce compte non ancré.
+      expect(flows, [0.0, 1000.0, 1000.0]);
+
+      final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        usdToEurRate: 1.0,
+        gridDates: gridDates,
+      );
+      // AVANT le fix : la valeur montait à 1200 pendant que le flux restait
+      // plat à 0 — (b bis) traitait le `buy` comme un transfert interne
+      // (jambe cash « déjà prise en compte par (a) ») alors que
+      // reconstructRealNetWorth exclut PRÉCISÉMENT le cash de ce compte non
+      // ancré (gating M1) : les deux mécanismes s'annulaient, écart 1200 au
+      // lieu de 200.
+      expect(reconstructed.values, [0.0, 1000.0, 1200.0]);
+
+      final gap = reconstructed.values.last - flows.last;
+      expect(gap, closeTo(200.0, 1e-9));
+
+      // INVARIANT (garde symétrique posée côté AccountController : cashEur:
+      // 0 sur un compte non ancré) — l'écart des deux courbes doit coïncider
+      // avec le gain total base-coût de la carte.
+      final position = PositionWithMarketData(
+        position: Position(
+          accountId: 'acc1',
+          asset: Asset(symbol: 'AAPL', currency: 'EUR'),
+          quantity: '10',
+          averageBuyPrice: 100.0, // coût déclaré du seul achat (1000 / 10)
+        ),
+        currentPrice: 120.0,
+      );
+      final totalGain = HistoryAggregator.computeRealTotalGain(
+        positions: [position],
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        usdToEurRate: 1.0,
+        cashEur: 0.0,
+      );
+      expect(totalGain.totalGain, closeTo(gap, 1e-9));
+      expect(totalGain.totalGain, closeTo(200.0, 1e-9));
+    });
+
+    test('MIXTE : deux comptes du MÊME appel, un ANCRÉ un NON — chacun '
+        'traité selon son PROPRE ancrage, testé PAR TRANSACTION via '
+        '`tx.accountId` (même symbole détenu sur les deux)', () {
+      final depositAnchored = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc-anchored',
+        kind: TransactionKind.deposit,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final buyAnchored = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc-anchored',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '5',
+        unitPrice: '100',
+        amount: '-500', // financé EN INTERNE : compte ANCRÉ par le dépôt
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final buyUnanchored = AssetTransaction(
+        id: 'b2',
+        accountId: 'acc-unanchored',
+        symbol: 'AAPL', // MÊME symbole, AUTRE compte
+        kind: TransactionKind.buy,
+        quantity: '5',
+        unitPrice: '100',
+        amount: '-500', // porte un `amount`, mais CE compte n'a AUCUN ancrage
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2)],
+        [100.0, 100.0],
+      );
+
+      final flows = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'AAPL': [buyAnchored, buyUnanchored],
+        },
+        txsByAccount: {
+          'acc-anchored': [depositAnchored, buyAnchored],
+          'acc-unanchored': [buyUnanchored],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 1, 2)],
+        usdToEurRate: 1.0,
+      );
+
+      // J1 : seul le dépôt (1000) est visible. J2 : + 500 du buy NON ancré
+      // (5 × 100, compté comme flux externe) ; le buy ANCRÉ, lui, reste à 0
+      // (transfert interne, sa jambe cash étant projetée par acc-anchored).
+      expect(flows, [1000.0, 1500.0]);
+    });
+
+    test('sell SANS amount : flux externe NÉGATIF au produit traité (qty×PU−frais)', () {
+      final opening = AssetTransaction(
+        id: 'ob1',
+        accountId: 'acc1',
+        symbol: 'OR',
+        kind: TransactionKind.openingBalance,
+        quantity: '4',
+        unitPrice: '500',
+        amount: null,
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final sell = AssetTransaction(
+        id: 's1',
+        accountId: 'acc1',
+        symbol: 'OR',
+        kind: TransactionKind.sell,
+        quantity: '1',
+        unitPrice: '700',
+        fee: '10',
+        amount: null, // produit encaissé HORS du compte
+        currency: 'EUR',
+        date: DateTime(2024, 6, 1),
+      );
+      final hist = _histData(
+        'OR',
+        [DateTime(2024, 1, 1), DateTime(2024, 6, 1)],
+        [500.0, 700.0],
+      );
+
+      final values = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'OR': [opening, sell],
+        },
+        txsByAccount: {
+          'acc1': [opening, sell],
+        },
+        symbolToData: {'OR': hist},
+        assetBySymbol: {'OR': Asset(symbol: 'OR', currency: 'EUR')},
+        gridDates: [DateTime(2024, 1, 1), DateTime(2024, 6, 1)],
+        usdToEurRate: 1.0,
+      );
+
+      // J1 : openingBalance 4 × 500 (cours du jour) = 2000.
+      // J6 : vente sortie de 1 × 700 − 10 = 690 → 2000 − 690 = 1310.
+      expect(values, [2000.0, 1310.0]);
+    });
+
+    test('scénario « or physique » complet : l\'écart valeur−flux redevient le '
+        'gain économique réel (régression du compte a-metal)', () {
+      // Reproduit EXACTEMENT le journal du compte de démo « Or physique » qui
+      // affichait +3 061 € de gains là où le calcul base-coût donnait +618 €.
+      final opening = AssetTransaction(
+        id: 'ob1',
+        accountId: 'a-metal',
+        symbol: 'OR',
+        kind: TransactionKind.openingBalance,
+        quantity: '2',
+        unitPrice: '478',
+        amount: null,
+        currency: 'EUR',
+        date: DateTime(2023, 5, 10),
+      );
+      final buy1 = AssetTransaction(
+        id: 'b1',
+        accountId: 'a-metal',
+        symbol: 'OR',
+        kind: TransactionKind.buy,
+        quantity: '2',
+        unitPrice: '585',
+        fee: '12',
+        amount: null,
+        currency: 'EUR',
+        date: DateTime(2024, 10, 8),
+      );
+      final buy2 = AssetTransaction(
+        id: 'b2',
+        accountId: 'a-metal',
+        symbol: 'OR',
+        kind: TransactionKind.buy,
+        quantity: '1',
+        unitPrice: '985',
+        amount: null,
+        currency: 'EUR',
+        date: DateTime(2025, 2, 14),
+      );
+
+      final dates = [
+        // Point d'ANCRAGE antérieur au premier mouvement (cf.
+        // HistoryAggregator.applyGridFrom) : patrimoine encore à zéro.
+        DateTime(2023, 5, 9),
+        DateTime(2023, 5, 10),
+        DateTime(2024, 10, 8),
+        DateTime(2025, 2, 14),
+        DateTime(2026, 7, 29),
+      ];
+      // Cours du jour de l'openingBalance VOLONTAIREMENT ≠ prix déclaré (478) :
+      // c'est la divergence méthodologique documentée, seul écart résiduel
+      // attendu à la fin de ce test.
+      final hist = _histData('OR', dates, [340.19, 340.19, 600.0, 1000.0, 900.0]);
+
+      final txs = [opening, buy1, buy2];
+      final flows = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {'OR': txs},
+        txsByAccount: {'a-metal': txs},
+        symbolToData: {'OR': hist},
+        assetBySymbol: {'OR': Asset(symbol: 'OR', currency: 'EUR')},
+        gridDates: dates,
+        usdToEurRate: 1.0,
+      );
+
+      // Flux cumulés == BASE DE COÛT TOTALE : openingBalance au PRU déclaré
+      // (2 × 478 = 956) + les deux achats à leur prix traité (1182 puis 985).
+      // Le cours du jour de l'openingBalance (340,19) n'intervient plus.
+      expect(flows.last, closeTo(956.0 + 1182.0 + 985.0, 1e-9));
+
+      final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: {'OR': txs},
+        txsByAccount: {'a-metal': txs},
+        symbolToData: {'OR': hist},
+        assetBySymbol: {'OR': Asset(symbol: 'OR', currency: 'EUR')},
+        usdToEurRate: 1.0,
+        gridDates: dates,
+      );
+
+      // 5 pièces/lingotins détenus à la fin, au cours de 900 = 4500. Aucun
+      // cash (aucun mouvement ne porte d'`amount`).
+      expect(reconstructed.values.last, closeTo(4500.0, 1e-9));
+
+      // RÉCONCILIATION EXACTE (objectif du lot 29/07) : l'écart entre les deux
+      // courbes EST le gain total base-coût, au centime — plus aucun résidu.
+      // Base de coût : 2×478 + (2×585+12) + 985 = 3123 → gain 4500 − 3123.
+      // Avant ce lot, cet écart valait 1 652,62 € (2 155 € d'achats non
+      // comptés + 275,62 € de valorisation au cours du jour).
+      final gap = reconstructed.values.last - flows.last;
+      const costBasisGain = 4500.0 - 3123.0;
+      expect(gap, closeTo(costBasisGain, 1e-9));
+
+      // Grâce au point d'ancrage, la grille part d'un patrimoine NUL :
+      // values[0] == flows[0] == 0.
+      expect(reconstructed.values.first, 0.0);
+      expect(flows.first, 0.0);
+
+      // INVARIANT « Max » (29/07) : sur une fenêtre couvrant TOUTE la vie du
+      // compte, le gain de PÉRIODE affiché sous le graphe est EXACTEMENT le
+      // gain TOTAL affiché dans la carte. Sans le point d'ancrage, la fenêtre
+      // démarrait sur un état déjà entamé et les deux chiffres divergeaient
+      // (constaté : +899,57 € contre +608,82 €).
+      final gains = HistoryAggregator.computeRealGains(
+        values: reconstructed.values,
+        externalFlows: flows,
+        gridDates: dates,
+      );
+      expect(gains.periodGain, closeTo(costBasisGain, 1e-9));
     });
   });
 
@@ -1451,6 +1878,529 @@ void main() {
       expect(result.totalGain, 0.0);
       expect(result.totalGainPercent, isNull);
       expect(result.noBasisSymbols, isEmpty);
+    });
+
+    // -------------------------------------------------------------------
+    // Correctif « jambe cash d'une opération sur titre » (réconciliation du
+    // 29/07) : un `adjustment` symbole + `amount` SANS quantité exploitable
+    // est le produit en numéraire d'une opération sur titre (le moteur cash
+    // lit `amount` quel que soit le kind) — il doit compter dans le résultat,
+    // sans quoi la carte « Gains totaux » sous-évalue un montant réellement
+    // encaissé. Scénario réel : Altice USA (US02156K1034), 89 titres reçus
+    // gratuitement le 22/05/2018, sortis sans cession le 15/06/2018, puis le
+    // compte crédité de 1 491,03 € le 18/06/2018 (regroupement/rachat traité
+    // hors du suivi titre).
+    // -------------------------------------------------------------------
+    group('correctif — adjustment jambe cash (symbole + amount, sans quantité)', () {
+      test(
+          'scénario Altice complet : attribution gratuite + transferOut + '
+          'adjustment cash → le gain total inclut le montant, et '
+          'Valeur − Capital investi == gain total (invariant face à '
+          'buildExternalFlowsCurve)', () {
+        // Ancrage espèces réel (dépôt initial) — SYMÉTRIQUE sur les deux
+        // courbes (valeur ET flux externes), donc neutre pour l'invariant ;
+        // sans lui, reconstructRealNetWorth n'injecterait AUCUN cash
+        // (gating journalHasCashAnchor), ce qui viderait artificiellement
+        // l'écart valeur−flux et masquerait le bug que ce test vérifie.
+        final deposit = AssetTransaction(
+          id: 'dep1',
+          accountId: 'acc1',
+          symbol: null,
+          kind: TransactionKind.deposit,
+          amount: '1000',
+          currency: 'EUR',
+          date: DateTime(2018, 1, 1),
+        );
+        // Attribution gratuite : quantité SANS montant, coût nul VOULU.
+        final freeShares = AssetTransaction(
+          id: 'adj-free',
+          accountId: 'acc1',
+          symbol: 'US02156K1034',
+          kind: TransactionKind.adjustment,
+          quantity: '89',
+          unitPrice: '0',
+          amount: null,
+          currency: 'EUR',
+          date: DateTime(2018, 5, 22),
+        );
+        // Sortie sans cession (transfert) — aucune plus-value réalisée.
+        final transferOut = AssetTransaction(
+          id: 'xout1',
+          accountId: 'acc1',
+          symbol: 'US02156K1034',
+          kind: TransactionKind.transferOut,
+          quantity: '89',
+          amount: null,
+          currency: 'EUR',
+          date: DateTime(2018, 6, 15),
+        );
+        // Jambe cash : montant SANS quantité — le cas de ce correctif.
+        final cashLeg = AssetTransaction(
+          id: 'adj-cash',
+          accountId: 'acc1',
+          symbol: 'US02156K1034',
+          kind: TransactionKind.adjustment,
+          quantity: null,
+          amount: '1491.03',
+          currency: 'EUR',
+          date: DateTime(2018, 6, 18),
+        );
+
+        final txsBySymbol = {
+          'US02156K1034': [freeShares, transferOut, cashLeg],
+        };
+        final txsByAccount = {
+          'acc1': [deposit, freeShares, transferOut, cashLeg],
+        };
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [], // titre totalement soldé (transferOut intégral)
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          usdToEurRate: 1.0,
+        );
+
+        // Aucune plus-value réalisée (transferOut n'en réalise jamais), rien
+        // en non-réalisé (aucune position résiduelle) : le SEUL contributeur
+        // est la jambe cash de 1 491,03 €.
+        expect(result.totalGain, closeTo(1491.03, 1e-9));
+        // Ce n'est PAS un `charge` : le sous-total dédié reste à 0.
+        expect(result.chargesTotal, 0.0);
+
+        // Invariant : Valeur(dernier point) − Capital investi(dernier point)
+        // == gain total, vérifié en rejouant les DEUX courbes indépendamment
+        // de computeRealTotalGain (aucune dérivation commune, cf. doc de
+        // buildExternalFlowsCurve).
+        final gridDates = [
+          DateTime(2018, 1, 1),
+          DateTime(2018, 5, 22),
+          DateTime(2018, 6, 15),
+          DateTime(2018, 6, 18),
+          DateTime(2018, 7, 1),
+        ];
+        final valueCurve = HistoryAggregator.reconstructRealNetWorth(
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          symbolToData: const {}, // pas d'historique — quantité finale nulle
+          assetBySymbol: {
+            'US02156K1034': Asset(symbol: 'US02156K1034', currency: 'EUR'),
+          },
+          usdToEurRate: 1.0,
+          gridDates: gridDates,
+        );
+        final flowsCurve = HistoryAggregator.buildExternalFlowsCurve(
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          symbolToData: const {},
+          assetBySymbol: {
+            'US02156K1034': Asset(symbol: 'US02156K1034', currency: 'EUR'),
+          },
+          usdToEurRate: 1.0,
+          gridDates: gridDates,
+        );
+
+        // Valeur finale : 0 titre (transferOut intégral) + cash 1000 (dépôt)
+        // + 1491,03 (jambe cash) = 2491,03. Flux finaux : 1000 (dépôt, seul
+        // flux cash externe — la jambe cash est EXCLUE de (a), symbole non
+        // nul) + 0 (flux titre : attribution à coût nul + transferOut d'un
+        // coût déjà nul) = 1000. Écart = 1491,03, EXACTEMENT result.totalGain.
+        final gap = valueCurve.values.last - flowsCurve.last;
+        expect(gap, closeTo(result.totalGain!, 1e-9));
+        expect(gap, closeTo(1491.03, 1e-9));
+      });
+
+      test('quantité ET montant présents (donnée ambiguë) : RIEN compté en résultat', () {
+        final ambiguous = AssetTransaction(
+          id: 'adj-ambig',
+          accountId: 'acc1',
+          symbol: 'FR0013088606',
+          kind: TransactionKind.adjustment,
+          quantity: '10',
+          unitPrice: '5',
+          amount: '50', // ressemble à un prix d'acquisition, pas à un résultat
+          currency: 'EUR',
+          date: DateTime(2020, 12, 4),
+        );
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: {
+            'FR0013088606': [ambiguous],
+          },
+          txsByAccount: {
+            'acc1': [ambiguous],
+          },
+          usdToEurRate: 1.0,
+        );
+
+        // quantité exploitable (10) → exclu du cas « jambe cash » ; adjustment
+        // n'est de toute façon pas un kind « revenu » ; aucune vente → aucune
+        // plus-value réalisée. Rien ne doit être compté.
+        expect(result.totalGain, closeTo(0.0, 1e-9));
+        expect(result.chargesTotal, 0.0);
+      });
+
+      test(
+          'symbol == null (correction de solde) : jamais compté en résultat '
+          '(non-régression du double-comptage avec buildExternalFlowsCurve, '
+          'qui la compte déjà comme apport externe)', () {
+        final balanceCorrection = AssetTransaction(
+          id: 'adj-balance',
+          accountId: 'acc1',
+          symbol: null,
+          kind: TransactionKind.adjustment,
+          quantity: null,
+          amount: '-100',
+          currency: 'EUR',
+          date: DateTime(2021, 3, 1),
+        );
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: const {},
+          txsByAccount: {
+            'acc1': [balanceCorrection],
+          },
+          usdToEurRate: 1.0,
+        );
+
+        // symbol == null → jamais une jambe cash de titre : c'est une
+        // correction de solde, déjà comptée comme apport externe par le
+        // filtre (a) de buildExternalFlowsCurve (cf. test dédié
+        // « openingBalance/adjustment ESPÈCES » ci-dessus) — la compter ici
+        // la doublerait.
+        expect(result.totalGain, closeTo(0.0, 1e-9));
+      });
+    });
+
+    // -------------------------------------------------------------------
+    // Correctif « jambe cash d'un buy/sell » (réconciliation du 29/07,
+    // extension EXACTE du correctif « adjustment jambe cash » ci-dessus à la
+    // même famille sur un `buy`/`sell` : un `amount` SANS quantité
+    // exploitable). Scénario réel : Altice USA (NL0011333752), `sell`
+    // quantité `'0'` du 22/05/2018, `amount: '7.74'` — un solde de
+    // liquidation. Le moteur cash lit `amount` quel que soit le kind (partition
+    // stricte) : ce montant entre déjà dans la valeur/le solde, le moteur
+    // titre (qui ne lit que les quantités) n'y voit rien — sans ce terme la
+    // carte « Gains totaux » affichait 7,74 € de moins que la courbe.
+    // -------------------------------------------------------------------
+    group('correctif — buy/sell jambe cash (symbole + amount, sans quantité)', () {
+      test(
+          'sell quantité \'0\' + amount (scénario Altice réel) : compte en '
+          'résultat, et Valeur − Capital investi == gain total (invariant '
+          'face à buildExternalFlowsCurve, compte ANCRÉ)', () {
+        // Ancrage espèces réel (dépôt initial) — même rôle que dans le test
+        // adjustment ci-dessus : sans lui, reconstructRealNetWorth
+        // n'injecterait AUCUN cash (gating journalHasCashAnchor) et
+        // masquerait le bug que ce test vérifie.
+        final deposit = AssetTransaction(
+          id: 'dep1',
+          accountId: 'acc1',
+          symbol: null,
+          kind: TransactionKind.deposit,
+          amount: '1000',
+          currency: 'EUR',
+          date: DateTime(2018, 1, 1),
+        );
+        // Jambe cash pure d'un `sell` : quantité NULLE, montant réellement
+        // encaissé (solde de liquidation) — le cas de ce correctif.
+        final liquidationSell = AssetTransaction(
+          id: 'sell-liq',
+          accountId: 'acc1',
+          symbol: 'NL0011333752',
+          kind: TransactionKind.sell,
+          quantity: '0',
+          unitPrice: '15.346',
+          amount: '7.74',
+          currency: 'EUR',
+          date: DateTime(2018, 5, 22),
+        );
+
+        final txsBySymbol = {
+          'NL0011333752': [liquidationSell],
+        };
+        final txsByAccount = {
+          'acc1': [deposit, liquidationSell],
+        };
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [], // titre jamais détenu (quantité toujours 0)
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          usdToEurRate: 1.0,
+        );
+
+        // Terme (2) : replayLedger d'un sell quantité 0, sans position
+        // préalable ni frais → proceeds = 0×15,346 − 0 = 0, costBasisSold = 0
+        // (runningQty déjà nul) → realized = 0. Le SEUL contributeur est donc
+        // la jambe cash de 7,74 € captée par le terme (3).
+        expect(result.totalGain, closeTo(7.74, 1e-9));
+        // Ce n'est PAS un `charge` : le sous-total dédié reste à 0.
+        expect(result.chargesTotal, 0.0);
+
+        final gridDates = [
+          DateTime(2018, 1, 1),
+          DateTime(2018, 5, 22),
+          DateTime(2018, 7, 1),
+        ];
+        final valueCurve = HistoryAggregator.reconstructRealNetWorth(
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          symbolToData: const {}, // pas d'historique — quantité toujours nulle
+          assetBySymbol: {
+            'NL0011333752': Asset(symbol: 'NL0011333752', currency: 'EUR'),
+          },
+          usdToEurRate: 1.0,
+          gridDates: gridDates,
+        );
+        final flowsCurve = HistoryAggregator.buildExternalFlowsCurve(
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          symbolToData: const {},
+          assetBySymbol: {
+            'NL0011333752': Asset(symbol: 'NL0011333752', currency: 'EUR'),
+          },
+          usdToEurRate: 1.0,
+          gridDates: gridDates,
+        );
+
+        // Valeur finale : 0 titre (quantité toujours nulle) + cash 1000
+        // (dépôt) + 7,74 (jambe cash du sell, lue par buildCashTimeline SUR
+        // TOUS les mouvements du compte ancré, kind-agnostic) = 1007,74.
+        // Flux finaux : (a) ne retient QUE le dépôt (le sell n'est ni
+        // deposit/withdrawal ni openingBalance/adjustment ESPÈCES) ; (b bis)
+        // exclut explicitement ce sell car `hasAmount && isAnchored`
+        // (jambe cash déjà projetée par (a)/le cash timeline de la valeur ⇒
+        // AUCUN recoupement avec ce sell) → flux = 1000 (dépôt seul).
+        // Écart = 7,74, EXACTEMENT result.totalGain.
+        expect(flowsCurve.last, closeTo(1000.0, 1e-9));
+        final gap = valueCurve.values.last - flowsCurve.last;
+        expect(gap, closeTo(result.totalGain!, 1e-9));
+        expect(gap, closeTo(7.74, 1e-9));
+      });
+
+      test('buy quantité \'0\' + amount : compte en résultat, symétrique du sell', () {
+        final deposit = AssetTransaction(
+          id: 'dep2',
+          accountId: 'acc1',
+          symbol: null,
+          kind: TransactionKind.deposit,
+          amount: '1000',
+          currency: 'EUR',
+          date: DateTime(2019, 1, 1),
+        );
+        // Jambe cash pure d'un `buy` : quantité NULLE, montant réellement
+        // débité (ex. frais de régularisation d'une opération sur titre sans
+        // aucune quantité acquise).
+        final regularizationBuy = AssetTransaction(
+          id: 'buy-reg',
+          accountId: 'acc1',
+          symbol: 'FR0000TEST3',
+          kind: TransactionKind.buy,
+          quantity: '0',
+          amount: '-12.5',
+          currency: 'EUR',
+          date: DateTime(2019, 2, 1),
+        );
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: {
+            'FR0000TEST3': [regularizationBuy],
+          },
+          txsByAccount: {
+            'acc1': [deposit, regularizationBuy],
+          },
+          usdToEurRate: 1.0,
+        );
+
+        // Terme (2) : un buy ne modifie jamais `realized` (seul un sell le
+        // fait) → 0. Le dépôt est du capital, pas un gain → 0. Le SEUL
+        // contributeur est donc la jambe cash négative du buy, au terme (3).
+        expect(result.totalGain, closeTo(-12.5, 1e-9));
+        expect(result.chargesTotal, 0.0);
+      });
+
+      test(
+          'sell à quantité EXPLOITABLE : rien compté au terme (3) — le '
+          'résultat vient du rejeu du terme (2), pas de amount (non-régression '
+          'du double-comptage)', () {
+        // Sans position préalable (positions: const []) ; quantité vendue
+        // 5 × prix unitaire 10 = 50, sans frais → proceeds = 50, costBasisSold
+        // = 0 (runningQty nul avant la vente) → realized = 50. `amount` (45,
+        // délibérément DIFFÉRENT de 50) ne doit PAS entrer en ligne de compte :
+        // s'il l'était, on obtiendrait 95 (double-comptage) ou 45 (amount
+        // écrasant le rejeu) au lieu de 50.
+        final realSell = AssetTransaction(
+          id: 'sell-real',
+          accountId: 'acc1',
+          symbol: 'FR0000TEST1',
+          kind: TransactionKind.sell,
+          quantity: '5',
+          unitPrice: '10',
+          amount: '45',
+          currency: 'EUR',
+          date: DateTime(2020, 1, 1),
+        );
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: {
+            'FR0000TEST1': [realSell],
+          },
+          txsByAccount: {
+            'acc1': [realSell],
+          },
+          usdToEurRate: 1.0,
+        );
+
+        expect(result.totalGain, closeTo(50.0, 1e-9));
+        expect(result.chargesTotal, 0.0);
+      });
+
+      test(
+          'buy à quantité EXPLOITABLE : rien compté au terme (3) — un buy ne '
+          'modifie jamais le réalisé (non-régression du double-comptage)', () {
+        // `amount` (-31) ne doit JAMAIS entrer dans le résultat ici : un buy
+        // ne modifie jamais `realized` (seul un sell le fait), et sans PRU
+        // stocké (positions: const []) le terme (1) ne voit rien non plus. Si
+        // le garde-fou « quantité exploitable » disparaissait, ce test
+        // détecterait immédiatement le double-comptage (totalGain passerait
+        // de 0 à -31).
+        final realBuy = AssetTransaction(
+          id: 'buy-real',
+          accountId: 'acc1',
+          symbol: 'FR0000TEST2',
+          kind: TransactionKind.buy,
+          quantity: '3',
+          unitPrice: '10',
+          fee: '1',
+          amount: '-31',
+          currency: 'EUR',
+          date: DateTime(2020, 6, 1),
+        );
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: {
+            'FR0000TEST2': [realBuy],
+          },
+          txsByAccount: {
+            'acc1': [realBuy],
+          },
+          usdToEurRate: 1.0,
+        );
+
+        expect(result.totalGain, closeTo(0.0, 1e-9));
+        expect(result.chargesTotal, 0.0);
+      });
+
+      test(
+          'compte NON ancré : buildExternalFlowsCurve ne recoupe PAS ce '
+          '`sell` avec `amount` — valorisé à qty × unitPrice ± fee (≈0 ici, '
+          'PAS `amount`), vérifie la note anti-double-comptage de (b bis)', () {
+        // Aucun mouvement d'ancrage (deposit/withdrawal/interest/charge ou
+        // openingBalance/adjustment ESPÈCES) sur ce compte → NON ancré. (b
+        // bis) ne l'exclut alors PAS de la boucle titre, mais le valorise à
+        // `qty × unitPrice ± fee` = `0 × 15,346 − 0` (fee absent) = 0 — donc
+        // AUCUNE contribution (le code ignore une contribution nulle), jamais
+        // le montant `amount` de 7,74 €. Pas le même euro compté deux fois
+        // (7,74 ≠ 0), mais un écart résiduel reste possible hors du périmètre
+        // testé ici (compte non ancré, hors invariant garanti) — signalé,
+        // non corrigé (cf. rapport).
+        final liquidationSell = AssetTransaction(
+          id: 'sell-liq-unanchored',
+          accountId: 'acc2',
+          symbol: 'NL0011333752',
+          kind: TransactionKind.sell,
+          quantity: '0',
+          unitPrice: '15.346',
+          amount: '7.74',
+          currency: 'EUR',
+          date: DateTime(2018, 5, 22),
+        );
+
+        final txsBySymbol = {
+          'NL0011333752': [liquidationSell],
+        };
+        final txsByAccount = {
+          'acc2': [liquidationSell],
+        };
+
+        final gridDates = [
+          DateTime(2018, 5, 22),
+          DateTime(2018, 7, 1),
+        ];
+        final flowsCurve = HistoryAggregator.buildExternalFlowsCurve(
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          symbolToData: const {},
+          assetBySymbol: {
+            'NL0011333752': Asset(symbol: 'NL0011333752', currency: 'EUR'),
+          },
+          usdToEurRate: 1.0,
+          gridDates: gridDates,
+        );
+        // Aucune contribution : ni `amount` (jamais lu par (b bis)) ni un
+        // `qty × unitPrice ± fee` non nul (qty == 0, fee absent).
+        expect(flowsCurve, everyElement(closeTo(0.0, 1e-9)));
+
+        // computeRealTotalGain, lui, ne teste PAS l'ancrage (comme le cas
+        // adjustment ci-dessus) : le montant reste compté en résultat même
+        // ici — documenté pour mémoire, hors invariant garanti (réservé aux
+        // comptes ANCRÉS, cf. doc de computeRealTotalGain).
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: const [],
+          txsBySymbol: txsBySymbol,
+          txsByAccount: txsByAccount,
+          usdToEurRate: 1.0,
+        );
+        expect(result.totalGain, closeTo(7.74, 1e-9));
+      });
+    });
+
+    // -------------------------------------------------------------------
+    // Correctif « puce partiel » (réconciliation du 29/07) : noBasisSymbols
+    // ne doit signaler qu'un avoir EFFECTIVEMENT DÉTENU (isHeldPosition),
+    // jamais une position soldée dont le PRU n'a simplement jamais été
+    // stocké — sa plus-value est de toute façon déjà comptée par le terme
+    // (2) (rejeu du journal, indépendant de l'état courant).
+    // -------------------------------------------------------------------
+    group('correctif — noBasisSymbols ne retient que les positions DÉTENUES', () {
+      test('seules des positions SOLDÉES manquent de PRU → noBasisSymbols vide', () {
+        final soldee1 = makePos(symbol: 'SOLDEE1', currency: 'EUR', quantity: '0', pru: null);
+        final soldee2 = makePos(symbol: 'SOLDEE2', currency: 'EUR', quantity: '0', price: 42.0, pru: null);
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: [soldee1, soldee2],
+          txsBySymbol: const {},
+          txsByAccount: const {},
+          usdToEurRate: 1.0,
+        );
+
+        expect(result.noBasisSymbols, isEmpty);
+        // Une position soldée ne pèse de toute façon rien dans la valeur
+        // (valueIncluded inchangé) ni dans le gain (unrealizedGain est déjà
+        // null, exclu du terme (1) comme avant ce correctif).
+        expect(result.totalGain, closeTo(0.0, 1e-9));
+      });
+
+      test(
+          'mélange soldée/détenue sans PRU : seule la position DÉTENUE '
+          'figure dans noBasisSymbols', () {
+        final soldeeSansPru = makePos(symbol: 'SOLDEE', currency: 'EUR', quantity: '0', pru: null);
+        final detenueSansPru = makePos(symbol: 'NOPRU', currency: 'EUR', quantity: '5', price: 50.0, pru: null);
+        final detenueAvecPru = makePos(symbol: 'MSFT', currency: 'EUR', quantity: '5', price: 50.0, pru: 40.0);
+
+        final result = HistoryAggregator.computeRealTotalGain(
+          positions: [soldeeSansPru, detenueSansPru, detenueAvecPru],
+          txsBySymbol: const {},
+          txsByAccount: const {},
+          usdToEurRate: 1.0,
+        );
+
+        expect(result.noBasisSymbols, {'NOPRU'});
+      });
     });
   });
 }
