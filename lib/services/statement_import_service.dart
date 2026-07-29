@@ -495,7 +495,196 @@ class StatementImportService {
       seq++;
     }
 
-    return result;
+    // ---- Étape 4 : fusion des JAMBES DE RÈGLEMENT scindées ----
+    // Passe INTER-LIGNES, donc APRÈS la normalisation ligne à ligne (le
+    // traitement par ligne n'a aucune visibilité sur ses voisines). Ne touche
+    // QUE les paires reconnues sans ambiguïté — cf. [_mergeSplitSettlementLegs].
+    return _mergeSplitSettlementLegs(result);
+  }
+
+  // ---------------------------------------------------------------------
+  // Fusion des JAMBES DE RÈGLEMENT scindées (passe INTER-LIGNES)
+  // ---------------------------------------------------------------------
+
+  /// Replie sur son opération de titre la jambe ESPÈCES d'une opération que le
+  /// relevé a scindée en DEUX lignes, puis supprime cette jambe.
+  ///
+  /// CAS RÉEL (exercice de droits, Bourse Direct) : `SOUSC` 356 × `<ISIN>` à
+  /// 0,22 € avec `Net = 0` (aucune contrepartie espèces sur la ligne), suivi le
+  /// MÊME JOUR d'un `ODOST` (→ `adjustment` ESPÈCES) de −78,32 € portant le
+  /// MÊME ISIN. Économiquement : UNE opération, 78,32 € payés pour 356 titres.
+  ///
+  /// POURQUOI FUSIONNER — les deux lignes tombent de part et d'autre de la
+  /// partition stricte des champs (cf. en-tête de `position_projection.dart`) :
+  /// le moteur TITRE inscrit 78,32 € de base de coût depuis la ligne d'achat,
+  /// pendant que le moteur ESPÈCES lit un `adjustment` à `symbol == null`,
+  /// c'est-à-dire un FLUX EXTERNE de capital (cf. `buildExternalFlowsCurve`,
+  /// brique (a)) alors qu'il ne s'agit que du TRANSFERT INTERNE trésorerie →
+  /// titre d'un achat (dont la jambe cash est justement neutralisée, brique
+  /// (b)). Le même euro est donc compté deux fois et l'invariant « Valeur −
+  /// Capital investi == gain total » dérive du montant réglé. Recollées, les
+  /// deux lignes redeviennent l'opération unique qu'elles décrivent.
+  ///
+  /// CONDITIONS (TOUTES requises ; au moindre doute on ne fusionne PAS et les
+  /// deux lignes ressortent STRICTEMENT inchangées) :
+  ///  - la jambe est un `adjustment` ESPÈCES (`symbol == null`) portant un ISIN
+  ///    de RÉFÉRENCE, un `amount` non nul, et AUCUNE quantité exploitable —
+  ///    seule forme produite par [CorporateActionKind.cashRegularization] ;
+  ///    un `adjustment` espèces PUR (sans ISIN) n'est JAMAIS candidat, et un
+  ///    `adjustment` TITRE porte une quantité et `amount == null` ;
+  ///  - l'accueil est un `buy`/`sell` du MÊME compte, du MÊME jour, sur le MÊME
+  ///    ISIN, dont la contrepartie espèces est ABSENTE ou NUMÉRIQUEMENT NULLE —
+  ///    c'est ce qui signe la jambe manquante. Une opération déjà réglée (Net
+  ///    fourni, ou montant dérivé de quantité×cours faute de colonne Net) n'est
+  ///    JAMAIS touchée ;
+  ///  - appariement 1-1 STRICT : la jambe ne doit voir qu'UN accueil possible,
+  ///    et cet accueil qu'UNE jambe. Toute pluralité (deux achats du même titre
+  ///    le même jour, deux régularisations pour un achat) = ambiguïté = abandon.
+  ///    L'unicité est évaluée AVANT le contrôle de signe, pour qu'une jambe de
+  ///    signe contraire compte quand même comme une ambiguïté (elle bloque, au
+  ///    lieu de laisser fusionner l'autre) ;
+  ///  - cohérence de SIGNE : montant négatif pour un `buy`, positif pour un
+  ///    `sell`. Un signe contraire décrit autre chose qu'un règlement (crédit
+  ///    d'OST, remboursement) : on s'abstient.
+  ///
+  /// CLÉ DE DÉDUP (décision explicite) : l'`importKey` de l'accueil est
+  /// CONSERVÉE TELLE QUELLE, c'est-à-dire calculée AVANT le repli (donc sur un
+  /// `amount` de 0). Le hash de contenu n'est qu'un jeton OPAQUE de
+  /// déduplication : personne ne le recalcule à partir d'un mouvement du
+  /// journal (il n'est que comparé à `meta['importKey']` des mouvements déjà
+  /// journalisés, cf. `AccountController.previewStatementImport`). Le figer
+  /// donne l'idempotence LA PLUS LARGE : ré-importer le même relevé retrouve la
+  /// même clé, y compris sur un journal alimenté AVANT ce correctif (où
+  /// l'accueil avait été journalisé avec `amount = 0`) — cas dans lequel une
+  /// clé recalculée aurait présenté l'achat comme un mouvement NEUF et aurait
+  /// donc laissé l'utilisateur créer un TROISIÈME mouvement par-dessus la paire
+  /// déjà fausse. La jambe supprimée emporte sa propre clé : si elle avait été
+  /// journalisée avant le correctif, elle reste en base (le ré-import ne la
+  /// propose plus, il ne la supprime pas non plus — la réparation d'un journal
+  /// antérieur reste MANUELLE).
+  ///
+  /// ORDRE / `seq` : aucune renumérotation. La liste conserve son ordre
+  /// chronologique de traitement, les `meta['seq']` déjà posés restent
+  /// STRICTEMENT CROISSANTS (la suppression ne fait qu'un trou, explicitement
+  /// sans effet — cf. étape 3) et les id générés ne sont pas régénérés.
+  static List<ImportedMovement> _mergeSplitSettlementLegs(
+    List<ImportedMovement> movements,
+  ) {
+    // Indices des deux rôles. Rôles DISJOINTS par construction (une jambe est
+    // un `adjustment`, un accueil un `buy`/`sell`).
+    final legs = <int>[];
+    final hosts = <int>[];
+    for (var i = 0; i < movements.length; i++) {
+      if (movements[i].transaction == null) continue; // rejet : jamais touché
+      if (_isSplitCashLeg(movements[i])) legs.add(i);
+      if (_isUnsettledTrade(movements[i])) hosts.add(i);
+    }
+    if (legs.isEmpty || hosts.isEmpty) return movements;
+
+    // Appariement structurel (compte + ISIN + jour), SANS contrôle de signe :
+    // celui-ci est un VETO appliqué après, pour qu'une jambe inattendue reste
+    // une ambiguïté bloquante plutôt qu'un candidat silencieusement écarté.
+    final hostsOfLeg = <int, List<int>>{};
+    final legsOfHost = <int, List<int>>{};
+    for (final l in legs) {
+      for (final h in hosts) {
+        if (!_pairsWith(movements[l], movements[h])) continue;
+        (hostsOfLeg[l] ??= <int>[]).add(h);
+        (legsOfHost[h] ??= <int>[]).add(l);
+      }
+    }
+
+    final foldedAmountByHost = <int, String>{};
+    final droppedLegs = <int>{};
+    for (final entry in hostsOfLeg.entries) {
+      if (entry.value.length != 1) continue; // plusieurs accueils possibles
+      final h = entry.value.single;
+      if (legsOfHost[h]!.length != 1) continue; // plusieurs jambes possibles
+      final amount = Decimal.parse(movements[entry.key].transaction!.amount!);
+      final expectsDebit =
+          movements[h].transaction!.kind == TransactionKind.buy;
+      if ((amount.sign < 0) != expectsDebit) continue; // signe incohérent
+      foldedAmountByHost[h] = amount.toString();
+      droppedLegs.add(entry.key);
+    }
+    if (droppedLegs.isEmpty) return movements;
+
+    final merged = <ImportedMovement>[];
+    for (var i = 0; i < movements.length; i++) {
+      if (droppedLegs.contains(i)) continue;
+      final folded = foldedAmountByHost[i];
+      final m = movements[i];
+      if (folded == null) {
+        merged.add(m);
+        continue;
+      }
+      // Le montant est REPLIÉ TEL QUEL (aucune arithmétique : la contrepartie
+      // de l'accueil était nulle, et `amount` inclut déjà frais et taxes par
+      // convention du modèle). meta (dont `seq` et `importKey`) est conservé
+      // par `copyWith`, et l'id n'est pas régénéré.
+      merged.add(ImportedMovement.candidate(
+        sourceRow: m.sourceRow,
+        sourceRowIndex: m.sourceRowIndex,
+        transaction: m.transaction!.copyWith(amount: folded),
+        isin: m.isin,
+        label: m.label,
+        needsAssetResolution: m.needsAssetResolution,
+        resolvedSymbol: m.resolvedSymbol,
+        importKey: m.importKey!,
+      ));
+    }
+    return merged;
+  }
+
+  /// `true` si [m] est une JAMBE ESPÈCES candidate au repli : `adjustment`
+  /// ESPÈCES (`symbol == null` — la position n'est jamais touchée) portant un
+  /// ISIN de RÉFÉRENCE, un `amount` NON NUL, et aucune quantité exploitable.
+  /// C'est exactement la forme produite par
+  /// [CorporateActionKind.cashRegularization] ; un `adjustment` TITRE (qui
+  /// porte une quantité et `amount == null`) et un `adjustment` espèces PUR
+  /// (sans ISIN) sont tous deux exclus.
+  static bool _isSplitCashLeg(ImportedMovement m) {
+    final tx = m.transaction!;
+    if (tx.kind != TransactionKind.adjustment) return false;
+    if (tx.symbol != null) return false;
+    if (m.isin == null) return false;
+    final amount = tx.amount != null ? Decimal.tryParse(tx.amount!) : null;
+    if (amount == null || amount.sign == 0) return false;
+    final quantity =
+        tx.quantity != null ? Decimal.tryParse(tx.quantity!) : null;
+    if (quantity != null && quantity.sign != 0) return false;
+    return true;
+  }
+
+  /// `true` si [m] est une opération de marché dont la CONTREPARTIE ESPÈCES
+  /// est absente ou numériquement nulle — la signature d'une jambe de règlement
+  /// portée par une autre ligne. Un `buy`/`sell` dont le relevé ne mappe aucun
+  /// Net porte un montant DÉRIVÉ (quantité×cours±frais), donc non nul : il
+  /// n'est jamais candidat (cf. [_normalizeRow]).
+  static bool _isUnsettledTrade(ImportedMovement m) {
+    final tx = m.transaction!;
+    if (tx.kind != TransactionKind.buy && tx.kind != TransactionKind.sell) {
+      return false;
+    }
+    if (m.isin == null) return false;
+    if (tx.amount == null) return true;
+    final amount = Decimal.tryParse(tx.amount!);
+    return amount != null && amount.sign == 0;
+  }
+
+  /// `true` si la jambe [leg] et l'accueil [host] décrivent la même opération :
+  /// MÊME compte, MÊME ISIN, MÊME JOUR. Le libellé est délibérément EXCLU du
+  /// rapprochement (texte libre : « Espèces sur OST » ne ressemble pas au nom
+  /// de la valeur, et un libellé générique apparierait n'importe quoi) — seul
+  /// l'ISIN identifie l'actif de façon fiable.
+  static bool _pairsWith(ImportedMovement leg, ImportedMovement host) {
+    final a = leg.transaction!;
+    final b = host.transaction!;
+    return a.accountId == b.accountId &&
+        leg.isin == host.isin &&
+        a.date.year == b.date.year &&
+        a.date.month == b.date.month &&
+        a.date.day == b.date.day;
   }
 
   // ---------------------------------------------------------------------

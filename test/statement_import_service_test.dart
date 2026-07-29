@@ -6,6 +6,7 @@ import 'package:decimal/decimal.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
+import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/services/statement_import_service.dart';
 
 // ---------------------------------------------------------------------------
@@ -52,6 +53,46 @@ BrokerProfile _profile() => BrokerProfile.genericManual(
 Uint8List _latin1Bytes(String text) => Uint8List.fromList(latin1.encode(text));
 
 const _header = 'Date;Operation;ISIN;Libelle;Quantite;Cours;Frais;Montant';
+
+// --- Profil « opération scindée » (jambe espèces sur une ligne distincte) ---
+// Même profil que [_profile], plus une colonne de SENS ESPÈCES (D/C) et un code
+// `OST` traité en régularisation d'espèces — la seule forme qui produit un
+// `adjustment` ESPÈCES porteur d'un ISIN de référence (cf. Bourse Direct
+// `ODOST`). Sert aux tests de fusion des jambes de règlement.
+const _colSens = 8;
+const _headerSens = '$_header;SensEsp';
+
+BrokerProfile _profileWithOst() => _profile().copyWith(
+      columns: const ColumnMapping(byIndex: {
+        MovementField.date: _colDate,
+        MovementField.kindLabel: _colOp,
+        MovementField.isin: _colIsin,
+        MovementField.label: _colLabel,
+        MovementField.quantity: _colQty,
+        MovementField.unitPrice: _colPrice,
+        MovementField.fee: _colFee,
+        MovementField.amount: _colAmount,
+        MovementField.cashDirection: _colSens,
+      }),
+      corporateActions: const {
+        'OST': CorporateActionKind.cashRegularization,
+      },
+    );
+
+/// Normalise un relevé écrit avec [_headerSens] via [_profileWithOst].
+List<ImportedMovement> _normalizeOst(String dataLines) {
+  final profile = _profileWithOst();
+  final rows = StatementImportService.parse(
+    _latin1Bytes('$_headerSens\r\n$dataLines'),
+    profile,
+  );
+  return StatementImportService.normalize(
+    rows,
+    profile,
+    accountCurrency: 'EUR',
+    accountId: 'acc1',
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -447,6 +488,169 @@ void main() {
       // premier) — départage correct des ex-æquo de date par le rejeu.
       expect(movements[0].transaction!.id.compareTo(movements[1].transaction!.id),
           lessThan(0));
+    });
+  });
+
+  group('StatementImportService.normalize — jambe de règlement scindée', () {
+    // Cas RÉEL (exercice de droits) : le relevé décrit UNE opération en DEUX
+    // lignes — la jambe TITRE (achat, Net = 0) et la jambe ESPÈCES (`OST`
+    // −78,32 €, même ISIN, même jour). Scindées, elles tombent de part et
+    // d'autre de la partition stricte des champs et le même euro compte deux
+    // fois (base de coût côté titre, flux externe côté espèces).
+    const isinRights = 'FR0013088606'; // ISIN factice
+
+    test('achat à contrepartie NULLE + régularisation espèces du même titre le '
+        'même jour → UN seul mouvement, achat réglé', () {
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n',
+      );
+
+      expect(movements, hasLength(1),
+          reason: 'la jambe espèces est repliée puis supprimée');
+      final m = movements.single;
+      expect(m.isRejected, isFalse, reason: m.rejectReason);
+      final tx = m.transaction!;
+      expect(tx.kind, equals(TransactionKind.buy));
+      expect(Decimal.parse(tx.quantity!), equals(Decimal.parse('356')));
+      expect(Decimal.parse(tx.unitPrice!), equals(Decimal.parse('0.22')));
+      // Le montant de la jambe espèces est repli TEL QUEL (aucun recalcul).
+      expect(tx.amount, equals('-78.32'));
+      // La ligne d'accueil reste la ligne TITRE (n° de ligne source conservé).
+      expect(m.isin, equals(isinRights));
+    });
+
+    test('ré-import du même relevé après fusion ⇒ même importKey (dédup '
+        'inchangée)', () {
+      const data = '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+          '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n';
+      final first = _normalizeOst(data);
+      final second = _normalizeOst(data);
+      expect(first.single.importKey, equals(second.single.importKey));
+      expect(first.single.transaction!.meta!['importKey'],
+          equals(first.single.importKey));
+    });
+
+    test('achat DÉJÀ RÉGLÉ (montant non nul) + régularisation du même titre le '
+        'même jour → AUCUNE fusion', () {
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;10;100,00;0;1000,00;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n',
+      );
+
+      expect(movements, hasLength(2),
+          reason: 'une opération déjà réglée ne doit JAMAIS être touchée');
+      // Achat inchangé : son propre Net, forcé négatif.
+      expect(Decimal.parse(movements[0].transaction!.amount!),
+          equals(Decimal.parse('-1000')));
+      // Régularisation inchangée : adjustment ESPÈCES (symbol null).
+      final adj = movements[1].transaction!;
+      expect(adj.kind, equals(TransactionKind.adjustment));
+      expect(adj.symbol, isNull);
+      expect(Decimal.parse(adj.amount!), equals(Decimal.parse('-78.32')));
+    });
+
+    test('DEUX accueils possibles le même jour → AUCUNE fusion (ambiguïté)',
+        () {
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;100;0,22;;0;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n',
+      );
+
+      expect(movements, hasLength(3),
+          reason: 'impossible de savoir lequel des deux achats est réglé');
+      expect(movements[0].transaction!.amount, equals('0'));
+      expect(movements[1].transaction!.amount, equals('0'));
+      expect(Decimal.parse(movements[2].transaction!.amount!),
+          equals(Decimal.parse('-78.32')));
+    });
+
+    test('DEUX jambes espèces pour un seul accueil → AUCUNE fusion '
+        '(ambiguïté)', () {
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;40,00;D\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;38,32;D\r\n',
+      );
+      expect(movements, hasLength(3));
+      expect(movements[0].transaction!.amount, equals('0'));
+    });
+
+    test('signe CONTRAIRE (crédit espèces face à un achat) → AUCUNE fusion',
+        () {
+      // SensEsp = C : la régularisation CRÉDITE le compte. Un achat ne se règle
+      // pas par une entrée de cash — c'est autre chose qu'une jambe de
+      // règlement (indemnisation, remboursement…), on s'abstient.
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;C\r\n',
+      );
+
+      expect(movements, hasLength(2));
+      expect(movements[0].transaction!.amount, equals('0'));
+      expect(Decimal.parse(movements[1].transaction!.amount!),
+          equals(Decimal.parse('78.32')));
+    });
+
+    test('jour DIFFÉRENT ou titre DIFFÉRENT → AUCUNE fusion', () {
+      final autreJour = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '21/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n',
+      );
+      expect(autreJour, hasLength(2));
+
+      final autreTitre = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;OST;FR0000031122;Espèces sur OST;;;;78,32;D\r\n',
+      );
+      expect(autreTitre, hasLength(2));
+    });
+
+    test('ajustement espèces PUR (sans ISIN) → jamais fusionné, jamais touché',
+        () {
+      // Régularisation de trésorerie sans titre de référence : elle porte un
+      // LIBELLÉ mais aucun ISIN. Le libellé ne rapproche JAMAIS deux lignes.
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n'
+        '20/06/2026;OST;;Régularisation de trésorerie;;;;12,00;D\r\n',
+      );
+
+      expect(movements, hasLength(2));
+      expect(movements[0].transaction!.amount, equals('0'),
+          reason: 'achat strictement inchangé');
+      final adj = movements[1].transaction!;
+      expect(adj.kind, equals(TransactionKind.adjustment));
+      expect(adj.symbol, isNull);
+      expect(movements[1].isin, isNull);
+      expect(Decimal.parse(adj.amount!), equals(Decimal.parse('-12.00')));
+    });
+
+    test('la suppression de la jambe ne casse ni l\'ordre chronologique, ni la '
+        'monotonie de `seq`, ni celle des id', () {
+      // Relevé ANTI-chronologique (le plus récent en tête) : il est rejoué à
+      // l'envers (achat seq 0, jambe espèces seq 1, vente seq 2), et le retrait
+      // de la jambe laisse un TROU AU MILIEU de la séquence.
+      final movements = _normalizeOst(
+        '25/06/2026;Vente;$isinRights;NOUVELLES ACTIONS;56;0,30;;16,80;\r\n'
+        '20/06/2026;OST;$isinRights;Espèces sur OST;;;;78,32;D\r\n'
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;356;0,22;;0;\r\n',
+      );
+
+      expect(movements, hasLength(2));
+      final buy = movements[0].transaction!;
+      final sell = movements[1].transaction!;
+      // Ordre chronologique croissant conservé.
+      expect(buy.date, equals(DateTime(2026, 6, 20)));
+      expect(sell.date, equals(DateTime(2026, 6, 25)));
+      expect(buy.amount, equals('-78.32'));
+      // `seq` strictement croissant malgré le trou laissé par la suppression
+      // (seul l'ordre compte — les trous sont sans effet).
+      final seqs = movements.map((m) => m.transaction!.meta!['seq'] as int)
+          .toList();
+      expect(seqs, equals(<int>[0, 2]));
+      // id toujours croissants avec la date (départage des ex-æquo au rejeu).
+      expect(buy.id.compareTo(sell.id), lessThan(0));
     });
   });
 }
