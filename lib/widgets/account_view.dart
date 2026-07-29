@@ -197,10 +197,17 @@ class _AccountViewState extends State<AccountView> {
   void _showRealTotalGainHelp() {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
+    final charges = _ctrl.realTotalGainCharges;
+    // Ligne « dont frais » ajoutée SEULEMENT si le sous-total est non-nul
+    // (négatif = frais, positif = rebate) — sinon rien à isoler.
+    final body = charges != null && charges != 0
+        ? '${l10n.chartRealTotalGainHelpBody}\n\n'
+            '${l10n.chartRealTotalGainFeesLine(Formatters.formatMoney(charges, 'EUR'))}'
+        : l10n.chartRealTotalGainHelpBody;
     showHelpDialog(
       context,
       title: l10n.chartRealTotalGainHelpTitle,
-      body: l10n.chartRealTotalGainHelpBody,
+      body: body,
     );
   }
 

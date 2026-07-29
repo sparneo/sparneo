@@ -1156,6 +1156,7 @@ void main() {
       expect(ctrl.hasRealCurve, isFalse);
       expect(ctrl.realContributionsValues, isEmpty);
       expect(ctrl.realTotalGain, isNull);
+      expect(ctrl.realTotalGainCharges, isNull);
     });
 
     test(
@@ -1240,6 +1241,9 @@ void main() {
       expect(ctrl.realTotalGain!, closeTo(20.0, 1e-9));
       // Capital = valeur incluse − gain = 1 020 − 20 = 1 000.
       expect(ctrl.realTotalGainPercent!, closeTo(2.0, 1e-6));
+      // Sous-total frais isolé (n'affecte pas realTotalGain ci-dessus).
+      expect(ctrl.realTotalGainCharges, isNotNull);
+      expect(ctrl.realTotalGainCharges!, closeTo(-5.0, 1e-9));
     });
   });
 }

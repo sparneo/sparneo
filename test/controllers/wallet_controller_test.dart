@@ -1511,6 +1511,7 @@ void main() {
       expect(controller.realContributionsValues, isEmpty);
       expect(controller.realPeriodGain, isNull);
       expect(controller.realTotalGain, isNull);
+      expect(controller.realTotalGainCharges, isNull);
       expect(controller.periodChange, 0);
       expect(controller.periodChangePercent, 0);
     });
@@ -1744,6 +1745,9 @@ void main() {
       expect(controller.realTotalGain, isNotNull);
       expect(controller.realTotalGain!, closeTo(40.0, 1e-9));
       expect(controller.totalPatrimoine, closeTo(1040.0, 1e-9));
+      // Sous-total frais isolé (n'affecte pas realTotalGain ci-dessus).
+      expect(controller.realTotalGainCharges, isNotNull);
+      expect(controller.realTotalGainCharges!, closeTo(-10.0, 1e-9));
     });
 
     // -----------------------------------------------------------------------

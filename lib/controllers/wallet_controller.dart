@@ -214,6 +214,10 @@ class WalletController extends ChangeNotifier {
   // inclus si leur PRU est connu), jamais gaté par la période sélectionnée.
   double? _realTotalGain;
   double? _realTotalGainPercent;
+  // Sous-total `charge` SEUL, EN PLUS de `_realTotalGain` (n'en change rien) —
+  // cf. [RealTotalGain.chargesTotal], destiné à la ligne « dont frais » du
+  // popup d'aide.
+  double? _realTotalGainCharges;
   // Symboles EXCLUS du calcul ci-dessus faute de PRU connu — cf.
   // [RealTotalGain.noBasisSymbols], destiné à l'avertissement UI (Lot C).
   Set<String> _realNoBasisSymbols = {};
@@ -298,6 +302,12 @@ class WalletController extends ChangeNotifier {
   /// qu'aucun calcul mode 2 n'a abouti.
   double? get realTotalGain => _realTotalGain;
   double? get realTotalGainPercent => _realTotalGainPercent;
+
+  /// Sous-total `charge` SEUL inclus dans [realTotalGain] (ne le modifie
+  /// pas) — cf. [RealTotalGain.chargesTotal]. `null` tant qu'aucun calcul
+  /// mode 2 n'a abouti, `0.0` si le journal ne comporte aucun mouvement
+  /// `charge`.
+  double? get realTotalGainCharges => _realTotalGainCharges;
 
   /// Symboles EXCLUS du calcul des gains totaux faute de PRU connu — cf.
   /// [HistoryAggregator.computeRealTotalGain].
@@ -1288,6 +1298,7 @@ class WalletController extends ChangeNotifier {
     _realPeriodGainPercentAnnualized = null;
     _realTotalGain = null;
     _realTotalGainPercent = null;
+    _realTotalGainCharges = null;
     _realNoBasisSymbols = {};
   }
 
@@ -1487,6 +1498,7 @@ class WalletController extends ChangeNotifier {
     );
     _realTotalGain = totalGain.totalGain;
     _realTotalGainPercent = totalGain.totalGainPercent;
+    _realTotalGainCharges = totalGain.chargesTotal;
     _realNoBasisSymbols = totalGain.noBasisSymbols;
   }
 

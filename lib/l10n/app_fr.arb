@@ -27,6 +27,7 @@
   "chartRealPeriodGainHelpBodyAnnualized": "Gain de la période, versements et retraits exclus : votre performance de marché seule.\n\nDeux pourcentages sont affichés : le premier est le gain cumulé sur toute la période, le second (entre parenthèses) le rendement moyen par an — comparable à celui d'un indice.\n\nTous deux rapportent le gain au capital moyen réellement employé : un versement récent ne compte que pour le temps où il a travaillé.",
   "chartRealTotalGainHelpTitle": "Gains totaux",
   "chartRealTotalGainHelpBody": "Gains totaux depuis l'origine : valeur actuelle moins capital investi (vos versements en espèces et les titres apportés, comptés à leur prix de revient).\n\nCe montant peut différer de l'écart visible entre les deux courbes : le graphique valorise les titres apportés au cours du jour de leur entrée, ce calcul à leur prix de revient réel.",
+  "chartRealTotalGainFeesLine": "Dont frais (droits de garde, tenue de compte…) : {amount}",
   "chartHelpTooltip": "En savoir plus",
   "chartNoBasisWarning": "Base de coût inconnue pour {count} titre(s) : exclus du calcul de performance.",
   "chartSeriesValueLegend": "Valeur",

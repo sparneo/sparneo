@@ -1235,6 +1235,110 @@ void main() {
 
       // 50 + 10 - 5 = 55 (le dépôt de 1000 est EXCLU).
       expect(result.totalGain, closeTo(55.0, 1e-9));
+      // chargesTotal isole la SEULE part `charge` (-5), signée, sans changer
+      // totalGain (toujours 55, dividende+intérêt+frais confondus).
+      expect(result.chargesTotal, closeTo(-5.0, 1e-9));
+    });
+
+    test('chargesTotal isole la part frais (fx règlement), totalGain inchangé', () {
+      // Mélange dividend/interest/charge, dont un charge en USD réglé pour
+      // vérifier que chargesTotal applique le MÊME fx que le terme (3)
+      // complet (devise de RÈGLEMENT, pas de cotation).
+      final dividend = AssetTransaction(
+        id: 'div1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.dividend,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final interest = AssetTransaction(
+        id: 'int1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.interest,
+        amount: '10',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final chargeEur = AssetTransaction(
+        id: 'chg1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.charge,
+        amount: '-5',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 3),
+      );
+      final chargeUsd = AssetTransaction(
+        id: 'chg2',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.charge,
+        amount: '-10',
+        currency: 'USD',
+        date: DateTime(2024, 1, 4),
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: const [],
+        txsBySymbol: const {},
+        txsByAccount: {
+          'acc1': [dividend, interest, chargeEur, chargeUsd],
+        },
+        usdToEurRate: 0.9,
+      );
+
+      // totalGain = 50 + 10 - 5 - 10×0.9 = 46 — EXACTEMENT ce que donnerait
+      // le calcul actuel sans chargesTotal (non-régression du terme principal).
+      expect(result.totalGain, closeTo(46.0, 1e-9));
+      // chargesTotal = -5 + (-10×0.9) = -14, isolé des revenus dividend+interest.
+      expect(result.chargesTotal, closeTo(-14.0, 1e-9));
+    });
+
+    test('aucun mouvement charge → chargesTotal 0.0', () {
+      final dividend = AssetTransaction(
+        id: 'div1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.dividend,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final interest = AssetTransaction(
+        id: 'int1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.interest,
+        amount: '10',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: const [],
+        txsBySymbol: const {},
+        txsByAccount: {
+          'acc1': [dividend, interest],
+        },
+        usdToEurRate: 1.0,
+      );
+
+      expect(result.totalGain, closeTo(60.0, 1e-9));
+      expect(result.chargesTotal, 0.0);
+    });
+
+    test('positions et journaux vides → chargesTotal 0.0', () {
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: const [],
+        txsBySymbol: const {},
+        txsByAccount: const {},
+        usdToEurRate: 1.0,
+      );
+
+      expect(result.chargesTotal, 0.0);
     });
 
     test('position sans PRU connu : EXCLUE des deux termes + noBasisSymbols', () {

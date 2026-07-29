@@ -190,6 +190,17 @@
     "description": "Help popup body explaining the 'Total gains' line (chartRealTotalGain/chartRealTotalGainAmountOnly) shown below the chart in real-evolution mode"
   },
 
+  "chartRealTotalGainFeesLine": "Of which fees (custody, account maintenance…): {amount}",
+  "@chartRealTotalGainFeesLine": {
+    "description": "Extra line appended to the 'Total gains' help popup body when RealTotalGain.chargesTotal is non-zero, isolating the charge-only sub-total that is otherwise buried in the aggregated 'revenus' term (dividend+interest+charge) — amount is an already-formatted signed money string, negative in the common case (fees), positive for a rebate",
+    "placeholders": {
+      "amount": {
+        "type": "String",
+        "example": "-45,00 €"
+      }
+    }
+  },
+
   "chartHelpTooltip": "Learn more",
   "@chartHelpTooltip": {
     "description": "Short accessibility/hover label for the info-icon trigger that opens a help popup (desktop tooltip on hover; on mobile the icon must be tapped, a long-press Tooltip wasn't discoverable enough)"

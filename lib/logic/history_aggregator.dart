@@ -99,6 +99,7 @@ class RealTotalGain {
     this.totalGain,
     this.totalGainPercent,
     this.noBasisSymbols = const {},
+    this.chargesTotal = 0.0,
   });
 
   /// Instance neutre — aucun symbole en base connue, gains `null`.
@@ -112,6 +113,16 @@ class RealTotalGain {
   /// plutôt que silencieusement comptés pour zéro. Destiné à un avertissement
   /// UI (« performance partielle », design §Lot C).
   final Set<String> noBasisSymbols;
+
+  /// Sous-total des mouvements `charge` SEULS, EUR, SIGNÉ (négatif dans le cas
+  /// courant — frais —, positif si un rebate existe), même `fx` (devise de
+  /// RÈGLEMENT) que le terme (3) de [HistoryAggregator.computeRealTotalGain].
+  /// PUREMENT informatif : déjà inclus dans [totalGain] (qui continue de
+  /// sommer dividend+interest+charge exactement comme avant), ce champ ne
+  /// change AUCUN calcul — il isole la part frais pour l'affichage (popup
+  /// « Gains totaux »), sans quoi elle reste noyée dans l'agrégat des
+  /// revenus. `0.0` s'il n'y a aucun mouvement `charge`.
+  final double chargesTotal;
 }
 
 /// Agrégation de données historiques. Toutes les méthodes sont statiques et
@@ -976,7 +987,8 @@ class HistoryAggregator {
   ///    kind, cf. en-tête `position_projection.dart`) — `amount` déjà SIGNÉ
   ///    (`charge` négatif sauf rebate). `fx` = devise de RÈGLEMENT
   ///    (`settlementCurrency ?? currency`), PAS la cotation (c'est un
-  ///    mouvement cash).
+  ///    mouvement cash). La part `charge` de cette somme est EN PLUS isolée
+  ///    dans [RealTotalGain.chargesTotal] (affichage seul, n'altère rien ici).
   ///
   /// `%` : `capital = valeurIncluse − totalGain`, où `valeurIncluse = Σ
   /// pos.totalValue × fx` (valeur de marché actuelle, PAS le coût — sur les
@@ -1003,6 +1015,9 @@ class HistoryAggregator {
   }) {
     final noBasisSymbols = <String>{};
     var totalGain = 0.0;
+    // Sous-total `charge` SEUL, EN PLUS de `totalGain` (jamais à la place) —
+    // cf. doc de [RealTotalGain.chargesTotal].
+    var chargesTotal = 0.0;
     // Le CASH fait partie de la valeur détenue, donc du capital investi
     // (`capital = valeur − gains`). L'OMETTRE amputerait le dénominateur du
     // `%` de tout le cash non investi et SURÉVALUERAIT la performance (ex.
@@ -1054,7 +1069,11 @@ class HistoryAggregator {
                 0.0;
         final settlement = tx.settlementCurrency ?? tx.currency;
         final fx = settlement.toUpperCase() == 'USD' ? usdToEurRate : 1.0;
-        totalGain += amt * fx;
+        final converted = amt * fx;
+        totalGain += converted;
+        if (tx.kind == TransactionKind.charge) {
+          chargesTotal += converted;
+        }
       }
     }
 
@@ -1067,6 +1086,7 @@ class HistoryAggregator {
       totalGain: totalGain,
       totalGainPercent: totalGainPercent,
       noBasisSymbols: noBasisSymbols,
+      chargesTotal: chargesTotal,
     );
   }
 
