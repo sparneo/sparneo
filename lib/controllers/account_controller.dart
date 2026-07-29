@@ -1295,9 +1295,10 @@ class AccountController extends ChangeNotifier {
   // Actions de journal explicites sur le SOLDE ESPÈCES (lot cash-ledger)
   //
   // Analogues cash de emitOpeningBalance/emitAdjustment (positions) : le cash
-  // dérivé d'un compte titres est en LECTURE SEULE (corollaire D1/PRU) — toute
-  // correction passe par un acte de journal nommé, jamais une édition directe
-  // (cf. cash_balance_edit_dialog.dart, réservé aux comptes kind=cash).
+  // dérivé (compte titres ANCRÉ comme compte cash ANCRÉ, doc 19) est en
+  // LECTURE SEULE (corollaire D1/PRU) — toute correction passe par un acte de
+  // journal nommé, jamais une édition directe (B8/doc 19 §2 : l'ancienne
+  // édition manuelle du solde d'un compte cash a été retirée au lot 4).
   // ---------------------------------------------------------------------------
 
   /// « Définir le solde espèces initial… » — déclare une trésorerie

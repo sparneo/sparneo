@@ -18,6 +18,7 @@ import 'package:portfolio_tracker/model/allocation_target.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/allocation_target_storage.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
+import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
 import 'package:portfolio_tracker/services/snapshot_storage.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
@@ -42,6 +43,11 @@ class WalletController extends ChangeNotifier {
   /// [journalHasCashAnchor] dans [loadAllData]) — pour les comptes titres ET,
   /// depuis B8, pour les comptes cash. Aucune écriture ici.
   final TransactionStorage _txStorage;
+
+  /// Écriture du journal (lot B8/doc 19 §3bis) : SEUL usage — émettre
+  /// l'ancrage `openingBalance` ESPÈCES d'un compte cash à sa création
+  /// (cf. [createAccount]). Aucune autre mutation du journal ici.
+  final LedgerService _ledger;
 
   /// Nom du wallet par défaut (fourni par la vue qui a accès au contexte).
   final String defaultWalletName;
@@ -69,6 +75,7 @@ class WalletController extends ChangeNotifier {
     SnapshotStorage? snapshotStorage,
     AllocationTargetStorage? allocationTargetStorage,
     TransactionStorage? transactionStorage,
+    LedgerService? ledgerService,
     this.defaultWalletName = 'Mon Patrimoine',
   }) : _storage = storage ?? AccountStorage(),
        _marketService = marketService ?? MarketDataService.shared,
@@ -76,7 +83,8 @@ class WalletController extends ChangeNotifier {
        _snapshotStorage = snapshotStorage ?? SnapshotStorage(),
        _allocationTargetStorage =
            allocationTargetStorage ?? AllocationTargetStorage(),
-       _txStorage = transactionStorage ?? TransactionStorage();
+       _txStorage = transactionStorage ?? TransactionStorage(),
+       _ledger = ledgerService ?? LedgerService();
 
   // ---------------------------------------------------------------------------
   // État exposé via getters
@@ -947,8 +955,20 @@ class WalletController extends ChangeNotifier {
   /// Crée un nouveau compte et recharge les données.
   ///
   /// [kind] est l'axe unique (nature du compte) : il porte la valorisation
-  /// (dérivée) et la fiscalité. Le solde initial n'est retenu que pour un
-  /// compte cash (`kind.valuationType == cash`).
+  /// (dérivée) et la fiscalité. `cashBalance` (l'ex-« solde initial » saisi
+  /// pour un compte cash) n'écrit PLUS `Account.cashBalance` — B8/doc 19 §2
+  /// ferme cette seconde source de vérité : le solde initial d'un compte
+  /// cash s'exprime désormais comme un `openingBalance` ESPÈCES au journal
+  /// (§3bis), émis INCONDITIONNELLEMENT (même 0/absent) juste après la
+  /// création, pour que TOUT compte cash créé après ce lot naisse ANCRÉ
+  /// (`journalHasCashAnchor`) — `cash_balance` reste NULL à vie pour ces
+  /// comptes, la lecture legacy ne concernant plus que les comptes créés
+  /// avant B8/lot 4.
+  ///
+  /// Non-atomique par construction (deux écritures distinctes : compte puis
+  /// mouvement) — accepté par le design (§3bis) : l'échec du second appel
+  /// laisse un compte non ancré à solde nul, dégradation propre, rattrapable
+  /// par l'action d'amorçage (« Définir le solde espèces initial… »).
   Future<Account> createAccount({
     required String name,
     required AccountKind kind,
@@ -959,19 +979,19 @@ class WalletController extends ChangeNotifier {
       walletId: _activeWallet!.id,
       name: name.trim(),
       kind: kind,
-      cashBalance: kind.valuationType == AccountType.cash ? cashBalance : null,
+      cashBalance: null,
     );
     await _storage.saveAccount(newAccount);
+    if (kind.valuationType == AccountType.cash) {
+      await _ledger.emitCashOpeningBalance(
+        accountId: newAccount.id,
+        amount: (cashBalance ?? 0.0).toString(),
+        currency: newAccount.currency,
+        date: DateTime.now(),
+      );
+    }
     await loadAllData();
     return newAccount;
-  }
-
-  /// Modifie le solde d'un compte cash et recharge les données.
-  Future<void> updateCashBalance(Account account, double newBalance) async {
-    if (newBalance == account.cashBalance) return;
-    final updated = account.copyWith(cashBalance: newBalance);
-    await _storage.saveAccount(updated);
-    await loadAllData();
   }
 
   // ---------------------------------------------------------------------------

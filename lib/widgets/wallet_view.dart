@@ -19,7 +19,6 @@ import 'package:portfolio_tracker/widgets/allocation_pie_chart.dart';
 import 'package:portfolio_tracker/widgets/allocation_target_edit_dialog.dart';
 import 'package:portfolio_tracker/widgets/manage_wallets_page.dart';
 import 'package:portfolio_tracker/widgets/settings_page.dart';
-import 'package:portfolio_tracker/widgets/cash_balance_edit_dialog.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
@@ -218,42 +217,16 @@ class _WalletViewState extends State<WalletView> {
     );
   }
 
-  // ⭐ MODIFIER LE SOLDE CASH DIRECTEMENT
-  Future<void> _editCashBalance(Account account) async {
-    final result = await showDialog<CashBalanceEditResult>(
-      context: context,
-      builder: (ctx) => CashBalanceEditDialog(
-        currentBalance: account.cashBalance ?? 0.0,
-        currency: account.currency,
-      ),
-    );
-    if (!mounted || result == null) return;
-
-    switch (result) {
-      case CashBalanceUpdated(:final balance):
-        await _controller.updateCashBalance(account, balance);
-      case CashBalanceDeleteRequested():
-        // Le dialogue n'a exprimé qu'une intention : la confirmation (+ garde
-        // « dernier compte ») a lieu ici, comme pour le balayage et la barre
-        // d'AccountView. Le compte cash n'ayant pas de page de détail, son
-        // dialogue d'édition tient lieu de surface propre pour cette action.
-        final confirmed = await confirmDeleteAccount(
-          context: context,
-          accountName: account.name,
-          totalAccountCount: _controller.accounts.length,
-        );
-        if (!mounted || !confirmed) return;
-        _onAccountDismissed(account);
-    }
-  }
-
-  /// Suppression DIFFÉRÉE (annulable) d'un compte, partagée par les trois points
-  /// d'entrée : balayage de la liste, corbeille de la barre d'[AccountView] et
-  /// dialogue d'édition du solde cash. La confirmation (+ garde « dernier
-  /// compte ») a déjà eu lieu en amont ; ici on masque le compte de la liste
-  /// sans toucher au stockage et on ouvre une fenêtre d'annulation. La
-  /// suppression réelle n'est validée qu'à la fermeture du snackbar SANS action
-  /// « Annuler ». Aligné sur _onPositionDismissed / manage_wallets_page.
+  /// Suppression DIFFÉRÉE (annulable) d'un compte, partagée par les deux points
+  /// d'entrée restants : balayage de la liste et corbeille de la barre
+  /// d'[AccountView] (le dialogue d'édition du solde cash, troisième chemin
+  /// historique, a été retiré au Lot 4 — cf. doc 19 §2, la corbeille
+  /// d'AccountView est désormais l'unique chemin de suppression d'un compte
+  /// cash). La confirmation (+ garde « dernier compte ») a déjà eu lieu en
+  /// amont ; ici on masque le compte de la liste sans toucher au stockage et
+  /// on ouvre une fenêtre d'annulation. La suppression réelle n'est validée
+  /// qu'à la fermeture du snackbar SANS action « Annuler ». Aligné sur
+  /// _onPositionDismissed / manage_wallets_page.
   void _onAccountDismissed(Account account) {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;

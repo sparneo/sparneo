@@ -17,6 +17,8 @@ import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/valuation_snapshot.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
+import 'package:portfolio_tracker/logic/position_projection.dart'
+    show journalHasCashAnchor;
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/allocation_target_storage.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
@@ -141,6 +143,11 @@ WalletController _makeController({
       // Isolation stricte sur la db de test (sinon lecture par défaut sur le
       // singleton de production — cf. lot cash-ledger, dérivation du cash).
       transactionStorage: TransactionStorage(database: db),
+      // Idem pour LedgerService (B8/doc 19 lot 4, createAccount émet
+      // désormais un openingBalance ESPÈCES) : sans cette injection, il
+      // viserait AppDatabase.shared() (la prod) au lieu de la db in-memory
+      // isolée du test.
+      ledgerService: LedgerService(database: db),
       defaultWalletName: defaultWalletName,
     );
 
@@ -716,26 +723,73 @@ void main() {
       expect(controller.accounts.length, 1);
     });
 
-    test('updateCashBalance met à jour le solde et recharge', () async {
+    // =======================================================================
+    // Lot 4 (doc 19 §3bis) — fermeture de la seconde source de vérité :
+    // le solde initial d'un compte cash créé via createAccount doit naître
+    // ANCRÉ (openingBalance ESPÈCES), `cash_balance` restant NULL en base.
+    // =======================================================================
+
+    test(
+        'createAccount(kind: cash, cashBalance: 500.0) naît ANCRÉ : '
+        'accountValues dérivé du journal, cash_balance NULL en base',
+        () async {
       final db = await openTestDatabase();
       addTearDown(db.close);
 
-      await setupSingleWalletWithCash(
-        db: db,
-        walletId: 'w-upd',
-        accountId: 'acc-upd',
-        cashBalance: 1000.0,
-      );
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-l4', name: 'Test L4'));
 
       final controller = _makeController(db: db);
-
       await controller.loadAllData();
-      expect(controller.accountValues['acc-upd'], closeTo(1000.0, 1e-9));
 
-      final account = controller.accounts.first;
-      await controller.updateCashBalance(account, 2500.0);
+      final created = await controller.createAccount(
+        name: 'Livret neuf',
+        kind: AccountKind.cash,
+        cashBalance: 500.0,
+      );
 
-      expect(controller.accountValues['acc-upd'], closeTo(2500.0, 1e-9));
+      // La valeur affichée est celle DÉRIVÉE du journal (identique au solde
+      // saisi, puisque c'est le seul mouvement) — pas une lecture directe de
+      // `cash_balance`.
+      expect(controller.accountValues[created.id], closeTo(500.0, 1e-9));
+
+      // `cash_balance` n'a JAMAIS été écrit : NULL en base (seul le journal
+      // porte le montant).
+      final stored = (await storage.getAccountsByWallet('w-l4'))
+          .firstWhere((a) => a.id == created.id);
+      expect(stored.cashBalance, isNull);
+
+      // Le compte est bien ANCRÉ au sens du discriminant partagé avec les
+      // comptes titres (journalHasCashAnchor) : un openingBalance ESPÈCES a
+      // été émis à la création.
+      final txs = await TransactionStorage(database: db)
+          .getByAccount(created.id);
+      expect(journalHasCashAnchor(txs), isTrue);
+    });
+
+    test(
+        'createAccount(kind: cash, cashBalance: null) émet quand même un '
+        'openingBalance à 0 : le compte naît ANCRÉ (lecture littérale §3bis '
+        '« inconditionnellement »)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-l4b', name: 'Test L4 bis'));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      final created = await controller.createAccount(
+        name: 'Livret vide',
+        kind: AccountKind.cash,
+        cashBalance: null,
+      );
+
+      final txs = await TransactionStorage(database: db)
+          .getByAccount(created.id);
+      expect(journalHasCashAnchor(txs), isTrue);
+      expect(controller.accountValues[created.id], closeTo(0.0, 1e-9));
     });
   });
 
