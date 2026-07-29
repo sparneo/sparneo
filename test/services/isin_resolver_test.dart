@@ -91,4 +91,29 @@ void main() {
       expect(IsinResolver.pickBest(hits)!.symbol, equals('X.TO'));
     });
   });
+
+  group('IsinResolver.venueRank', () {
+    test('Paris → rang 0', () {
+      expect(IsinResolver.venueRank(_hit('AIR.PA')), equals(0));
+    });
+
+    test('Amsterdam/Bruxelles/Lisbonne → rang 1', () {
+      expect(IsinResolver.venueRank(_hit('X.AS')), equals(1));
+      expect(IsinResolver.venueRank(_hit('X.BR')), equals(1));
+      expect(IsinResolver.venueRank(_hit('X.LS')), equals(1));
+    });
+
+    test('Xetra/Francfort → rang 2', () {
+      expect(IsinResolver.venueRank(_hit('X.DE')), equals(2));
+      expect(IsinResolver.venueRank(_hit('X.F')), equals(2));
+    });
+
+    test('reste (ex. Londres/Stuttgart) → rang 3, le cas 0E2B.IL réel', () {
+      // Cas réel qui a motivé le correctif (cf. rapport) : LU1190417599 ne
+      // renvoie que Londres (0E2B.IL) et Stuttgart, jamais Paris — le rang 3
+      // doit être exposé pour signaler cette résolution peu sûre.
+      expect(IsinResolver.venueRank(_hit('0E2B.IL')), equals(3));
+      expect(IsinResolver.venueRank(_hit('X.SG')), equals(3));
+    });
+  });
 }

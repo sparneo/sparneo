@@ -28,24 +28,73 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
+import 'package:portfolio_tracker/model/isin_search_hit.dart';
+import 'package:portfolio_tracker/services/market_data_service.dart'
+    show IsinSearchException;
 import 'package:portfolio_tracker/widgets/import/statement_import_page.dart';
 
 const _accountId = 'account-1';
 
+/// Fake SANS RÉSEAU réservé aux tests de vérification du symbole saisi à la
+/// main (correctif « symbole saisi vérifié ») : contrôle les hits retournés
+/// par `searchIsin` par requête (clé = symbole envoyé, déjà en MAJUSCULES —
+/// cf. [StatementImportPage._verifySymbolExists]) et court-circuite
+/// `confirmStatementImport` pour ne JAMAIS toucher au stockage réel (une
+/// base SQLite réelle ouverte dans un `testWidgets` bloque indéfiniment, cf.
+/// doc de tête de fichier).
+class _FakeVerifyController extends AccountController {
+  _FakeVerifyController({
+    this.hitsByQuery = const {},
+    this.networkFailQueries = const {},
+  }) : super(initialAccountId: _accountId);
+
+  final Map<String, List<IsinSearchHit>> hitsByQuery;
+  final Set<String> networkFailQueries;
+
+  /// `true` si [confirmStatementImport] a été atteint : preuve qu'aucun
+  /// symbole n'a été rejeté par la vérification.
+  bool confirmCalled = false;
+
+  @override
+  Future<List<IsinSearchHit>> searchIsin(
+    String isin, {
+    int quotesCount = 8,
+  }) async {
+    if (networkFailQueries.contains(isin)) {
+      throw IsinSearchException('panne réseau (test)');
+    }
+    return hitsByQuery[isin] ?? const [];
+  }
+
+  @override
+  Future<String?> confirmStatementImport(
+    ImportPreview preview, {
+    required String accountId,
+  }) async {
+    confirmCalled = true;
+    return null;
+  }
+}
+
 Widget _host(
   ImportPreview? debugInitialPreview, {
   Set<String>? debugInitialSearchFailedKeys,
+  Map<String, String>? debugInitialResolvedVenues,
+  Set<String>? debugInitialLowConfidenceVenueKeys,
+  AccountController? controller,
 }) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
     supportedLocales: AppLocalizations.supportedLocales,
     locale: const Locale('fr'),
     home: StatementImportPage(
-      controller: AccountController(initialAccountId: _accountId),
+      controller: controller ?? AccountController(initialAccountId: _accountId),
       accountId: _accountId,
       accountName: 'Compte test',
       debugInitialPreview: debugInitialPreview,
       debugInitialSearchFailedKeys: debugInitialSearchFailedKeys,
+      debugInitialResolvedVenues: debugInitialResolvedVenues,
+      debugInitialLowConfidenceVenueKeys: debugInitialLowConfidenceVenueKeys,
     ),
   );
 }
@@ -422,6 +471,221 @@ void main() {
 
       // Le bouton « Fermer » reste présent (aucune écriture possible).
       expect(find.widgetWithText(FilledButton, 'Fermer'), findsOneWidget);
+    });
+  });
+
+  group('StatementImportPage — place et confiance de la résolution', () {
+    // Cas réel qui a motivé ces deux correctifs (cf. rapport de livraison) :
+    // pour LU1190417599, la recherche ISIN ne renvoie que Londres (0E2B.IL)
+    // et Stuttgart, jamais Paris — `IsinResolver.pickBest` retient malgré
+    // tout le meilleur des deux (Londres), sans qu'aucun indice de place ne
+    // soit visible à l'écran. Les assertions ci-dessous exercent l'affichage
+    // SEUL (le peuplement réseau réel est couvert par isin_resolver_test.dart
+    // + les tests unitaires de IsinResolver.venueRank) via les points
+    // d'entrée `debugInitialResolvedVenues`/`debugInitialLowConfidenceVenueKeys`
+    // réservés aux tests (aucun réseau).
+
+    testWidgets(
+        'la place du hit retenu est affichée à côté du champ de symbole',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovementWithIsin()],
+        newAssets: const [
+          NewAssetCandidate(
+            isin: 'FR000UNKNOWN',
+            label: 'Old Corp',
+            proposedSymbol: null,
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(
+        preview,
+        debugInitialResolvedVenues: const {'FR000UNKNOWN': 'Londres'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Place : Londres'), findsOneWidget);
+    });
+
+    testWidgets(
+        'avertissement présent quand le candidat retenu est au rang 3 '
+        '(aucune place euro connue — cas 0E2B.IL)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovementWithIsin()],
+        newAssets: const [
+          NewAssetCandidate(
+            isin: 'FR000UNKNOWN',
+            label: 'Old Corp',
+            proposedSymbol: null,
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(
+        preview,
+        debugInitialResolvedVenues: const {'FR000UNKNOWN': 'Londres'},
+        debugInitialLowConfidenceVenueKeys: const {'FR000UNKNOWN'},
+      ));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Aucune place de cotation européenne connue pour ce titre — '
+          'vérifiez ce symbole avant de continuer.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'avertissement ABSENT quand le candidat retenu est à un rang de '
+        'confiance élevé (ex. Paris, rang 0)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovementWithIsin()],
+        newAssets: const [
+          NewAssetCandidate(
+            isin: 'FR000UNKNOWN',
+            label: 'Old Corp',
+            proposedSymbol: null,
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(
+        preview,
+        debugInitialResolvedVenues: const {'FR000UNKNOWN': 'Paris'},
+        // Pas dans debugInitialLowConfidenceVenueKeys : rang 0, pas d'alerte.
+      ));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Place : Paris'), findsOneWidget);
+      expect(
+        find.textContaining('Aucune place de cotation européenne connue'),
+        findsNothing,
+      );
+    });
+  });
+
+  group('StatementImportPage — vérification du symbole saisi à la main', () {
+    testWidgets(
+        'symbole saisi introuvable auprès de la source : la confirmation est '
+        'refusée avec un message, sans écrire l\'import (bug CSH2.PAR — '
+        'plausible mais invalide, Yahoo attend .PA)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovement()],
+        newAssets: const [
+          NewAssetCandidate(isin: null, label: 'New Co', proposedSymbol: null),
+        ],
+      );
+      final controller = _FakeVerifyController(
+        // Recherche aboutie, mais AUCUN hit ne porte ce symbole exact.
+        hitsByQuery: const {'CSH2.PAR': []},
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, 'CSH2.PAR');
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Symbole introuvable auprès de la source de marché.'),
+        findsOneWidget,
+      );
+      expect(controller.confirmCalled, isFalse);
+    });
+
+    testWidgets(
+        'symbole saisi valide (un hit exact est retourné) : la confirmation '
+        'aboutit', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovement()],
+        newAssets: const [
+          NewAssetCandidate(isin: null, label: 'New Co', proposedSymbol: null),
+        ],
+      );
+      final controller = _FakeVerifyController(
+        hitsByQuery: const {
+          'CSH2.PA': [IsinSearchHit(symbol: 'CSH2.PA', exchange: 'PAR')],
+        },
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, 'CSH2.PA');
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Symbole introuvable auprès de la source de marché.'),
+        findsNothing,
+      );
+      expect(controller.confirmCalled, isTrue);
+    });
+
+    testWidgets(
+        'échec réseau pendant la vérification : NE rejette PAS la saisie, la '
+        'confirmation aboutit quand même (même raisonnement que la panne de '
+        'recherche ISIN)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovement()],
+        newAssets: const [
+          NewAssetCandidate(isin: null, label: 'New Co', proposedSymbol: null),
+        ],
+      );
+      final controller = _FakeVerifyController(
+        networkFailQueries: const {'CSH2.PA'},
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, 'CSH2.PA');
+      await tester.pump();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Symbole introuvable auprès de la source de marché.'),
+        findsNothing,
+      );
+      expect(controller.confirmCalled, isTrue);
+    });
+
+    testWidgets(
+        'repli « non coté » : jamais soumis à la vérification (aucun hit '
+        'stubbé pour son ISIN — s\'il était vérifié à tort, la recherche vide '
+        'le rejetterait et bloquerait la confirmation)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovementWithIsin()],
+        newAssets: const [
+          NewAssetCandidate(
+            isin: 'FR000UNKNOWN',
+            label: 'Old Corp',
+            proposedSymbol: null,
+          ),
+        ],
+      );
+      final controller = _FakeVerifyController();
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byType(CheckboxListTile));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(controller.confirmCalled, isTrue);
     });
   });
 }

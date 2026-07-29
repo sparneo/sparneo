@@ -96,6 +96,21 @@ class StatementImportPage extends StatefulWidget {
   @visibleForTesting
   final Set<String>? debugInitialSearchFailedKeys;
 
+  /// Réservé aux TESTS WIDGET : place de cotation (par clé isin ?? label) déjà
+  /// résolue, comme si [_resolveOneNewAsset] l'avait obtenue d'un hit réel —
+  /// SANS déclencher de réseau. Vérifie l'affichage du correctif « place à
+  /// côté du symbole proposé ». Toujours `null` en production. N'a d'effet
+  /// qu'avec [debugInitialPreview].
+  @visibleForTesting
+  final Map<String, String>? debugInitialResolvedVenues;
+
+  /// Réservé aux TESTS WIDGET : clés (isin ?? label) déjà marquées « rang 3 »
+  /// (résolution peu sûre, cf. [IsinResolver.venueRank]), SANS déclencher de
+  /// réseau. Vérifie l'affichage de l'avertissement correspondant. Toujours
+  /// `null` en production. N'a d'effet qu'avec [debugInitialPreview].
+  @visibleForTesting
+  final Set<String>? debugInitialLowConfidenceVenueKeys;
+
   const StatementImportPage({
     super.key,
     required this.controller,
@@ -103,6 +118,8 @@ class StatementImportPage extends StatefulWidget {
     required this.accountName,
     this.debugInitialPreview,
     this.debugInitialSearchFailedKeys,
+    this.debugInitialResolvedVenues,
+    this.debugInitialLowConfidenceVenueKeys,
   });
 
   @override
@@ -167,6 +184,39 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// panne restant signalée par le bandeau.
   final Set<String> _searchFailedKeys = {};
 
+  /// Place de cotation (libellé lisible, ex. « Londres ») du hit retenu par
+  /// [IsinResolver.pickBest] pour chaque clé auto-résolue — vidée/rétablie en
+  /// même temps que le pré-remplissage du champ (cf. [_resolveOneNewAsset]),
+  /// jamais pour une saisie manuelle. Rend visible l'anomalie qui a motivé ce
+  /// correctif (cf. doc de fichier) : sans elle, `0E2B.IL` s'affichait sans
+  /// aucun indice que la place retenue est Londres, pas Paris.
+  final Map<String, String> _resolvedVenueByKey = {};
+
+  /// Clés dont le hit retenu est au rang 3 de [IsinResolver.venueRank] (« le
+  /// reste » — aucune place Euronext/Xetra connue) : signal fort de
+  /// résolution DOUTEUSE pour un patrimoine local en euros. N'empêche PAS la
+  /// confirmation (le champ reste pré-rempli et éditable), affiche seulement
+  /// un avertissement à côté du champ concerné.
+  final Set<String> _lowConfidenceVenueKeys = {};
+
+  /// `true` pendant la vérification (à la validation de l'étape) des symboles
+  /// SAISIS À LA MAIN auprès de la source de marché — cf. [_onConfirmResolveAssets].
+  bool _verifyingSymbols = false;
+
+  /// Clés dont le symbole saisi à la main a été vérifié INTROUVABLE auprès de
+  /// la source de marché (recherche aboutie, aucun hit exact) — bloque la
+  /// confirmation tant que la saisie n'est pas corrigée. Jamais peuplée pour
+  /// le repli « non coté » (cf. [_onConfirmResolveAssets], qui l'exclut de la
+  /// vérification).
+  final Set<String> _invalidSymbolKeys = {};
+
+  /// Clés dont la vérification du symbole saisi a échoué pour cause de PANNE
+  /// RÉSEAU/transport ([IsinSearchException]) : à DISTINGUER d'un symbole
+  /// réellement introuvable — aucune info sur son existence, donc PAS de
+  /// blocage (même raisonnement que [_searchFailedKeys], cf. doc de fichier).
+  /// Purement informatif.
+  final Set<String> _unverifiableSymbolKeys = {};
+
   // ---- Étape 5 : confirmation ----
   bool _confirming = false;
   _ImportSummaryData? _summary;
@@ -201,6 +251,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
       }
       final failed = widget.debugInitialSearchFailedKeys;
       if (failed != null) _searchFailedKeys.addAll(failed);
+      final venues = widget.debugInitialResolvedVenues;
+      if (venues != null) _resolvedVenueByKey.addAll(venues);
+      final lowConfidence = widget.debugInitialLowConfidenceVenueKeys;
+      if (lowConfidence != null) _lowConfidenceVenueKeys.addAll(lowConfidence);
     }
   }
 
@@ -668,6 +722,19 @@ class _StatementImportPageState extends State<StatementImportPage> {
     setState(() {
       if (best != null && ctrl.text.trim().isEmpty) {
         ctrl.text = best.symbol;
+        // Place du hit retenu (correctif 1) : affichée à côté du champ pour
+        // que l'anomalie saute aux yeux (cf. cas réel `0E2B.IL`/Londres en
+        // doc de fichier), au lieu de rester un simple symbole opaque.
+        final venue = best.exchangeDisplay ?? best.exchange;
+        if (venue != null && venue.trim().isNotEmpty) {
+          _resolvedVenueByKey[key] = venue.trim();
+        }
+        // Rang 3 (correctif 2) : aucune place Euronext/Xetra connue — signal
+        // fort de résolution douteuse pour un patrimoine local en euros. On
+        // avertit sans bloquer (le champ reste pré-rempli et éditable).
+        if (IsinResolver.venueRank(best) == 3) {
+          _lowConfidenceVenueKeys.add(key);
+        }
       }
       _resolvingKeys.remove(key);
     });
@@ -764,6 +831,116 @@ class _StatementImportPageState extends State<StatementImportPage> {
       projectedDeltas: preview.projectedDeltas,
       legacySymbols: preview.legacySymbols,
     );
+  }
+
+  /// Vérifie qu'un symbole SAISI À LA MAIN (ou laissé tel quel après
+  /// l'auto-résolution) existe bien auprès de la source de marché — bug
+  /// rapporté : `CSH2.PAR` (plausible mais invalide, Yahoo attend `.PA`)
+  /// était accepté sans contrôle, créant une position dont le cours ne serait
+  /// jamais récupéré.
+  ///
+  /// Réutilise [AccountController.searchIsin] (donc [MarketDataService.
+  /// searchByIsin]) plutôt que [MarketDataService.getQuoteWithMetadata] : ce
+  /// dernier AVALE toute erreur de transport et renvoie `null` aussi bien
+  /// pour un symbole invalide que pour une panne réseau (cf. [YahooFinanceProvider
+  /// .getQuoteWithMetadata]) — impossible d'y distinguer les deux cas.
+  /// `searchIsin` accepte n'importe quelle requête textuelle (pas seulement
+  /// un ISIN, cf. son implémentation) et lève [IsinSearchException] sur un
+  /// échec de TRANSPORT, exactement la distinction qu'il faut ici.
+  ///
+  /// Retourne :
+  ///  - `true`  : un hit porte EXACTEMENT ce symbole → accepté.
+  ///  - `false` : recherche aboutie mais aucun hit exact → REJETÉ.
+  ///  - `null`  : échec de transport OU erreur inattendue — AUCUNE info sur
+  ///    l'existence du titre, donc PAS de rejet (même raisonnement que pour
+  ///    la recherche ISIN, cf. doc de fichier / [_resolveOneNewAsset]).
+  Future<bool?> _verifySymbolExists(String symbol) async {
+    List<IsinSearchHit> hits;
+    try {
+      hits = await widget.controller.searchIsin(symbol);
+    } on IsinSearchException {
+      return null;
+    } catch (_) {
+      // Erreur inattendue non réseau : même prudence best-effort que
+      // _resolveOneNewAsset — on ne bloque pas l'utilisateur sur un signal
+      // qu'on ne maîtrise pas.
+      return null;
+    }
+    return hits.any((h) => h.symbol.toUpperCase() == symbol);
+  }
+
+  /// Point d'entrée RÉEL du bouton de confirmation de l'étape 4 : vérifie
+  /// D'ABORD chaque symbole SAISI À LA MAIN avant d'enchaîner sur
+  /// [_confirmImport]. Déclenchée à la VALIDATION DE L'ÉTAPE (pas à la sortie
+  /// de chaque champ) : ce bouton est déjà le point de passage obligé
+  /// ([_allNewAssetsResolved] le garde), donc UN SEUL passage borné suffit,
+  /// sans FocusNode par ligne à câbler ni risque de laisser passer un champ
+  /// jamais quitté (auto-rempli puis édité sans perdre le focus, par ex.).
+  ///
+  /// Le repli « non coté » ([_fallbackIsinKeys]) n'est JAMAIS soumis à cette
+  /// vérification : par construction ces titres n'existent pas chez la
+  /// source (symbole = ISIN, quotable = false).
+  ///
+  /// Asynchrone et NON bloquant : [_verifyingSymbols] pilote un indicateur
+  /// d'attente (même mécanique que [_resolvingKeys] pour l'auto-résolution),
+  /// concurrence bornée par lots comme [_maybeAutoResolveNewAssets].
+  Future<void> _onConfirmResolveAssets() async {
+    if (!_allNewAssetsResolved) return;
+    final preview = _preview;
+    if (preview == null) return;
+
+    // Symboles à vérifier : SAISIS (auto-remplis ou manuels), à l'exclusion
+    // du repli « non coté ».
+    final toVerify = <String, String>{};
+    for (final asset in preview.newAssets) {
+      if (asset.proposedSymbol != null) continue;
+      final key = asset.isin ?? asset.label;
+      if (_fallbackIsinKeys.contains(key)) continue;
+      final text = _newAssetSymbolControllers[key]?.text.trim() ?? '';
+      if (text.isNotEmpty) toVerify[key] = text.toUpperCase();
+    }
+
+    if (toVerify.isEmpty) {
+      await _confirmImport();
+      return;
+    }
+
+    setState(() {
+      _verifyingSymbols = true;
+      _invalidSymbolKeys.clear();
+      _unverifiableSymbolKeys.clear();
+    });
+
+    final invalid = <String>{};
+    final unverifiable = <String>{};
+    const maxConcurrent = 5;
+    final entries = toVerify.entries.toList();
+    for (var i = 0; i < entries.length; i += maxConcurrent) {
+      final batch = entries.skip(i).take(maxConcurrent);
+      await Future.wait(batch.map((entry) async {
+        final result = await _verifySymbolExists(entry.value);
+        if (result == false) invalid.add(entry.key);
+        if (result == null) unverifiable.add(entry.key);
+      }));
+    }
+    if (!mounted) return;
+
+    setState(() {
+      _verifyingSymbols = false;
+      _invalidSymbolKeys
+        ..clear()
+        ..addAll(invalid);
+      _unverifiableSymbolKeys
+        ..clear()
+        ..addAll(unverifiable);
+    });
+
+    // Au moins un symbole introuvable : on bloque, message affiché sous
+    // chaque champ concerné ([_buildResolveAssetRow]) — l'utilisateur corrige
+    // et retente (un nouveau clic relance la vérification).
+    if (invalid.isNotEmpty) return;
+
+    await _confirmImport();
   }
 
   // ---------------------------------------------------------------------------
@@ -1776,10 +1953,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
         if (_searchFailedKeys.isNotEmpty) _buildSearchFailedBanner(l10n),
         for (final asset in unresolved) _buildResolveAssetRow(l10n, asset),
         const SizedBox(height: 16),
-        _confirming
+        _confirming || _verifyingSymbols
             ? const Center(child: CircularProgressIndicator())
             : FilledButton(
-                onPressed: _allNewAssetsResolved ? _confirmImport : null,
+                onPressed:
+                    _allNewAssetsResolved ? _onConfirmResolveAssets : null,
                 child: Text(l10n.importConfirmButton),
               ),
       ],
@@ -1799,6 +1977,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// En repli, le champ symbole est désactivé (symbole == ISIN, cf.
   /// [_applyResolvedSymbols]).
   Widget _buildResolveAssetRow(AppLocalizations l10n, NewAssetCandidate asset) {
+    final theme = Theme.of(context);
     final key = asset.isin ?? asset.label;
     final isFallback = _fallbackIsinKeys.contains(key);
     final isResolving = _resolvingKeys.contains(key);
@@ -1814,6 +1993,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
     final showFallback = asset.isin != null &&
         !isResolving &&
         (!hasSymbol || isFallback);
+    // Place + avertissement rang 3 (correctifs 1/2) : uniquement pour un hit
+    // auto-résolu encore en place (une saisie manuelle les efface, cf.
+    // onChanged) et jamais en repli (le champ ne porte alors plus ce symbole).
+    final venue = !isFallback ? _resolvedVenueByKey[key] : null;
+    final isLowConfidence = !isFallback && _lowConfidenceVenueKeys.contains(key);
+    final isInvalid = _invalidSymbolKeys.contains(key);
+    final isUnverifiable = _unverifiableSymbolKeys.contains(key);
     return Padding(
       padding: const EdgeInsets.only(bottom: 16),
       child: Column(
@@ -1828,6 +2014,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
               border: const OutlineInputBorder(),
               isDense: true,
               helperText: isResolving ? l10n.importResolvingLabel : asset.isin,
+              errorText: isInvalid ? l10n.importSymbolNotFoundError : null,
               suffixIcon: isResolving
                   ? const Padding(
                       padding: EdgeInsets.all(12),
@@ -1839,8 +2026,56 @@ class _StatementImportPageState extends State<StatementImportPage> {
                     )
                   : null,
             ),
-            onChanged: (_) => setState(() {}),
+            onChanged: (_) => setState(() {
+              // La saisie change : la place/l'avertissement du hit auto-résolu
+              // et un précédent résultat de vérification ne sont plus valables
+              // pour ce nouveau texte.
+              _resolvedVenueByKey.remove(key);
+              _lowConfidenceVenueKeys.remove(key);
+              _invalidSymbolKeys.remove(key);
+              _unverifiableSymbolKeys.remove(key);
+            }),
           ),
+          if (venue != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Text(
+                l10n.importResolvedVenueLabel(venue),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
+          if (isLowConfidence)
+            Padding(
+              padding: const EdgeInsets.only(top: 2, left: 4),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 14,
+                    color: theme.colorScheme.error,
+                  ),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(
+                      l10n.importLowConfidenceVenueWarning,
+                      style: theme.textTheme.bodySmall
+                          ?.copyWith(color: theme.colorScheme.error),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (isUnverifiable)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4),
+              child: Text(
+                l10n.importSymbolVerificationUnavailable,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ),
           if (showFallback)
             CheckboxListTile(
               value: isFallback,
@@ -1855,6 +2090,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
               onChanged: (v) => setState(() {
                 if (v == true) {
                   _fallbackIsinKeys.add(key);
+                  // Le repli « non coté » n'est jamais vérifié (par
+                  // construction, ces titres n'existent pas chez la source) :
+                  // un résultat de vérification antérieur n'a plus de sens.
+                  _invalidSymbolKeys.remove(key);
+                  _unverifiableSymbolKeys.remove(key);
                 } else {
                   _fallbackIsinKeys.remove(key);
                 }

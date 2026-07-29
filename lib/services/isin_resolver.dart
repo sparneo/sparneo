@@ -27,7 +27,7 @@ class IsinResolver {
 
     for (final h in hits) {
       if (h.symbol.trim().isEmpty) continue;
-      final rank = _venueRank(h);
+      final rank = venueRank(h);
       final score = h.score ?? 0;
       // Rang strictement meilleur → adoption inconditionnelle (le rang prime).
       // Rang égal → départage par score strictement supérieur (stable : à
@@ -41,10 +41,15 @@ class IsinResolver {
     return best;
   }
 
-  /// Rang de préférence d'une place (0 = meilleur). Reconnaît la place via le
-  /// suffixe du symbole EN PREMIER (le plus fiable), avec repli sur les champs
-  /// `exchange` / `exchangeDisplay` quand le symbole ne porte pas de suffixe.
-  static int _venueRank(IsinSearchHit h) {
+  /// Rang de préférence d'une place (0 = meilleur, 3 = le reste — tout ce qui
+  /// n'est ni Euronext ni Xetra/Francfort). PUBLIQUE (pas seulement un détail
+  /// d'implémentation de [pickBest]) : l'assistant d'import s'en sert pour
+  /// signaler une résolution peu sûre — un candidat retenu au rang 3 est un
+  /// signal fort pour un patrimoine local en euros (aucune place EUR connue
+  /// n'a matché). Reconnaît la place via le suffixe du symbole EN PREMIER (le
+  /// plus fiable), avec repli sur les champs `exchange` / `exchangeDisplay`
+  /// quand le symbole ne porte pas de suffixe.
+  static int venueRank(IsinSearchHit h) {
     final sym = h.symbol.toUpperCase();
     final exch = (h.exchange ?? '').toUpperCase();
     final disp = (h.exchangeDisplay ?? '').toLowerCase();

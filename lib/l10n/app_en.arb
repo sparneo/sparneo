@@ -2174,6 +2174,25 @@
   "@importFallbackIsinHint": {
     "description": "Explanation of the non-listed ISIN fallback"
   },
+  "importResolvedVenueLabel": "Venue: {venue}",
+  "@importResolvedVenueLabel": {
+    "description": "Trading venue of the auto-resolved symbol, shown next to the field so a wrong venue (e.g. London instead of Paris) is visible",
+    "placeholders": {
+      "venue": { "type": "String" }
+    }
+  },
+  "importLowConfidenceVenueWarning": "No known European trading venue for this security — double-check this symbol before continuing.",
+  "@importLowConfidenceVenueWarning": {
+    "description": "Warning shown when the auto-resolved symbol is at venue rank 3 (no Euronext/Xetra match) — the resolution is not blocked, only flagged"
+  },
+  "importSymbolNotFoundError": "Symbol not found with the market data source.",
+  "@importSymbolNotFoundError": {
+    "description": "Error shown under a new-asset symbol field when the manually entered symbol could not be verified as existing"
+  },
+  "importSymbolVerificationUnavailable": "Could not verify (connection unavailable) — the symbol will be accepted as entered.",
+  "@importSymbolVerificationUnavailable": {
+    "description": "Informational note when symbol verification failed due to a network/transport error, not blocking"
+  },
   "positionNotQuotedBadge": "Not listed",
   "@positionNotQuotedBadge": {
     "description": "Badge shown on a position whose asset is not quotable (non-listed)"
