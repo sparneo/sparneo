@@ -164,4 +164,95 @@ void main() {
       );
     });
   });
+
+  group('Formatters.formatPriceLossless', () {
+    test('round price keeps 2 decimals (no trailing 33,0600)', () {
+      expect(norm(Formatters.formatPriceLossless(33.06, 'EUR')), '33,06 €');
+    });
+
+    test('price with a whole number keeps 2 decimals, not 100,000000', () {
+      expect(norm(Formatters.formatPriceLossless(100.0, 'EUR')), '100,00 €');
+    });
+
+    test('price with 3 significant decimals is shown without loss', () {
+      expect(norm(Formatters.formatPriceLossless(33.495, 'EUR')), '33,495 €');
+    });
+
+    test('another 3-decimal price is shown without loss', () {
+      expect(norm(Formatters.formatPriceLossless(18.596, 'EUR')), '18,596 €');
+    });
+
+    test('quantité × prix affiché redonne la valeur affichée (non-régression)', () {
+      // Cas rapportés par l'utilisateur : arrondir le prix à 2 décimales
+      // cassait la reconstitution manuelle de la valeur totale.
+      const qty1 = 522;
+      const price1 = 33.495;
+      const totalValue1 = 17484.39; // = qty1 * price1
+      expect((qty1 * price1).toStringAsFixed(2), totalValue1.toStringAsFixed(2));
+      expect(norm(Formatters.formatPriceLossless(price1, 'EUR')), '33,495 €');
+
+      const qty2 = 637;
+      const price2 = 18.596;
+      const totalValue2 = 11845.65; // = qty2 * price2 (arrondi bancaire évité)
+      expect((qty2 * price2).toStringAsFixed(2), totalValue2.toStringAsFixed(2));
+      expect(norm(Formatters.formatPriceLossless(price2, 'EUR')), '18,596 €');
+    });
+
+    test('very fine crypto price is bounded to maxDecimals (défaut 6)', () {
+      expect(
+        norm(Formatters.formatPriceLossless(0.00001234, 'EUR')),
+        '0,000012 €',
+      );
+    });
+
+    test('respects a custom maxDecimals bound', () {
+      // Sans borne, ce prix aurait besoin de 9 décimales pour être exact ;
+      // avec maxDecimals: 3, il est arrondi et tronqué à 3.
+      expect(
+        norm(Formatters.formatPriceLossless(0.123456789, 'EUR', maxDecimals: 3)),
+        '0,123 €',
+      );
+    });
+
+    test('respects a custom minDecimals floor', () {
+      expect(
+        norm(Formatters.formatPriceLossless(33.0, 'EUR', minDecimals: 4)),
+        '33,0000 €',
+      );
+    });
+
+    test('null currency falls back to no symbol, still lossless', () {
+      expect(norm(Formatters.formatPriceLossless(33.495, null)), '33,495');
+    });
+  });
+
+  group('Formatters.formatPriceWithConversionLossless', () {
+    test('non-USD currency ignores the conversion branch', () {
+      expect(
+        norm(Formatters.formatPriceWithConversionLossless(33.495, 'EUR', 0.9)),
+        '33,495 €',
+      );
+    });
+
+    test('USD price is shown lossless with a lossless EUR conversion alongside', () {
+      expect(
+        norm(Formatters.formatPriceWithConversionLossless(10.125, 'USD', 0.8)),
+        '10,125 \$ (8,10 €)',
+      );
+    });
+
+    test('round USD price with a round conversion keeps 2 decimals both sides', () {
+      expect(
+        norm(Formatters.formatPriceWithConversionLossless(10.0, 'USD', 0.5)),
+        '10,00 \$ (5,00 €)',
+      );
+    });
+
+    test('null eurRate falls back to the native price only, still lossless', () {
+      expect(
+        norm(Formatters.formatPriceWithConversionLossless(33.495, 'USD', null)),
+        '33,495 \$',
+      );
+    });
+  });
 }

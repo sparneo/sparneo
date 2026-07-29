@@ -171,6 +171,64 @@ class Formatters {
     return formatMoney(value, currency, decimals: decimalPlaces);
   }
 
+  /// Nombre de décimales nécessaires pour représenter [value] sans perte
+  /// (borné par [maxDecimals]), zéros de fin supprimés jusqu'à [minDecimals].
+  /// Ex : 33.06 -> 2, 33.495 -> 3, 33.4950001 -> 6 (arrondi, borne atteinte).
+  static int _losslessDecimals(
+    num value, {
+    required int minDecimals,
+    required int maxDecimals,
+  }) {
+    final s = value.toStringAsFixed(maxDecimals);
+    final dotIndex = s.indexOf('.');
+    if (dotIndex == -1) return minDecimals;
+    int end = s.length;
+    while (end > dotIndex + 1 + minDecimals && s[end - 1] == '0') {
+      end--;
+    }
+    return end - dotIndex - 1;
+  }
+
+  /// Formate un prix unitaire SANS perte : le nombre de décimales suit la
+  /// valeur réelle (borné par [maxDecimals]) au lieu d'être figé à 2, pour
+  /// que `quantité × prix affiché` retombe exactement sur la valeur affichée.
+  /// Un prix « rond » comme 33,06 reste à [minDecimals] décimales ; un prix
+  /// comme 33,495 s'affiche avec ses 3 décimales significatives. Bornage à
+  /// [maxDecimals] (6 par défaut, cf. `_formatCanonicalNumber` dans
+  /// `statement_import_service.dart`) pour les cotations très fines
+  /// (cryptomonnaies).
+  static String formatPriceLossless(
+    num value,
+    String? currency, {
+    int minDecimals = 2,
+    int maxDecimals = 6,
+  }) {
+    final decimals = _losslessDecimals(
+      value,
+      minDecimals: minDecimals,
+      maxDecimals: maxDecimals,
+    );
+    return formatMoney(value, currency, decimals: decimals);
+  }
+
+  /// Comme [formatCurrencyWithConversion], mais sans perte : le nombre de
+  /// décimales de chaque montant (natif et converti) est calculé
+  /// individuellement via [formatPriceLossless] plutôt que figé à 2.
+  static String formatPriceWithConversionLossless(
+    num value,
+    String currency,
+    double? eurRate, {
+    int minDecimals = 2,
+    int maxDecimals = 6,
+  }) {
+    if (currency.toUpperCase() == 'USD' && eurRate != null) {
+      final eurValue = value * eurRate;
+      return '${formatPriceLossless(value, currency, minDecimals: minDecimals, maxDecimals: maxDecimals)} '
+          '(${formatPriceLossless(eurValue, 'EUR', minDecimals: minDecimals, maxDecimals: maxDecimals)})';
+    }
+    return formatPriceLossless(value, currency, minDecimals: minDecimals, maxDecimals: maxDecimals);
+  }
+
   /// Détermine la couleur basée sur la variation
   static Color getChangeColor(double value, {Color positive = const Color(0xFF1B5E20), Color negative = const Color(0xFFB71C1C)}) {
     return value >= 0 ? positive : negative;

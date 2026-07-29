@@ -139,14 +139,21 @@ class PositionCard extends StatelessWidget {
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
                         // ⭐ ESPACE APRÈS LA QUANTITÉ
-                        Text(
-                          '${position.quantity} x ${_formatPriceWithConversion(price)}',
-                          style: TextStyle(
-                            fontSize: 12,
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.onSurfaceVariant,
-                            fontWeight: FontWeight.w500,
+                        // Flexible + ellipsis : le prix sans perte (cf.
+                        // formatPriceLossless) peut être plus long qu'un prix
+                        // arrondi à 2 décimales, ne pas laisser cette ligne
+                        // déborder la carte sur un écran étroit.
+                        Flexible(
+                          child: Text(
+                            '${position.quantity} x ${_formatPriceWithConversion(price)}',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                              fontWeight: FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
                           ),
                         ),
 
@@ -209,7 +216,10 @@ class PositionCard extends StatelessWidget {
   }
 
   String _formatPriceWithConversion(double price) {
-    return Formatters.formatCurrencyWithConversion(
+    // Sans perte : la valeur totale à droite est calculée sur le prix réel,
+    // le prix unitaire affiché doit donc l'être aussi pour rester
+    // recalculable de tête (quantité × prix affiché = valeur affichée).
+    return Formatters.formatPriceWithConversionLossless(
       price,
       position.asset.currency,
       usdToEurRate,
