@@ -4,9 +4,18 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+// [isHeldPosition] vit désormais dans `logic/position_projection.dart`
+// (réutilisée par [HistoryAggregator.computeRealTotalGain], doc 19) —
+// importée ci-dessous pour l'usage local de ce fichier, RÉ-EXPORTÉE pour ne
+// rien casser côté appelants existants
+// (`import '.../account_view.dart' show isHeldPosition`, cf.
+// test/corporate_actions_import_test.dart).
+import 'package:portfolio_tracker/logic/position_projection.dart'
+    show isHeldPosition;
+export 'package:portfolio_tracker/logic/position_projection.dart'
+    show isHeldPosition;
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
-import 'package:portfolio_tracker/theme/app_colors.dart';
 import 'package:portfolio_tracker/utils/logger.dart';
 import 'package:portfolio_tracker/utils/app_snackbar.dart';
 import 'package:portfolio_tracker/widgets/allocation_pie_chart.dart';
@@ -18,6 +27,7 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 import 'package:portfolio_tracker/widgets/position_detail_page.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
+import 'package:portfolio_tracker/widgets/charts/chart_notes.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/account_journal_page.dart';
@@ -27,32 +37,6 @@ import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
 import 'package:portfolio_tracker/widgets/import/statement_import_page.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/utils/error_text.dart';
-
-/// Vrai si une position doit figurer dans la liste des AVOIRS DÉTENUS (et non
-/// être masquée). Prédicat pur, extrait pour être testable sans harnais widget.
-///
-/// Masquées :
-///   - position SOLDÉE (quantité nette ~0, issue p. ex. d'un import
-///     d'historique complet ou d'un transfert intégral) — elle reste en base
-///     (plus-value réalisée / export fiscal) mais n'est plus un avoir ;
-///   - RÉSIDU NON COTÉ SANS VALEUR : `quotable == false` (titre délisté / purgé
-///     de la source) dont la valeur de marché est nulle (aucun dernier cours).
-///
-/// TOUJOURS affichée : une position COTÉE de faible valeur (un titre à 25 €),
-/// ou une position non cotée valorisée par un dernier cours connu (> 0).
-bool isHeldPosition({
-  required String quantity,
-  required bool quotable,
-  required double? currentPrice,
-}) {
-  final qty = double.tryParse(quantity) ?? 0;
-  if (qty.abs() <= 1e-6) return false;
-  if (!quotable) {
-    final marketValue = (currentPrice ?? 0) * qty;
-    if (marketValue.abs() <= 1e-6) return false;
-  }
-  return true;
-}
 
 /// Projette [values] (mode 2 « apports nets », B7 Lot 3b) sur l'axe X du
 /// graphique, EXACTEMENT comme [ValuationLineChart] indexe sa série
@@ -104,7 +88,12 @@ class _AccountViewState extends State<AccountView> {
   /// réelle B7, design doc 18, MÊME motif que wallet_view Lot 3a). Combiné à
   /// [AccountController.hasRealCurve] via [_useRealCurve] : robustesse si la
   /// courbe réelle s'avère indisponible malgré la bascule utilisateur.
-  bool _showRealCurve = false;
+  // Défaut à true (retour manuel du 29/07) : l'évolution réelle reflète ce
+  // qui s'est VRAIMENT passé, contrairement au mode « Vos positions »
+  // (rétroprojection théorique) — sans effet tant que hasRealCurve est faux
+  // (le sélecteur est alors masqué et _useRealCurve retombe à false via le
+  // && ci-dessous).
+  bool _showRealCurve = true;
 
   /// Mode réel EFFECTIVEMENT actif (garde de robustesse — cf. wallet_view) :
   /// si l'utilisateur a basculé sur « évolution réelle » mais que la série
@@ -198,16 +187,43 @@ class _AccountViewState extends State<AccountView> {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
     final charges = _ctrl.realTotalGainCharges;
-    // Ligne « dont frais » ajoutée SEULEMENT si le sous-total est non-nul
-    // (négatif = frais, positif = rebate) — sinon rien à isoler.
-    final body = charges != null && charges != 0
-        ? '${l10n.chartRealTotalGainHelpBody}\n\n'
-            '${l10n.chartRealTotalGainFeesLine(Formatters.formatMoney(charges, 'EUR'))}'
-        : l10n.chartRealTotalGainHelpBody;
+    final noBasisSymbols = _ctrl.realNoBasisSymbols;
+    // Lignes optionnelles, ajoutées SEULEMENT si elles ont quelque chose à
+    // isoler — même motif pour les deux : « dont frais » si le sous-total
+    // est non-nul (négatif = frais, positif = rebate), « titres exclus » si
+    // le calcul a dû en écarter (base de coût inconnue, cf. puce « partiel »
+    // de TotalValueCard qui pointe vers cette popup pour le détail).
+    final extraLines = <String>[
+      if (charges != null && charges != 0)
+        l10n.chartRealTotalGainFeesLine(Formatters.formatMoney(charges, 'EUR')),
+      if (noBasisSymbols.isNotEmpty)
+        l10n.chartRealTotalGainNoBasisLine(
+          noBasisSymbols.length,
+          (noBasisSymbols.toList()..sort()).join(', '),
+        ),
+    ];
+    final body = extraLines.isEmpty
+        ? l10n.chartRealTotalGainHelpBody
+        : '${l10n.chartRealTotalGainHelpBody}\n\n${extraLines.join('\n\n')}';
     showHelpDialog(
       context,
       title: l10n.chartRealTotalGainHelpTitle,
       body: body,
+    );
+  }
+
+  /// Popup d'aide « modes d'affichage » — déclenchée par l'icône ⓘ accolée au
+  /// sélecteur de mode (SegmentedButton). Explique les DEUX modes d'un coup
+  /// (épuration UI du 29/07) : reprend l'exposé de méthode retiré des
+  /// captions permanentes sous le graphe (chartModePerformanceCaption ne
+  /// garde que sa clause discriminante, chartModeRealCaption a disparu).
+  void _showChartModeHelp() {
+    if (!mounted) return;
+    final l10n = AppLocalizations.of(context)!;
+    showHelpDialog(
+      context,
+      title: l10n.chartModeHelpTitle,
+      body: l10n.chartModeHelpBody,
     );
   }
 
@@ -1057,6 +1073,11 @@ class _AccountViewState extends State<AccountView> {
                 case 'import':
                   _openStatementImport();
                   break;
+                case 'cash':
+                  _ctrl.hasCashAnchor
+                      ? _openAdjustCashBalance()
+                      : _openSetInitialCashBalance();
+                  break;
                 case 'delete':
                   _confirmAndDeleteAccount();
                   break;
@@ -1069,10 +1090,52 @@ class _AccountViewState extends State<AccountView> {
                   children: [
                     const Icon(Icons.upload_file),
                     const SizedBox(width: 12),
-                    Text(l10n.importStatementAction),
+                    // Flexible (bug latent révélé par les tests de ce lot,
+                    // le premier à réellement ouvrir ce menu) : la largeur du
+                    // menu ⋮, ancré près du bord droit de l'AppBar, est
+                    // bornée par le positionnement Material et ne wrappait
+                    // jamais le texte, débordant silencieusement.
+                    Flexible(
+                      child: Text(
+                        l10n.importStatementAction,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
                   ],
                 ),
               ),
+              // Action sur le solde espèces (épuration UI, lot 3) : rare, donc
+              // reléguée ici plutôt qu'en ligne dans le contenu (convention
+              // V2.3). Réservée au compte-titres — sur un compte cash, elle
+              // reste en avant dans le contenu ([_buildCashAccountRow]) : le
+              // solde y EST toute la valeur du compte, ce n'est pas une action
+              // rare. Les deux libellés sont mutuellement exclusifs selon
+              // [AccountController.hasCashAnchor] (même règle que
+              // [_buildCashAccountRow]).
+              if (!_isCashAccount)
+                PopupMenuItem<String>(
+                  value: 'cash',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _ctrl.hasCashAnchor
+                            ? Icons.tune
+                            : Icons.add_circle_outline,
+                      ),
+                      const SizedBox(width: 12),
+                      // Flexible : cf. commentaire de l'entrée « import »
+                      // ci-dessus.
+                      Flexible(
+                        child: Text(
+                          _ctrl.hasCashAnchor
+                              ? l10n.adjustCashBalanceAction
+                              : l10n.setInitialCashBalanceAction,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               PopupMenuItem<String>(
                 value: 'delete',
                 child: Row(
@@ -1082,10 +1145,13 @@ class _AccountViewState extends State<AccountView> {
                       color: Theme.of(context).colorScheme.error,
                     ),
                     const SizedBox(width: 12),
-                    Text(
-                      l10n.deleteAccountTitle,
-                      style: TextStyle(
-                        color: Theme.of(context).colorScheme.error,
+                    Flexible(
+                      child: Text(
+                        l10n.deleteAccountTitle,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.error,
+                        ),
                       ),
                     ),
                   ],
@@ -1245,6 +1311,7 @@ class _AccountViewState extends State<AccountView> {
 
   Widget _buildAccountHeader() {
     final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
     if (_ctrl.activeAccount == null) return const SizedBox.shrink();
 
     final account = _ctrl.activeAccount!;
@@ -1271,7 +1338,46 @@ class _AccountViewState extends State<AccountView> {
         }
         totalValueEur += value;
       }
+      // Cash dérivé du journal (achats/ventes/frais) : fait partie de la
+      // valeur détenue du compte, même règle que le capital du gain total
+      // mode 2 — l'omettre désynchronisait « Valeur totale » du solde
+      // « Espèces » affiché en dessous et de la courbe « Évolution réelle ».
+      //
+      // GARDE D'ANCRAGE, non négociable (invariant « faux négatif interdit »,
+      // design cash-ledger §6.7 / partition doc 19 §6.5) : sur un compte
+      // titres SANS mouvement d'espèces au journal, [AccountController.
+      // derivedCash] vaut « ce que les achats ont coûté », soit un solde
+      // NÉGATIF FICTIF (cache `accounts.derived_cash`, écrit
+      // inconditionnellement — sa non-nullité ne protège de rien, seul
+      // [hasCashAnchor] protège). L'ajouter retranchait silencieusement ce
+      // montant du total, sans RIEN à l'écran pour l'expliquer : la ligne
+      // « dont espèces » est elle-même gatée sur l'ancrage et reste muette.
+      // Même garde que la branche [_isCashAccount] ci-dessus, que
+      // [WalletController._cashBalances] et que [reconstructRealNetWorth].
+      if (_ctrl.hasCashAnchor) {
+        totalValueEur += (double.tryParse(_ctrl.derivedCash ?? '0') ?? 0.0) *
+            (account.currency.toUpperCase() == 'USD' ? _ctrl.usdToEurRate : 1.0);
+      }
     }
+
+    // Ligne « dont espèces » (épuration UI, lot 3) : sur un compte-titres
+    // ANCRÉ uniquement — elle explicite une composante de [totalValueEur]
+    // (déjà inclus, cf. calcul ci-dessus), pas un montant qui s'ajoute. Sans
+    // ancrage, rien à décomposer (cas normal et majoritaire, cf. doc de
+    // [_buildCashAccountRow] — la ligne grise permanente qu'affichait l'ancien
+    // régime a été supprimée du contenu, l'entrée ⋮ « Définir le solde
+    // initial… » suffit à rendre la fonction découvrable). Absente sur un
+    // compte cash : le solde y EST toute la valeur ([_buildCashAccountRow]
+    // s'en charge en premier plan, pas une décomposition du total).
+    final foreignCount = _ctrl.foreignCashMovementCount;
+    final cashLine = (!_isCashAccount && _ctrl.hasCashAnchor)
+        ? l10n.accountCashLine(
+            Formatters.formatMoney(
+              double.tryParse(_ctrl.derivedCash ?? '0') ?? 0,
+              account.currency,
+            ),
+          )
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1279,24 +1385,40 @@ class _AccountViewState extends State<AccountView> {
         TotalValueCard(
           title: l10n.totalValueAccount,
           totalValue: totalValueEur,
-          // En mode réel, la variation naïve (% mode 1) mélange apports et
-          // performance — trompeuse (masquée). On lui substitue le « gain sur
-          // la période » honnête (B7 Lot 4, HistoryAggregator.computeRealGains),
-          // la performance de marché isolée des apports/retraits de la fenêtre.
-          periodChange: _useRealCurve ? _ctrl.realPeriodGain : _ctrl.periodChange,
-          periodChangePercent: _useRealCurve
-              ? _ctrl.realPeriodGainPercent
-              : _ctrl.periodChangePercent,
-          selectedPeriodLabel: _ctrl.selectedPeriod.localizedLabel(l10n),
-          // Mode réel seulement (B7 annualisation) : second pourcentage
-          // annualisé entre parenthèses si Modified Dietz l'a calculé
-          // (fenêtre ≥ 1 an) + icône d'aide ouvrant une popup pédagogique.
-          // Mode performance : inchangé (percentAnnualized reste null).
-          percentAnnualized: _useRealCurve
-              ? _ctrl.realPeriodGainPercentAnnualized
-              : null,
-          onInfoPressed: _useRealCurve ? _showRealPeriodGainHelp : null,
+          // Gain total absolu (base coût, frais inclus), INDÉPENDANT du mode
+          // de courbe ET de la période affichée — question prioritaire de
+          // l'utilisateur, mise en premier plan (retour manuel du 29/07 : le
+          // Modified Dietz seul en avant perturbait plus qu'il n'éclairait).
+          // La perf de PÉRIODE, elle, a rejoint le graphe (PeriodGainLine).
+          gainAmount: _ctrl.realTotalGain,
+          gainPercent: _ctrl.realTotalGainPercent,
+          onGainInfoPressed:
+              _ctrl.realTotalGain != null ? _showRealTotalGainHelp : null,
+          // Puce « partiel » TOUJOURS visible dès que des titres sont exclus
+          // du gain total (base de coût inconnue), quel que soit le mode de
+          // courbe — correctif d'honnêteté : l'ancien avertissement vivait
+          // sous le graphe, gaté par `useRealCurve`, alors qu'il qualifie ce
+          // gain-ci, affiché en permanence (cf. commit de ce lot).
+          gainExcludedCount: _ctrl.realNoBasisSymbols.length,
+          cashLine: cashLine,
         ),
+        // Garde-fou anti-solde-trompeur (design §8.5) : reste dans le CONTENU
+        // (jamais en popup/tooltip) — une réserve qui signale un solde
+        // partiel ne se cache pas derrière une interaction. Placé juste sous
+        // la carte de valeur (qui porte la ligne « dont espèces » quand elle
+        // existe), INDÉPENDAMMENT de [cashLine] : un compte-titres peut avoir
+        // des mouvements en devise étrangère avant même tout ancrage cash.
+        // Régime compte cash exclu : la note y vit dans
+        // [_buildCashAccountRow], au contact direct du solde qu'elle qualifie.
+        if (!_isCashAccount && foreignCount > 0) ...[
+          const SizedBox(height: 2),
+          Text(
+            l10n.cashForeignExcludedNote(foreignCount),
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.error,
+            ),
+          ),
+        ],
         // Nature du compte (comptes titres) — puce cliquable pour affiner
         // l'enveloppe fiscale. Discrète : masquée pour cash/métaux.
         if (account.kind.isSecurities) ...[
@@ -1313,28 +1435,36 @@ class _AccountViewState extends State<AccountView> {
             ),
           ),
         ],
-        const SizedBox(height: 8),
-        _buildCashRow(account),
+        // Ligne « Espèces » mise en avant : réservée au régime compte cash
+        // (émphase = toute la valeur du compte). Sur un compte-titres, le
+        // cash n'est plus qu'une donnée accessoire déjà résumée ci-dessus
+        // (ligne « dont espèces » + garde-fou devises) ; son action a rejoint
+        // le menu ⋮ de l'AppBar (cf. [build], PopupMenuButton).
+        if (_isCashAccount) ...[
+          const SizedBox(height: 8),
+          _buildCashAccountRow(account),
+        ],
       ],
     );
   }
 
-  /// Ligne « Espèces » opt-in (design §3/§4) : n'affiche un solde dérivé que
-  /// si le journal contient un ancrage cash explicite ([AccountController.
-  /// hasCashAnchor]) — un compte-titres avec uniquement des achats ne doit
-  /// JAMAIS montrer un solde espèces (faux négatif interdit, cf. risque
-  /// §6.7 de la spec). Sinon, wording discret « Espèces non suivies ».
+  /// Ligne « Espèces » d'un COMPTE CASH (livret, compte courant) — B8, doc 19
+  /// §4.5 : le solde espèces y EST toute la valeur du compte (pas une donnée
+  /// accessoire sous des positions), donc traitée en premier plan — icône
+  /// 24, texte `titleMedium`, bouton d'action plein (`FilledButton.
+  /// tonalIcon`). N'affiche un solde dérivé que si le journal contient un
+  /// ancrage cash explicite ([AccountController.hasCashAnchor]) ; sinon,
+  /// wording discret « Espèces non suivies ».
   ///
-  /// PROMUE (B8, doc 19 §4.5) sur un compte cash : c'est alors TOUTE la
-  /// valeur du compte (pas une ligne accessoire sous des positions), donc
-  /// affichée en plus grand — icône, texte et bouton d'action mis en avant —
-  /// plutôt qu'en simple ligne grise secondaire (traitement conservé pour un
-  /// compte titres avec du cash accessoire).
-  Widget _buildCashRow(Account account) {
+  /// RESTREINTE à ce régime depuis l'épuration UI (lot 3) : sur un
+  /// compte-titres, le cash n'est plus qu'une donnée accessoire — sa valeur a
+  /// rejoint la ligne « dont espèces » de [TotalValueCard] (avec ancrage
+  /// seulement, cf. [_buildAccountHeader]) et son action a rejoint le menu ⋮
+  /// de l'AppBar (cf. [build]).
+  Widget _buildCashAccountRow(Account account) {
     final l10n = AppLocalizations.of(context)!;
     final theme = Theme.of(context);
     final hasAnchor = _ctrl.hasCashAnchor;
-    final emphasized = account.type == AccountType.cash;
 
     final label = hasAnchor
         ? l10n.cashDerivedLabel(
@@ -1351,27 +1481,24 @@ class _AccountViewState extends State<AccountView> {
     // la ligne plutôt que d'afficher un solde partiel silencieux.
     final foreignCount = _ctrl.foreignCashMovementCount;
 
-    final labelStyle = emphasized
-        ? theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600)
-        : theme.textTheme.bodyMedium?.copyWith(
-            color: theme.colorScheme.onSurfaceVariant,
-          );
-
     return Row(
       children: [
         Icon(
           Icons.payments_outlined,
-          size: emphasized ? 24 : 16,
-          color: emphasized
-              ? theme.colorScheme.primary
-              : theme.colorScheme.onSurfaceVariant,
+          size: 24,
+          color: theme.colorScheme.primary,
         ),
-        SizedBox(width: emphasized ? 10 : 6),
+        const SizedBox(width: 10),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(label, style: labelStyle),
+              Text(
+                label,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
               if (foreignCount > 0)
                 Text(
                   l10n.cashForeignExcludedNote(foreignCount),
@@ -1382,36 +1509,20 @@ class _AccountViewState extends State<AccountView> {
             ],
           ),
         ),
-        if (emphasized)
-          FilledButton.tonalIcon(
-            onPressed: hasAnchor
-                ? _openAdjustCashBalance
-                : _openSetInitialCashBalance,
-            icon: Icon(
-              hasAnchor ? Icons.tune : Icons.add_circle_outline,
-              size: 16,
-            ),
-            label: Text(
-              hasAnchor
-                  ? l10n.adjustCashBalanceAction
-                  : l10n.setInitialCashBalanceAction,
-            ),
-          )
-        else
-          TextButton.icon(
-            onPressed: hasAnchor
-                ? _openAdjustCashBalance
-                : _openSetInitialCashBalance,
-            icon: Icon(
-              hasAnchor ? Icons.tune : Icons.add_circle_outline,
-              size: 16,
-            ),
-            label: Text(
-              hasAnchor
-                  ? l10n.adjustCashBalanceAction
-                  : l10n.setInitialCashBalanceAction,
-            ),
+        FilledButton.tonalIcon(
+          onPressed: hasAnchor
+              ? _openAdjustCashBalance
+              : _openSetInitialCashBalance,
+          icon: Icon(
+            hasAnchor ? Icons.tune : Icons.add_circle_outline,
+            size: 16,
           ),
+          label: Text(
+            hasAnchor
+                ? l10n.adjustCashBalanceAction
+                : l10n.setInitialCashBalanceAction,
+          ),
+        ),
       ],
     );
   }
@@ -1442,25 +1553,52 @@ class _AccountViewState extends State<AccountView> {
               const SizedBox(height: 8),
               Align(
                 alignment: Alignment.centerLeft,
-                child: SegmentedButton<bool>(
-                  segments: [
-                    ButtonSegment(
-                      value: false,
-                      label: Text(l10n.chartModePerformance),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    SegmentedButton<bool>(
+                      // « Évolution réelle » EN PREMIER : c'est le mode par
+                      // défaut et celui qui dit ce qui s'est vraiment passé ;
+                      // « Vos positions » est la vue théorique, secondaire.
+                      segments: [
+                        ButtonSegment(
+                          value: true,
+                          label: Text(l10n.chartModeRealEvolution),
+                        ),
+                        ButtonSegment(
+                          value: false,
+                          label: Text(l10n.chartModePerformance),
+                        ),
+                      ],
+                      selected: {_showRealCurve},
+                      showSelectedIcon: false,
+                      style: const ButtonStyle(
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      onSelectionChanged: (selection) {
+                        setState(() => _showRealCurve = selection.first);
+                      },
                     ),
-                    ButtonSegment(
-                      value: true,
-                      label: Text(l10n.chartModeRealEvolution),
+                    // Épuration UI (29/07) : explique les DEUX modes d'un
+                    // coup (méthode de calcul complète) — l'exposé détaillé a
+                    // quitté les captions permanentes sous le graphe pour
+                    // cette popup, ouverte à la demande.
+                    Tooltip(
+                      message: l10n.chartHelpTooltip,
+                      child: InkWell(
+                        onTap: _showChartModeHelp,
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8),
+                          child: Icon(
+                            Icons.info_outline,
+                            size: 16,
+                            color: Theme.of(context).colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ),
                     ),
                   ],
-                  selected: {_showRealCurve},
-                  showSelectedIcon: false,
-                  style: const ButtonStyle(
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  onSelectionChanged: (selection) {
-                    setState(() => _showRealCurve = selection.first);
-                  },
                 ),
               ),
             ],
@@ -1489,7 +1627,22 @@ class _AccountViewState extends State<AccountView> {
             else if (_ctrl.chartValues.isEmpty)
               Center(
                 child: Text(
-                  l10n.noHistoricalDataForPositions(_ctrl.positionsData.length),
+                  // Compte ce que l'utilisateur VOIT : mêmes positions
+                  // « détenues » que la liste ci-dessous (isHeldPosition),
+                  // pas la totalité de positionsData — celle-ci inclut les
+                  // positions soldées / résidus non cotés sans valeur, que
+                  // l'écran masque déjà (correctif d'honnêteté du compteur).
+                  l10n.noHistoricalDataForPositions(
+                    _ctrl.positionsData
+                        .where(
+                          (p) => isHeldPosition(
+                            quantity: p.quantity,
+                            quotable: p.asset.quotable,
+                            currentPrice: p.currentPrice,
+                          ),
+                        )
+                        .length,
+                  ),
                 ),
               )
             else
@@ -1497,115 +1650,33 @@ class _AccountViewState extends State<AccountView> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   _buildAccountChart(useRealCurve),
-                  if (useRealCurve) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      l10n.chartModeRealCaption,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                    // Gains TOTAUX en état courant (base coût, voie b — B7
-                    // correction financière), INDÉPENDANT de la période affichée
-                    // (plus de gating). Distinct du « gain sur la période »
-                    // porté par la carte de valeur : ici le cumul, coloré
-                    // gain/perte. `%` omis si dénominateur (capital) non
-                    // significatif (cf. computeRealTotalGain). ⚠️ Divergence
-                    // assumée : peut différer du gap visuel valeur−capital
-                    // investi de la courbe (méthodes différentes).
-                    if (_ctrl.realTotalGain != null) ...[
-                      const SizedBox(height: 4),
-                      // Icône d'aide ⓘ à côté du texte (remplace un ancien
-                      // Tooltip, cf. _showRealTotalGainHelp) : le texte reste
-                      // coloré gain/perte, l'icône reste neutre (affordance
-                      // d'aide, pas une donnée).
-                      Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              _ctrl.realTotalGainPercent != null
-                                  ? l10n.chartRealTotalGain(
-                                      Formatters.formatEurSigned(
-                                          _ctrl.realTotalGain!),
-                                      Formatters.formatPercentFr(
-                                          _ctrl.realTotalGainPercent!),
-                                    )
-                                  : l10n.chartRealTotalGainAmountOnly(
-                                      Formatters.formatEurSigned(
-                                          _ctrl.realTotalGain!),
-                                    ),
-                              style: Theme.of(context).textTheme.bodySmall
-                                  ?.copyWith(
-                                    color: AppColors.gainLoss(
-                                      context,
-                                      _ctrl.realTotalGain! >= 0,
-                                    ),
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                            ),
-                          ),
-                          const SizedBox(width: 2),
-                          Tooltip(
-                            message: l10n.chartHelpTooltip,
-                            child: InkWell(
-                              onTap: _showRealTotalGainHelp,
-                              borderRadius: BorderRadius.circular(12),
-                              child: Padding(
-                                padding: const EdgeInsets.all(4),
-                                child: Icon(
-                                  Icons.info_outline,
-                                  size: 15,
-                                  color: Theme.of(
-                                    context,
-                                  ).colorScheme.onSurfaceVariant,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                    if (_ctrl.realCurveApproxSymbols.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        l10n.chartApproxValuesWarning(
-                          _ctrl.realCurveApproxSymbols.length,
-                        ),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.error,
-                        ),
-                      ),
-                    ],
-                    // Positions sans PRU connu, EXCLUES du calcul des gains
-                    // totaux (computeRealTotalGain) — discret (couleur
-                    // atténuée, PAS la couleur d'erreur ci-dessus) : ce n'est
-                    // pas une anomalie de données de marché, juste une
-                    // performance partielle assumée.
-                    if (_ctrl.realNoBasisSymbols.isNotEmpty) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        l10n.chartNoBasisWarning(
-                          _ctrl.realNoBasisSymbols.length,
-                        ),
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ] else ...[
-                    // Mode 1 « Performance de vos positions » : rétroprojection
-                    // des quantités ACTUELLES sur les cours passés (à quantités
-                    // constantes). Caption indispensable : ne pas laisser croire
-                    // à la performance du patrimoine réel dans le temps (mode 2).
-                    const SizedBox(height: 8),
-                    Text(
-                      l10n.chartModePerformanceCaption,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+                  // Performance sur la PÉRIODE affichée + notes conditionnelles
+                  // — placées ici (et non dans TotalValueCard, déplacement du
+                  // 29/07) car elles dépendent des deux sélecteurs qui les
+                  // surplombent : période ET mode. Bloc partagé avec
+                  // wallet_view (épuration UI du 29/07, évite la divergence
+                  // lente entre les deux vues — cf. doc en tête de ChartNotes).
+                  const SizedBox(height: 8),
+                  ChartNotes(
+                    // En mode réel, la variation naïve (% mode 1) mélange
+                    // apports et performance — trompeuse, donc remplacée par le
+                    // « gain sur la période » honnête (B7 Lot 4,
+                    // HistoryAggregator.computeRealGains) : la performance de
+                    // marché isolée des apports/retraits de la fenêtre.
+                    periodGainAmount:
+                        useRealCurve ? _ctrl.realPeriodGain : _ctrl.periodChange,
+                    periodGainPercent: useRealCurve
+                        ? _ctrl.realPeriodGainPercent
+                        : _ctrl.periodChangePercent,
+                    selectedPeriod: _ctrl.selectedPeriod,
+                    useRealCurve: useRealCurve,
+                    periodGainPercentAnnualized:
+                        _ctrl.realPeriodGainPercentAnnualized,
+                    onPeriodGainInfoPressed: _showRealPeriodGainHelp,
+                    realExcludedLegacyCount: _ctrl.realExcludedLegacyCount,
+                    realCurveApproxSymbolsCount:
+                        _ctrl.realCurveApproxSymbols.length,
+                  ),
                 ],
               ),
           ],
@@ -1637,7 +1708,12 @@ class _AccountViewState extends State<AccountView> {
       dates: _ctrl.chartDates,
       values: useRealCurve ? _ctrl.realChartValues : _ctrl.chartValues,
       selectedPeriod: _ctrl.selectedPeriod,
-      periodChange: useRealCurve ? null : _ctrl.periodChange,
+      // Colore la courbe selon la performance de la période AFFICHÉE — en
+      // mode réel c'est le gain Modified Dietz, pas la variation naïve du
+      // mode 1. Passer `null` ici (ancien comportement) figeait la courbe en
+      // ROUGE sur tout compte en mode réel, quelle que soit la période et même
+      // très largement en gain (correctif du 29/07).
+      periodChange: useRealCurve ? _ctrl.realPeriodGain : _ctrl.periodChange,
       height: chartHeight,
       leftTitlesReservedSize: 50,
       barWidth: 2,

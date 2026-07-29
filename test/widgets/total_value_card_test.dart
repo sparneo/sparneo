@@ -1,11 +1,17 @@
 // test/widgets/total_value_card_test.dart
+//
+// Depuis le 29/07, TotalValueCard ne porte plus QUE les chiffres indépendants
+// de tout réglage d'écran : la valeur totale et le GAIN TOTAL depuis l'origine.
+// La performance sur la période affichée (Modified Dietz en mode réel), qui
+// dépend du sélecteur de période ET du sélecteur de mode, a migré au contact
+// du graphique — ses tests vivent désormais dans period_gain_line_test.dart.
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 
-// TotalValueCard utilise AppLocalizations (variationOverPeriod, notAvailable) :
-// on configure les delegates pour éviter le null-check en test.
+// TotalValueCard utilise AppLocalizations : on configure les delegates pour
+// éviter le null-check en test.
 Widget _host(Widget child) => MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
@@ -19,7 +25,6 @@ void main() {
   testWidgets('affiche la valeur totale formatée', (tester) async {
     await tester.pumpWidget(_host(const TotalValueCard(
       totalValue: 12345.67,
-      selectedPeriodLabel: '1M',
       title: 'Valeur totale',
     )));
     await tester.pumpAndSettle();
@@ -29,165 +34,87 @@ void main() {
     expect(find.text('Valeur totale'), findsOneWidget);
   });
 
-  testWidgets('sans periodChange, pas d\'encadré variation', (tester) async {
+  testWidgets('sans gainAmount : aucune ligne de gain', (tester) async {
     await tester.pumpWidget(_host(const TotalValueCard(
       totalValue: 1000.00,
-      selectedPeriodLabel: '1M',
       title: 'Total',
     )));
     await tester.pumpAndSettle();
 
-    // Aucun icône trending_up ni trending_down
-    expect(find.byIcon(Icons.trending_up), findsNothing);
-    expect(find.byIcon(Icons.trending_down), findsNothing);
+    expect(find.textContaining('Gains totaux'), findsNothing);
+    expect(find.byIcon(Icons.info_outline), findsNothing);
   });
 
-  testWidgets('variation positive → icône trending_up', (tester) async {
+  testWidgets('gain positif : montant signé et pourcentage affichés', (
+    tester,
+  ) async {
     await tester.pumpWidget(_host(const TotalValueCard(
       totalValue: 5000.00,
-      periodChange: 150.50,
-      periodChangePercent: 3.1,
-      selectedPeriodLabel: '1M',
       title: 'Total',
+      gainAmount: 618.37,
+      gainPercent: 19.8,
     )));
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.trending_up), findsOneWidget);
-    expect(find.byIcon(Icons.trending_down), findsNothing);
-    expect(find.textContaining(RegExp(r'\+150,50\s€')), findsOneWidget);
-    expect(find.textContaining(RegExp(r'\+3,1\s%')), findsOneWidget);
+    expect(find.textContaining(RegExp(r'\+618,37\s€')), findsOneWidget);
+    expect(find.textContaining(RegExp(r'\+19,8\s%')), findsOneWidget);
   });
 
-  testWidgets('variation négative → icône trending_down', (tester) async {
+  testWidgets('gain négatif : montant signé négatif', (tester) async {
     await tester.pumpWidget(_host(const TotalValueCard(
       totalValue: 4000.00,
-      periodChange: -200.0,
-      periodChangePercent: -4.8,
-      selectedPeriodLabel: '3M',
       title: 'Total',
+      gainAmount: -250.10,
+      gainPercent: -5.9,
     )));
     await tester.pumpAndSettle();
 
-    expect(find.byIcon(Icons.trending_down), findsOneWidget);
-    expect(find.byIcon(Icons.trending_up), findsNothing);
-    expect(find.textContaining(RegExp(r'-200,00\s€')), findsOneWidget);
-    expect(find.textContaining(RegExp(r'-4,8\s%')), findsOneWidget);
+    expect(find.textContaining(RegExp(r'-250,10\s€')), findsOneWidget);
+    expect(find.textContaining(RegExp(r'-5,9\s%')), findsOneWidget);
   });
 
-  testWidgets('periodChangePercent null → "N/D" affiché', (tester) async {
+  testWidgets(
+    'gainPercent null : le montant seul est affiché, sans « — » parasite',
+    (tester) async {
+      await tester.pumpWidget(_host(const TotalValueCard(
+        totalValue: 1000.00,
+        title: 'Total',
+        gainAmount: 50.0,
+      )));
+      await tester.pumpAndSettle();
+
+      // l10n.chartRealTotalGainAmountOnly : pas de placeholder de pourcentage
+      // (capital non significatif ⇒ on n'invente pas de %).
+      expect(find.textContaining(RegExp(r'\+50,00\s€')), findsOneWidget);
+      expect(find.textContaining('%'), findsNothing);
+    },
+  );
+
+  testWidgets('onGainInfoPressed null (défaut) : aucune icône d\'aide', (
+    tester,
+  ) async {
     await tester.pumpWidget(_host(const TotalValueCard(
-      totalValue: 1000.00,
-      periodChange: 50.0,
-      selectedPeriodLabel: '1M',
+      totalValue: 5000.00,
       title: 'Total',
+      gainAmount: 150.50,
+      gainPercent: 9.07,
     )));
     await tester.pumpAndSettle();
 
-    // Selon l10n.notAvailable — le widget affiche « — » quand percent est null
-    // (microcopie FR : « N/A » → tiret cadratin).
-    expect(find.textContaining('—'), findsOneWidget);
-  });
-
-  testWidgets('aucun overflow sur largeur réduite', (tester) async {
-    await tester.pumpWidget(_host(TotalValueCard(
-      totalValue: 999999.99,
-      periodChange: -123456.78,
-      periodChangePercent: -55.5,
-      selectedPeriodLabel: '10A',
-      title: 'Valeur totale du portefeuille',
-    )));
-    await tester.pumpAndSettle();
-    expect(tester.takeException(), isNull);
+    expect(find.byIcon(Icons.info_outline), findsNothing);
   });
 
   testWidgets(
-    'aucun overflow sur largeur réduite avec percentAnnualized (ligne plus '
-    'longue, mitigation maxLines: 2)',
-    (tester) async {
-      await tester.pumpWidget(_host(const TotalValueCard(
-        totalValue: 999999.99,
-        periodChange: -123456.78,
-        periodChangePercent: -1234567.89,
-        selectedPeriodLabel: 'Max',
-        title: 'Valeur totale du portefeuille',
-        percentAnnualized: -55.55,
-      )));
-      await tester.pumpAndSettle();
-      // Aucune exception FlutterError (dont RenderFlex overflowed) levée
-      // pendant le pump — vérifie que le passage à maxLines: 2 absorbe la
-      // ligne combinée cumulé+annualisé sans overflow VERTICAL ni HORIZONTAL.
-      expect(tester.takeException(), isNull);
-    },
-  );
-
-  testWidgets(
-    'percentAnnualized == null (défaut) : un seul pourcentage, sans '
-    'parenthèses',
-    (tester) async {
-      await tester.pumpWidget(_host(const TotalValueCard(
-        totalValue: 5000.00,
-        periodChange: 150.50,
-        periodChangePercent: 9.07,
-        selectedPeriodLabel: 'Max',
-        title: 'Total',
-      )));
-      await tester.pumpAndSettle();
-
-      // Formatters.formatPercentFr arrondit à 1 décimale par défaut.
-      expect(find.textContaining(RegExp(r'\+9,1\s%')), findsOneWidget);
-      expect(find.textContaining('/an'), findsNothing);
-    },
-  );
-
-  testWidgets(
-    'percentAnnualized non-null : les deux pourcentages (cumulé + annualisé '
-    'entre parenthèses) sont affichés',
-    (tester) async {
-      await tester.pumpWidget(_host(const TotalValueCard(
-        totalValue: 5000.00,
-        periodChange: 150.50,
-        periodChangePercent: 183.4,
-        selectedPeriodLabel: 'Max',
-        title: 'Total',
-        percentAnnualized: 9.07,
-      )));
-      await tester.pumpAndSettle();
-
-      // Le texte combiné contient le cumulé ET l'annualisé entre parenthèses
-      // (cf. l10n.chartPercentWithAnnualized : "{percent} ({annualized}/an)").
-      expect(find.textContaining(RegExp(r'\+183,4\s%')), findsOneWidget);
-      expect(find.textContaining('/an'), findsOneWidget);
-      expect(find.textContaining(RegExp(r'\(\+9,1\s%/an\)')), findsOneWidget);
-    },
-  );
-
-  testWidgets(
-    'onInfoPressed null (défaut) : aucune icône d\'aide affichée',
-    (tester) async {
-      await tester.pumpWidget(_host(const TotalValueCard(
-        totalValue: 5000.00,
-        periodChange: 150.50,
-        periodChangePercent: 9.07,
-        selectedPeriodLabel: 'Max',
-        title: 'Total',
-      )));
-      await tester.pumpAndSettle();
-
-      expect(find.byIcon(Icons.info_outline), findsNothing);
-    },
-  );
-
-  testWidgets(
-    'onInfoPressed fourni : icône d\'aide affichée et tap déclenche le callback',
+    'onGainInfoPressed fourni : icône d\'aide affichée et tap déclenche le '
+    'callback',
     (tester) async {
       var pressed = false;
       await tester.pumpWidget(_host(TotalValueCard(
         totalValue: 5000.00,
-        periodChange: 150.50,
-        periodChangePercent: 9.07,
-        selectedPeriodLabel: 'Max',
         title: 'Total',
-        onInfoPressed: () => pressed = true,
+        gainAmount: 150.50,
+        gainPercent: 9.07,
+        onGainInfoPressed: () => pressed = true,
       )));
       await tester.pumpAndSettle();
 
@@ -199,4 +126,74 @@ void main() {
       expect(pressed, isTrue);
     },
   );
+
+  group('puce « partiel » (gainExcludedCount)', () {
+    testWidgets(
+      'gainExcludedCount à 0 (défaut) : aucune puce, rendu inchangé',
+      (tester) async {
+        await tester.pumpWidget(_host(const TotalValueCard(
+          totalValue: 5000.00,
+          title: 'Total',
+          gainAmount: 150.50,
+          gainPercent: 9.07,
+        )));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(find.text(l10n.chartPartialGainBadgeLabel), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'gainExcludedCount > 0 : la puce « partiel » est affichée à côté du '
+      'gain',
+      (tester) async {
+        await tester.pumpWidget(_host(const TotalValueCard(
+          totalValue: 5000.00,
+          title: 'Total',
+          gainAmount: 150.50,
+          gainPercent: 9.07,
+          gainExcludedCount: 2,
+        )));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(find.text(l10n.chartPartialGainBadgeLabel), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'gainExcludedCount > 0 mais onGainInfoPressed null : la puce reste '
+      'affichée (elle ne dépend PAS de l\'icône d\'aide — c\'est le point '
+      'non négociable du correctif : la réserve ne doit jamais exister '
+      'uniquement derrière la popup)',
+      (tester) async {
+        await tester.pumpWidget(_host(const TotalValueCard(
+          totalValue: 5000.00,
+          title: 'Total',
+          gainAmount: 150.50,
+          gainExcludedCount: 1,
+        )));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(find.text(l10n.chartPartialGainBadgeLabel), findsOneWidget);
+        expect(find.byIcon(Icons.info_outline), findsNothing);
+      },
+    );
+  });
+
+  testWidgets('aucun overflow sur largeur réduite', (tester) async {
+    await tester.pumpWidget(_host(const TotalValueCard(
+      totalValue: 999999.99,
+      title: 'Valeur totale du portefeuille',
+      gainAmount: -123456.78,
+      gainPercent: -1234567.89,
+    )));
+    await tester.pumpAndSettle();
+
+    // Aucune exception FlutterError (dont RenderFlex overflowed) : maxLines: 2
+    // absorbe la ligne de gain la plus longue possible.
+    expect(tester.takeException(), isNull);
+  });
 }

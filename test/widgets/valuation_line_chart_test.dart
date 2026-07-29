@@ -338,4 +338,100 @@ void main() {
       expect(Formatters.formatTooltipDate(dt, ChartPeriod.day), '17h35');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Couleur de la courbe principale (correctif du 29/07) : elle suit le SIGNE
+  // de la variation de période. Le cas `null` (variation non calculable) doit
+  // rendre la couleur de GAIN — le contrat documenté du widget — et non celle
+  // de perte, qui affichait une perte là où il n'y a qu'absence de mesure.
+  // ---------------------------------------------------------------------------
+
+  group('couleur de la courbe selon periodChange', () {
+    final dates = [
+      DateTime(2026, 6, 1),
+      DateTime(2026, 6, 2),
+      DateTime(2026, 6, 3),
+    ];
+    const values = [100.0, 110.0, 120.0];
+
+    Future<Color> mainColorFor(WidgetTester tester, double? periodChange) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: values,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: periodChange,
+      )));
+      await tester.pumpAndSettle();
+      final chart = tester.widget<LineChart>(find.byType(LineChart));
+      return chart.data.lineBarsData.first.color!;
+    }
+
+    testWidgets('variation positive et variation nulle : MÊME couleur (gain)',
+        (tester) async {
+      final positive = await mainColorFor(tester, 250.0);
+      final zero = await mainColorFor(tester, 0.0);
+      expect(zero, positive);
+    });
+
+    testWidgets('variation négative : couleur DIFFÉRENTE (perte)',
+        (tester) async {
+      final positive = await mainColorFor(tester, 250.0);
+      final negative = await mainColorFor(tester, -250.0);
+      expect(negative, isNot(positive));
+    });
+
+    testWidgets(
+        'periodChange null : couleur de GAIN (et non de perte) — régression du '
+        'graphe figé en rouge en mode réel', (tester) async {
+      final positive = await mainColorFor(tester, 250.0);
+      final negative = await mainColorFor(tester, -250.0);
+      final unknown = await mainColorFor(tester, null);
+
+      expect(unknown, positive);
+      expect(unknown, isNot(negative));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Série « Capital investi » : fonction EN ESCALIER (constante entre deux
+  // mouvements, saut au mouvement) — jamais lissée (retour du 29/07).
+  // ---------------------------------------------------------------------------
+
+  testWidgets(
+      'la série capital investi est en escalier et NON lissée, contrairement '
+      'à la courbe de valeur', (tester) async {
+    final dates = [
+      DateTime(2026, 6, 1),
+      DateTime(2026, 6, 2),
+      DateTime(2026, 6, 3),
+    ];
+    const values = [100.0, 110.0, 120.0];
+    const contributions = [
+      FlSpot(0, 100),
+      FlSpot(1, 100),
+      FlSpot(2, 120),
+    ];
+
+    await tester.pumpWidget(_host(ValuationLineChart(
+      dates: dates,
+      values: values,
+      contributionsSpots: contributions,
+      selectedPeriod: ChartPeriod.month1,
+      periodChange: 20.0,
+    )));
+    await tester.pumpAndSettle();
+
+    final chart = tester.widget<LineChart>(find.byType(LineChart));
+    expect(chart.data.lineBarsData, hasLength(2));
+
+    final contributionsBar = chart.data.lineBarsData[1];
+    expect(contributionsBar.isStepLineChart, isTrue);
+    expect(contributionsBar.isCurved, isFalse);
+    // « forward » : le palier tient jusqu'au mouvement suivant, la marche n'est
+    // pas cassée en son milieu (à une date où rien ne s'est produit).
+    expect(
+      contributionsBar.lineChartStepData.stepDirection,
+      LineChartStepData.stepDirectionForward,
+    );
+  });
 }

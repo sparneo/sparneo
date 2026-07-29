@@ -20,11 +20,11 @@ import 'package:portfolio_tracker/widgets/allocation_target_edit_dialog.dart';
 import 'package:portfolio_tracker/widgets/manage_wallets_page.dart';
 import 'package:portfolio_tracker/widgets/settings_page.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
+import 'package:portfolio_tracker/widgets/charts/chart_notes.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/wallet/account_list_tile.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
-import 'package:portfolio_tracker/theme/app_colors.dart';
 
 /// Projette [values] (mode 2 « apports nets », B7 Lot 3b) sur l'axe X du
 /// graphique, EXACTEMENT comme [ValuationLineChart] indexe sa série
@@ -55,7 +55,12 @@ class _WalletViewState extends State<WalletView> {
   // recharge rien, un simple setState suffit. Faux par défaut : comportement
   // identique à avant ce lot pour tout utilisateur n'ayant pas de courbe
   // réelle disponible ([WalletController.hasRealCurve]).
-  bool _showRealCurve = false;
+  // Défaut à true (retour manuel du 29/07) : l'évolution réelle reflète ce
+  // qui s'est VRAIMENT passé, contrairement au mode « Vos positions »
+  // (rétroprojection théorique) — sans effet tant que hasRealCurve est faux
+  // (le sélecteur est alors masqué et useRealCurve retombe à false via le
+  // && ci-dessous).
+  bool _showRealCurve = true;
 
   @override
   void initState() {
@@ -211,16 +216,43 @@ class _WalletViewState extends State<WalletView> {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
     final charges = _controller.realTotalGainCharges;
-    // Ligne « dont frais » ajoutée SEULEMENT si le sous-total est non-nul
-    // (négatif = frais, positif = rebate) — sinon rien à isoler.
-    final body = charges != null && charges != 0
-        ? '${l10n.chartRealTotalGainHelpBody}\n\n'
-            '${l10n.chartRealTotalGainFeesLine(Formatters.formatMoney(charges, 'EUR'))}'
-        : l10n.chartRealTotalGainHelpBody;
+    final noBasisSymbols = _controller.realNoBasisSymbols;
+    // Lignes optionnelles, ajoutées SEULEMENT si elles ont quelque chose à
+    // isoler — même motif pour les deux : « dont frais » si le sous-total
+    // est non-nul (négatif = frais, positif = rebate), « titres exclus » si
+    // le calcul a dû en écarter (base de coût inconnue, cf. puce « partiel »
+    // de TotalValueCard qui pointe vers cette popup pour le détail).
+    final extraLines = <String>[
+      if (charges != null && charges != 0)
+        l10n.chartRealTotalGainFeesLine(Formatters.formatMoney(charges, 'EUR')),
+      if (noBasisSymbols.isNotEmpty)
+        l10n.chartRealTotalGainNoBasisLine(
+          noBasisSymbols.length,
+          (noBasisSymbols.toList()..sort()).join(', '),
+        ),
+    ];
+    final body = extraLines.isEmpty
+        ? l10n.chartRealTotalGainHelpBody
+        : '${l10n.chartRealTotalGainHelpBody}\n\n${extraLines.join('\n\n')}';
     showHelpDialog(
       context,
       title: l10n.chartRealTotalGainHelpTitle,
       body: body,
+    );
+  }
+
+  /// Popup d'aide « modes d'affichage » — déclenchée par l'icône ⓘ accolée au
+  /// sélecteur de mode (SegmentedButton). Explique les DEUX modes d'un coup
+  /// (épuration UI du 29/07) : reprend l'exposé de méthode retiré des
+  /// captions permanentes sous le graphe (chartModePerformanceCaption ne
+  /// garde que sa clause discriminante, chartModeRealCaption a disparu).
+  void _showChartModeHelp() {
+    if (!mounted) return;
+    final l10n = AppLocalizations.of(context)!;
+    showHelpDialog(
+      context,
+      title: l10n.chartModeHelpTitle,
+      body: l10n.chartModeHelpBody,
     );
   }
 
@@ -580,19 +612,28 @@ class _WalletViewState extends State<WalletView> {
                           // (percentAnnualized reste null).
                           TotalValueCard(
                             totalValue: totalPatrimoine,
-                            periodChange: periodChange,
-                            periodChangePercent: periodChangePercent,
-                            selectedPeriodLabel:
-                                _controller.selectedPeriod.localizedLabel(
-                                  l10n,
-                                ),
                             title: l10n.totalValue,
-                            percentAnnualized: useRealCurve
-                                ? _controller.realPeriodGainPercentAnnualized
-                                : null,
-                            onInfoPressed: useRealCurve
-                                ? _showRealPeriodGainHelp
-                                : null,
+                            // Gain total absolu (base coût, frais inclus),
+                            // INDÉPENDANT du mode de courbe ET de la période —
+                            // mis en premier plan (retour manuel du 29/07 : le
+                            // Modified Dietz seul en avant perturbait plus
+                            // qu'il n'éclairait). La perf de PÉRIODE a rejoint
+                            // le graphe (PeriodGainLine).
+                            gainAmount: _controller.realTotalGain,
+                            gainPercent: _controller.realTotalGainPercent,
+                            onGainInfoPressed:
+                                _controller.realTotalGain != null
+                                    ? _showRealTotalGainHelp
+                                    : null,
+                            // Puce « partiel » TOUJOURS visible dès que des
+                            // titres sont exclus du gain total (base de coût
+                            // inconnue), quel que soit le mode de courbe —
+                            // correctif d'honnêteté : l'ancien avertissement
+                            // vivait sous le graphe, gaté par `useRealCurve`,
+                            // alors qu'il qualifie ce gain-ci, affiché en
+                            // permanence.
+                            gainExcludedCount:
+                                _controller.realNoBasisSymbols.length,
                           ),
                           const SizedBox(height: 24),
 
@@ -623,32 +664,67 @@ class _WalletViewState extends State<WalletView> {
                                 const SizedBox(height: 8),
                                 Align(
                                   alignment: Alignment.centerLeft,
-                                  child: SegmentedButton<bool>(
-                                    segments: [
-                                      ButtonSegment(
-                                        value: false,
-                                        label: Text(
-                                          l10n.chartModePerformance,
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      SegmentedButton<bool>(
+                                        // « Évolution réelle » EN PREMIER :
+                                        // mode par défaut et vue de ce qui
+                                        // s'est vraiment passé ; « Vos
+                                        // positions » est la vue théorique,
+                                        // secondaire.
+                                        segments: [
+                                          ButtonSegment(
+                                            value: true,
+                                            label: Text(
+                                              l10n.chartModeRealEvolution,
+                                            ),
+                                          ),
+                                          ButtonSegment(
+                                            value: false,
+                                            label: Text(
+                                              l10n.chartModePerformance,
+                                            ),
+                                          ),
+                                        ],
+                                        selected: {_showRealCurve},
+                                        showSelectedIcon: false,
+                                        style: const ButtonStyle(
+                                          visualDensity:
+                                              VisualDensity.compact,
                                         ),
+                                        onSelectionChanged: (selection) {
+                                          setState(
+                                            () => _showRealCurve =
+                                                selection.first,
+                                          );
+                                        },
                                       ),
-                                      ButtonSegment(
-                                        value: true,
-                                        label: Text(
-                                          l10n.chartModeRealEvolution,
+                                      // Épuration UI (29/07) : explique les
+                                      // DEUX modes d'un coup (méthode de
+                                      // calcul complète) — l'exposé détaillé
+                                      // a quitté les captions permanentes
+                                      // sous le graphe pour cette popup,
+                                      // ouverte à la demande.
+                                      Tooltip(
+                                        message: l10n.chartHelpTooltip,
+                                        child: InkWell(
+                                          onTap: _showChartModeHelp,
+                                          borderRadius:
+                                              BorderRadius.circular(12),
+                                          child: Padding(
+                                            padding: const EdgeInsets.all(8),
+                                            child: Icon(
+                                              Icons.info_outline,
+                                              size: 16,
+                                              color: Theme.of(context)
+                                                  .colorScheme
+                                                  .onSurfaceVariant,
+                                            ),
+                                          ),
                                         ),
                                       ),
                                     ],
-                                    selected: {_showRealCurve},
-                                    showSelectedIcon: false,
-                                    style: const ButtonStyle(
-                                      visualDensity: VisualDensity.compact,
-                                    ),
-                                    onSelectionChanged: (selection) {
-                                      setState(
-                                        () =>
-                                            _showRealCurve = selection.first,
-                                      );
-                                    },
                                   ),
                                 ),
                               ],
@@ -698,152 +774,29 @@ class _WalletViewState extends State<WalletView> {
                                         showSnapshotLegend: true,
                                       ),
                               ),
-                              if (useRealCurve) ...[
-                                const SizedBox(height: 8),
-                                Text(
-                                  l10n.chartModeRealCaption,
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                                      ),
-                                ),
-                                // Gains TOTAUX en état courant (base coût,
-                                // voie b — B7 correction financière), INDÉPENDANT
-                                // de la période affichée (plus de gating).
-                                // Distinct du « gain sur la période » porté par
-                                // la carte de valeur : ici le cumul, coloré
-                                // gain/perte. `%` omis si dénominateur (capital)
-                                // non significatif (cf. computeRealTotalGain).
-                                // ⚠️ Divergence assumée : cet écart peut différer
-                                // du gap visuel valeur−capital investi de la
-                                // courbe (méthodes différentes) — jamais présenté
-                                // comme identiques.
-                                if (_controller.realTotalGain != null) ...[
-                                  const SizedBox(height: 4),
-                                  // Icône d'aide ⓘ à côté du texte (remplace
-                                  // un ancien Tooltip, cf.
-                                  // _showRealTotalGainHelp) : le texte reste
-                                  // coloré gain/perte, l'icône reste neutre
-                                  // (affordance d'aide, pas une donnée).
-                                  Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Flexible(
-                                        child: Text(
-                                          _controller.realTotalGainPercent !=
-                                                  null
-                                              ? l10n.chartRealTotalGain(
-                                                  Formatters.formatEurSigned(
-                                                      _controller
-                                                          .realTotalGain!),
-                                                  Formatters.formatPercentFr(
-                                                      _controller
-                                                          .realTotalGainPercent!),
-                                                )
-                                              : l10n.chartRealTotalGainAmountOnly(
-                                                  Formatters.formatEurSigned(
-                                                      _controller
-                                                          .realTotalGain!),
-                                                ),
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .bodySmall
-                                              ?.copyWith(
-                                                color: AppColors.gainLoss(
-                                                  context,
-                                                  _controller.realTotalGain! >=
-                                                      0,
-                                                ),
-                                                fontWeight: FontWeight.w600,
-                                              ),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 2),
-                                      Tooltip(
-                                        message: l10n.chartHelpTooltip,
-                                        child: InkWell(
-                                          onTap: _showRealTotalGainHelp,
-                                          borderRadius:
-                                              BorderRadius.circular(12),
-                                          child: Padding(
-                                            padding: const EdgeInsets.all(4),
-                                            child: Icon(
-                                              Icons.info_outline,
-                                              size: 15,
-                                              color: Theme.of(context)
-                                                  .colorScheme
-                                                  .onSurfaceVariant,
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ],
-                                if (_controller
-                                    .realCurveApproxSymbols
-                                    .isNotEmpty) ...[
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    l10n.chartApproxValuesWarning(
-                                      _controller
-                                          .realCurveApproxSymbols
-                                          .length,
-                                    ),
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.error,
-                                        ),
-                                  ),
-                                ],
-                                // Positions sans PRU connu, EXCLUES du calcul
-                                // des gains totaux (computeRealTotalGain) —
-                                // discret (couleur atténuée, PAS la couleur
-                                // d'erreur ci-dessus) : ce n'est pas une
-                                // anomalie de données de marché, juste une
-                                // performance partielle assumée.
-                                if (_controller
-                                    .realNoBasisSymbols
-                                    .isNotEmpty) ...[
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    l10n.chartNoBasisWarning(
-                                      _controller.realNoBasisSymbols.length,
-                                    ),
-                                    style: Theme.of(context)
-                                        .textTheme
-                                        .bodySmall
-                                        ?.copyWith(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.onSurfaceVariant,
-                                        ),
-                                  ),
-                                ],
-                              ] else ...[
-                                // Mode 1 « Performance de vos positions » :
-                                // rétroprojection des quantités ACTUELLES sur
-                                // les cours passés (à quantités constantes).
-                                // Caption indispensable : ne pas laisser croire
-                                // à la performance du patrimoine réel dans le
-                                // temps (c'est le rôle du mode 2).
-                                const SizedBox(height: 8),
-                                Text(
-                                  l10n.chartModePerformanceCaption,
-                                  style: Theme.of(context).textTheme.bodySmall
-                                      ?.copyWith(
-                                        color: Theme.of(
-                                          context,
-                                        ).colorScheme.onSurfaceVariant,
-                                      ),
-                                ),
-                              ],
+                              // Performance sur la PÉRIODE affichée + notes
+                              // conditionnelles — placées ici (et non dans
+                              // TotalValueCard, déplacement du 29/07) car
+                              // elles dépendent des deux sélecteurs qui les
+                              // surplombent : période ET mode. Bloc partagé
+                              // avec account_view (épuration UI du 29/07,
+                              // évite la divergence lente entre les deux
+                              // vues — cf. doc en tête de ChartNotes).
+                              const SizedBox(height: 8),
+                              ChartNotes(
+                                periodGainAmount: periodChange,
+                                periodGainPercent: periodChangePercent,
+                                selectedPeriod: _controller.selectedPeriod,
+                                useRealCurve: useRealCurve,
+                                periodGainPercentAnnualized: _controller
+                                    .realPeriodGainPercentAnnualized,
+                                onPeriodGainInfoPressed:
+                                    _showRealPeriodGainHelp,
+                                realExcludedLegacyCount:
+                                    _controller.realExcludedLegacyCount,
+                                realCurveApproxSymbolsCount:
+                                    _controller.realCurveApproxSymbols.length,
+                              ),
                             ],
                           ),
                         ],

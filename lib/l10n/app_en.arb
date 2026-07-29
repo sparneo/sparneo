@@ -98,9 +98,9 @@
     "description": "Chart mode selector segment: mode 1, projection of current holdings (performance)"
   },
 
-  "chartModePerformanceCaption": "Value your current holdings would have had at past prices (today's quantities assumed constant). Doesn't reflect your past buys/sells — see \"Real evolution\".",
+  "chartModePerformanceCaption": "Today's quantities applied to past prices — not your real buys/sells.",
   "@chartModePerformanceCaption": {
-    "description": "Caption shown below the chart in performance mode (mode 1) to clarify it is a retro-projection of current holdings, not the real portfolio history"
+    "description": "Short, always-visible caption shown below the chart in performance mode (mode 1) — keeps only the clause that discriminates it from real-evolution mode; the full method explanation moved to chartModeHelpBody"
   },
 
   "chartModeRealEvolution": "Real evolution",
@@ -108,9 +108,25 @@
     "description": "Chart mode selector segment: mode 2, net worth reconstructed from the journaled transaction history"
   },
 
-  "chartModeRealCaption": "Reconstructed from your journaled transactions. Manually entered positions without history are not included.",
-  "@chartModeRealCaption": {
-    "description": "Caption shown below the chart when the real-evolution mode is active"
+  "chartModeHelpTitle": "Display modes",
+  "@chartModeHelpTitle": {
+    "description": "Title of the help popup explaining both chart modes at once, opened via the info icon next to the mode selector (SegmentedButton)"
+  },
+
+  "chartModeHelpBody": "\"Your holdings\": value your current holdings would have had at past prices (today's quantities assumed constant) — doesn't reflect your real buys and sells.\n\n\"Real evolution\": reconstructed from your journaled transactions (buys, sells, deposits, withdrawals) — the actual course of your wealth over time.",
+  "@chartModeHelpBody": {
+    "description": "Body of the help popup explaining both chart modes at once (merges the former chartModePerformanceCaption method explanation and chartModeRealCaption's journal-reconstruction sentence)"
+  },
+
+  "chartRealExcludedLegacyCaption": "{count, plural, =1{One position entered without history isn't included in this curve.} other{{count} positions entered without history aren't included in this curve.}}",
+  "@chartRealExcludedLegacyCaption": {
+    "description": "Caption shown below the chart in real-evolution mode, ONLY when count > 0 — replaces the former unconditional chartModeRealCaption sentence about legacy positions; a cash account has count == 0 by construction (no positions) so never shows this caption",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "2"
+      }
+    }
   },
 
   "chartApproxValuesWarning": "Price unavailable for {count} security(ies): value held at last known price (flat curve over those periods).",
@@ -170,14 +186,14 @@
     "description": "Title of the help popup explaining the real-evolution period gain percentage (Modified Dietz), opened via the info icon on the total value card"
   },
 
-  "chartRealPeriodGainHelpBody": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage relates this gain to the average capital actually at work during the period: a recent deposit only counts for the time it was invested.",
+  "chartRealPeriodGainHelpBody": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nThe percentage relates this gain to the average capital actually at work during the period: a recent deposit only counts for the time it was invested.\n\nThis percentage differs from the \"total gains\" one shown at the top of the screen, which relates its own gain to your current capital (cash included) — two different denominators, not a bug.",
   "@chartRealPeriodGainHelpBody": {
-    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when no annualised figure is shown, i.e. periodGainPercentAnnualized is null"
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when no annualised figure is shown, i.e. periodGainPercentAnnualized is null — appends a cross-reference to the total-gain percentage's different denominator (closes the explanatory loop between the two help popups)"
   },
 
-  "chartRealPeriodGainHelpBodyAnnualized": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nTwo percentages are shown: the first is the cumulative gain over the whole period, the second (in brackets) the average yearly return — comparable to an index.\n\nBoth relate the gain to the average capital actually at work: a recent deposit only counts for the time it was invested.",
+  "chartRealPeriodGainHelpBodyAnnualized": "Gain over the period, excluding deposits and withdrawals: your market performance alone.\n\nTwo percentages are shown: the first is the cumulative gain over the whole period, the second (in brackets) the average yearly return — comparable to an index.\n\nBoth relate the gain to the average capital actually at work: a recent deposit only counts for the time it was invested.\n\nThis percentage differs from the \"total gains\" one shown at the top of the screen, which relates its own gain to your current capital (cash included) — two different denominators, not a bug.",
   "@chartRealPeriodGainHelpBodyAnnualized": {
-    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when a second, annualised percentage is also shown, i.e. periodGainPercentAnnualized is non-null"
+    "description": "Help popup body explaining the real-evolution period gain percentage (Modified Dietz) when a second, annualised percentage is also shown, i.e. periodGainPercentAnnualized is non-null — appends the same cross-reference paragraph as chartRealPeriodGainHelpBody"
   },
 
   "chartRealTotalGainHelpTitle": "Total gains",
@@ -185,9 +201,9 @@
     "description": "Title of the help popup explaining the 'Total gains' line, opened via the info icon shown below the chart in real-evolution mode"
   },
 
-  "chartRealTotalGainHelpBody": "Total gains since inception: current value minus invested capital (your cash deposits and transferred-in securities, counted at their cost basis).\n\nThis amount may differ from the gap visible between the two curves: the chart values transferred-in securities at their price on the day they entered, whereas this figure uses their actual cost basis.",
+  "chartRealTotalGainHelpBody": "Total gains since inception: current value minus invested capital (your cash deposits and transferred-in securities, counted at their cost basis).\n\nThis amount matches, by construction, the gap between the two curves on the chart. Any residual gap only comes from the price source: real-time quote for this card, last known historical point for the curve.\n\nThe percentage above relates this gain to your CURRENT capital (cash included); the one shown below the chart relates it to the AVERAGE capital actually at work over the period (Modified Dietz) — two different denominators for the same gain, not a bug.",
   "@chartRealTotalGainHelpBody": {
-    "description": "Help popup body explaining the 'Total gains' line (chartRealTotalGain/chartRealTotalGainAmountOnly) shown below the chart in real-evolution mode"
+    "description": "Help popup body explaining the 'Total gains' line (chartRealTotalGain/chartRealTotalGainAmountOnly) shown below the chart in real-evolution mode — corrected 29/07 UI cleanup: the 'Invested capital' curve now uses the declared cost basis, so the gap between the two curves equals the total gain by construction (previously falsely stated it valued transferred-in securities at entry-day price); also cross-references the period-gain percentage's different denominator"
   },
 
   "chartRealTotalGainFeesLine": "Of which fees (custody, account maintenance…): {amount}",
@@ -199,6 +215,22 @@
         "example": "-45,00 €"
       }
     }
+  },
+
+  "chartPeriodGainScope": "Over {period}, excl. deposits",
+  "@chartPeriodGainScope": {
+    "description": "Prefix of the period-gain line (real-evolution mode, PeriodGainLine.netOfContributions) for any period other than max — replaces the former standalone chartPeriodGainCaption legend line, now folded into the row itself with the period token moved to the front",
+    "placeholders": {
+      "period": {
+        "type": "String",
+        "example": "5Y"
+      }
+    }
+  },
+
+  "chartPeriodGainScopeMax": "Since inception, excl. deposits",
+  "@chartPeriodGainScopeMax": {
+    "description": "Prefix of the period-gain line (real-evolution mode) when the selected period is ChartPeriod.max — spells out 'since inception' instead of the bare 'Max' token, which would read oddly leading the sentence, and explains why the period gain then coincides with the total gain shown at the top of the screen"
   },
 
   "chartHelpTooltip": "Learn more",
@@ -213,6 +245,26 @@
       "count": {
         "type": "int",
         "example": "1"
+      }
+    }
+  },
+
+  "chartPartialGainBadgeLabel": "partial",
+  "@chartPartialGainBadgeLabel": {
+    "description": "Short, always-visible badge label shown next to the total-gain figure in TotalValueCard when one or more securities were excluded from the calculation for lacking a known cost basis (gainExcludedCount > 0) — deliberately terse, the count and symbol list live in the help popup (chartRealTotalGainNoBasisLine); the badge's tooltip reuses chartNoBasisWarning"
+  },
+
+  "chartRealTotalGainNoBasisLine": "Of which {count} security(ies) excluded (unknown cost basis): {symbols}",
+  "@chartRealTotalGainNoBasisLine": {
+    "description": "Extra line appended to the 'Total gains' help popup body (same pattern as chartRealTotalGainFeesLine) listing the symbols excluded from computeRealTotalGain for lacking a known average buy price (PRU) — symbols is a pre-joined, comma-separated, sorted string",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "2"
+      },
+      "symbols": {
+        "type": "String",
+        "example": "AAPL, MSFT"
       }
     }
   },
@@ -822,6 +874,16 @@
   "cashNotTrackedLabel": "Cash not tracked",
   "@cashNotTrackedLabel": {
     "description": "Shown in place of the derived cash balance on a securities account header when the journal has no cash anchor movement yet"
+  },
+
+  "accountCashLine": "of which cash: {amount}",
+  "@accountCashLine": {
+    "description": "Discreet third line of TotalValueCard on a securities account header (cash-anchored only): explicits that the derived cash balance is already part of the total value shown above, not an addition to it",
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
   },
 
   "reconcileConfirmTitle": "Reconcile position?",

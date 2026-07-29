@@ -297,9 +297,14 @@ class ValuationLineChart extends StatelessWidget {
       return Center(child: Text(l10n.noHistoricalData));
     }
 
-    // Couleur principale selon la variation de période
-    final mainColor = AppColors.gainLoss(
-        context, periodChange != null && periodChange! >= 0);
+    // Couleur principale selon la variation de période. `null` (variation non
+    // calculable) → couleur de GAIN, conformément au contrat documenté
+    // ci-dessus. L'ancienne condition (`!= null && >= 0`) rendait ROUGE tout
+    // graphe dont la variation était inconnue, ce qui affichait une perte là
+    // où il n'y avait qu'une absence de mesure — trompeur, et contraire à la
+    // doc de ce widget (correctif du 29/07).
+    final mainColor =
+        AppColors.gainLoss(context, periodChange == null || periodChange! >= 0);
 
     // Couleur série snapshots : accent tertiaire du thème (vestige de l'ancienne
     // charte mauve, désormais dérivé de la seed pour s'adapter au thème sombre).
@@ -397,14 +402,30 @@ class ValuationLineChart extends StatelessWidget {
       ));
     }
 
-    // Série secondaire : apports nets cumulés (mode réel, B7 Lot 3b) — ligne
+    // Série secondaire : capital investi cumulé (mode réel, B7 Lot 3b) — ligne
     // SOLIDE sous la courbe de valeur, sans remplissage (l'écart vertical
     // visualise le gain).
+    //
+    // EN ESCALIER, jamais lissée : le capital investi est constant entre deux
+    // mouvements et saute d'un coup au mouvement — c'est une fonction en
+    // marches, pas un signal continu. Un lissage (`isCurved`) inventait une
+    // progression graduelle entre deux apports, laissait la courbe DÉPASSER
+    // ses propres paliers par débordement de spline, et pouvait la faire
+    // croiser la courbe de valeur là où l'écart réel ne changeait pas de
+    // signe — donc un gain/perte visuellement faux (retour du 29/07).
     if (contributionsSpots.isNotEmpty) {
       contributionsBarIndex = allSeries.length;
       allSeries.add(LineChartBarData(
         spots: contributionsSpots,
-        isCurved: true,
+        isCurved: false,
+        isStepLineChart: true,
+        // « forward » = garde la valeur courante jusqu'au point suivant, puis
+        // saute : le palier tient jusqu'au mouvement, exactement comme le
+        // capital réel. (« middle », le défaut, casserait la marche en son
+        // milieu, à une date où rien ne s'est produit.)
+        lineChartStepData: const LineChartStepData(
+          stepDirection: LineChartStepData.stepDirectionForward,
+        ),
         color: contributionsColor,
         barWidth: 2,
         dotData: const FlDotData(show: false),
