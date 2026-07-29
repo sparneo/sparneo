@@ -546,12 +546,20 @@ class StatementImportService {
   static DateTime? _parseDate(String? raw, DateFormatSpec spec) {
     if (raw == null) return null;
 
+    // Certains relevés accolent une HEURE à la date (« 29/06/2026 00:00 »,
+    // export Fortuneo). Seul le JOUR nous intéresse (le modèle date les
+    // mouvements à la journée, l'ordre intraday venant de `meta.seq`), donc la
+    // partie horaire est retirée AVANT tout découpage — sinon le dernier champ
+    // (« 2026 00:00 ») n'est plus un entier et la ligne partait en rejet
+    // `invalidDate`.
+    final value = _stripTimeComponent(raw);
+
     int day, month, year;
     if (spec.compactYmd) {
       // Format compact `AAAAMMJJ` (ex. `20150127`), sans séparateur — export
       // Bourse Direct. Peut arriver stocké comme nombre (donc déjà
       // canonisé sans point ni zéro superflu par `_parseXlsx`) ou en texte.
-      final digits = raw.trim();
+      final digits = value;
       if (digits.length != 8) return null;
       final y = int.tryParse(digits.substring(0, 4));
       final m = int.tryParse(digits.substring(4, 6));
@@ -561,7 +569,7 @@ class StatementImportService {
       month = m;
       day = d;
     } else {
-      final parts = raw.split(spec.separator);
+      final parts = value.split(spec.separator);
       if (parts.length != 3) return null;
 
       final a = int.tryParse(parts[0]);
@@ -585,6 +593,22 @@ class StatementImportService {
     }
     return date;
   }
+
+  /// Heure accolée à une date : espace (ou `T` ISO) suivi de `HH:MM`(`:SS`)
+  /// éventuellement décimal, d'un `AM`/`PM`, et/ou d'un fuseau (`Z`, `+02:00`).
+  /// Ancrée en FIN de chaîne pour ne jamais amputer une date : sans heure
+  /// reconnaissable derrière, rien n'est retiré (une chaîne douteuse continue
+  /// d'être rejetée par le parsing au lieu d'être tronquée en silence).
+  static final RegExp _timeSuffix = RegExp(
+    r'[\sT]+\d{1,2}[:hH]\d{2}(?::\d{2})?(?:[.,]\d+)?\s*'
+    r'(?:[AaPp]\.?[Mm]\.?)?\s*(?:Z|[+-]\d{2}:?\d{2})?$',
+  );
+
+  /// Retire l'éventuelle partie horaire d'une date de relevé (cf. [_parseDate])
+  /// et trime le résultat. Le séparateur de date ne pouvant jamais être un
+  /// espace ni un `T` (cf. `DateFormatSpec`), la découpe est sans ambiguïté.
+  static String _stripTimeComponent(String raw) =>
+      raw.trim().replaceFirst(_timeSuffix, '').trim();
 
   /// Détermine l'ordre de traitement (chronologique croissant) des lignes.
   ///

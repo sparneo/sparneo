@@ -311,6 +311,63 @@ void main() {
       expect(tx.date.month, equals(3));
       expect(tx.date.day, equals(1));
     });
+
+    test('heure accolée à la date (export Fortuneo « 29/06/2026 00:00 ») : '
+        'partie horaire ignorée, aucun rejet', () {
+      final rows = StatementImportService.parse(
+        _latin1Bytes('$_header\r\n'
+            '29/06/2026 00:00;Vente;LU1190417599;LYXACTSMARTXPAR;30;109,36;0,00;3274,24\r\n'),
+        _profile(),
+      );
+      final m = StatementImportService.normalize(rows, _profile(),
+              accountCurrency: 'EUR')
+          .single;
+      expect(m.isRejected, isFalse, reason: m.rejectReason);
+      final tx = m.transaction!;
+      expect(tx.date.year, equals(2026));
+      expect(tx.date.month, equals(6));
+      expect(tx.date.day, equals(29));
+      // Date à la JOURNÉE, jamais l'heure du relevé (l'ordre intraday vient de
+      // `meta.seq`) — et toujours en local.
+      expect(tx.date.hour, equals(0));
+      expect(tx.date.isUtc, isFalse);
+    });
+
+    test('variantes d\'heure accolée (secondes, ISO T, minuit 00:00:00) '
+        'toutes acceptées', () {
+      for (final raw in const [
+        '29/06/2026 09:30',
+        '29/06/2026 09:30:15',
+        '29/06/2026T09:30:15',
+        '29/06/2026 09:30:15,123',
+      ]) {
+        final rows = StatementImportService.parse(
+          _latin1Bytes('$_header\r\n'
+              '$raw;Achat;FR0000031122;AIRBUS;1;10,00;0,00;-10,00\r\n'),
+          _profile(),
+        );
+        final m = StatementImportService.normalize(rows, _profile(),
+                accountCurrency: 'EUR')
+            .single;
+        expect(m.isRejected, isFalse, reason: '$raw → ${m.rejectReason}');
+        expect(m.transaction!.date, equals(DateTime(2026, 6, 29)),
+            reason: raw);
+      }
+    });
+
+    test('une date SANS heure reconnaissable derrière reste rejetée (jamais '
+        'tronquée en silence)', () {
+      final rows = StatementImportService.parse(
+        _latin1Bytes('$_header\r\n'
+            '29/06/2026 blabla;Achat;FR0000031122;AIRBUS;1;10,00;0,00;-10,00\r\n'),
+        _profile(),
+      );
+      final m = StatementImportService.normalize(rows, _profile(),
+              accountCurrency: 'EUR')
+          .single;
+      expect(m.isRejected, isTrue);
+      expect(m.rejectReason, equals('invalidDate'));
+    });
   });
 
   group('StatementImportService.normalize — déduplication', () {
