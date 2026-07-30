@@ -403,4 +403,52 @@ void main() {
       },
     );
   });
+
+  group('AccountJournalPage — filtres', () {
+    testWidgets(
+      'sur 360 dp, TOUS les types de filtre tiennent à l\'écran (aucun tronqué '
+      'au bord : c\'était le défaut du défilement horizontal sans affordance)',
+      (tester) async {
+        tester.view.physicalSize = const Size(360, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final ledger = _FakeLedgerService([]);
+        await tester.pumpWidget(_host(txs: [], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        final labels = <String>[
+          l10n.filterAllKinds,
+          l10n.transactionKindBuy,
+          l10n.transactionKindSell,
+          l10n.transactionKindDividend,
+          l10n.transactionKindDeposit,
+          l10n.transactionKindWithdrawal,
+          l10n.transactionKindInterest,
+          l10n.transactionKindCharge,
+          l10n.periodAll,
+          l10n.period30Days,
+          l10n.period90Days,
+          l10n.period1Year,
+        ];
+
+        for (final label in labels) {
+          final finder = find.text(label);
+          expect(finder, findsOneWidget, reason: 'filtre « $label » absent');
+          final rect = tester.getRect(finder);
+          expect(
+            rect.right,
+            lessThanOrEqualTo(360.0),
+            reason: '« $label » dépasse le bord droit (tronqué)',
+          );
+          expect(
+            rect.left,
+            greaterThanOrEqualTo(0.0),
+            reason: '« $label » dépasse le bord gauche',
+          );
+        }
+      },
+    );
+  });
 }

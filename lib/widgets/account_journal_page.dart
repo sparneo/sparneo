@@ -475,51 +475,46 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // --- Filtre par type ---
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: [
-                _kindChip(l10n, null, l10n.filterAllKinds),
-                const SizedBox(width: 6),
-                // Les mouvements système (openingBalance/adjustment) ne sont
-                // pas proposés au filtre : ils restent visibles via « tous ».
-                ...TransactionKind.values
-                    .where((k) => !k.isSystemGenerated)
-                    .map(
-                      (k) => Padding(
-                        padding: const EdgeInsets.only(right: 6),
-                        child: _kindChip(l10n, k, _kindLabel(l10n, k)),
-                      ),
-                    ),
-              ],
-            ),
+          // `Wrap` et NON un défilement horizontal : celui-ci coupait le
+          // dernier type au bord (« Frais » tronqué sur desktop, rien de
+          // visible après « Dépôt » sur 360 dp) sans aucune affordance de
+          // balayage — des filtres existants restaient donc introuvables.
+          // Un passage à la ligne coûte quelques dp de hauteur et rend les
+          // huit choix visibles d'un coup, à un tap.
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              _kindChip(l10n, null, l10n.filterAllKinds),
+              // Les mouvements système (openingBalance/adjustment) ne sont
+              // pas proposés au filtre : ils restent visibles via « tous ».
+              ...TransactionKind.values
+                  .where((k) => !k.isSystemGenerated)
+                  .map((k) => _kindChip(l10n, k, _kindLabel(l10n, k))),
+            ],
           ),
           const SizedBox(height: 6),
           // --- Filtre par période ---
-          SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Row(
-              children: _PeriodPreset.values.map((p) {
-                final selected = _periodFilter == p;
-                return Padding(
-                  padding: const EdgeInsets.only(right: 6),
-                  child: ChoiceChip(
-                    label: Text(_periodLabel(l10n, p)),
-                    selected: selected,
-                    onSelected: (_) => setState(() => _periodFilter = p),
-                    selectedColor: Theme.of(context).colorScheme.primary,
-                    labelStyle: TextStyle(
-                      fontSize: 12,
-                      color: selected
-                          ? Theme.of(context).colorScheme.onPrimary
-                          : Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  ),
-                );
-              }).toList(),
-            ),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: _PeriodPreset.values.map((p) {
+              final selected = _periodFilter == p;
+              return ChoiceChip(
+                label: Text(_periodLabel(l10n, p)),
+                selected: selected,
+                onSelected: (_) => setState(() => _periodFilter = p),
+                selectedColor: Theme.of(context).colorScheme.primary,
+                labelStyle: TextStyle(
+                  fontSize: 12,
+                  color: selected
+                      ? Theme.of(context).colorScheme.onPrimary
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+              );
+            }).toList(),
           ),
         ],
       ),
