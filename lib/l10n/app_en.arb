@@ -114,6 +114,11 @@
   },
 
   "chartModeHelpBody": "\"Real evolution\": reconstructed from your journaled transactions (buys, sells, deposits, withdrawals) — the actual course of your wealth over time.\n\n\"Your holdings\": value your current holdings would have had at past prices (today's quantities assumed constant) — doesn't reflect your real buys and sells.",
+  "chartModeHelpPositionBody": "\"Real evolution\": reconstructed from your transactions on this line (buys, sells) — what you actually held at each date, so a recent top-up shows as a step rather than being spread over the whole window.\n\n\"Your holdings\": value your CURRENT quantity would have had at past prices — useful to judge the security itself, but it doesn't reflect your own buys and sells.",
+  "@chartModeHelpPositionBody": {
+    "description": "Position-detail variant of chartModeHelpBody. Same two modes, but worded for a single line rather than a whole portfolio: the retro-projection's specific lie here is back-projecting today's quantity, which a wallet-level wording doesn't convey. ORDER MATTERS, same as chartModeHelpBody."
+  },
+
   "@chartModeHelpBody": {
     "description": "Body of the help popup explaining both chart modes at once (merges the former chartModePerformanceCaption method explanation and chartModeRealCaption's journal-reconstruction sentence). ORDER MATTERS: \"Real evolution\" comes FIRST, matching both the mode selector order and the default mode since the UI decluttering pass — the popup used to open on the non-default mode, which read as if it were the main one."
   },

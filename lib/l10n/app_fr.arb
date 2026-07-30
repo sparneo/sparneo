@@ -19,6 +19,7 @@
   "chartModePerformanceCaption": "Quantités actuelles appliquées aux cours passés — pas vos achats/ventes réels.",
   "chartModeHelpTitle": "Modes d'affichage",
   "chartModeHelpBody": "« Évolution réelle » : reconstruite depuis vos mouvements journalisés (achats, ventes, apports, retraits) — le déroulé réel de votre patrimoine dans le temps.\n\n« Vos positions » : valeur qu'auraient eue vos positions actuelles aux cours passés (quantités du jour supposées constantes) — ne reflète pas vos achats et ventes réels.",
+  "chartModeHelpPositionBody": "« Évolution réelle » : reconstruite depuis vos mouvements sur cette ligne (achats, ventes) — ce que vous déteniez vraiment à chaque date. Un renfort récent y apparaît comme une marche, au lieu d'être étalé sur toute la fenêtre.\n\n« Vos positions » : valeur qu'aurait eue votre quantité ACTUELLE aux cours passés — utile pour juger le titre lui-même, mais ne reflète pas vos achats et ventes.",
   "chartRealExcludedLegacyCaption": "{count, plural, =1{Une position saisie sans historique ne figure pas dans cette courbe.} other{{count} positions saisies sans historique ne figurent pas dans cette courbe.}}",
   "chartApproxValuesWarning": "Cours indisponible pour {count} titre(s) : valeur figée au dernier prix connu (courbe plate sur ces périodes).",
   "chartRealUnanchoredRevenueCaption": "{amount} de revenus comptés dans le gain total mais absents de cette courbe (compte sans trésorerie suivie).",

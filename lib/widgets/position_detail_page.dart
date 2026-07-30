@@ -1,6 +1,9 @@
 // widgets/position_detail_page.dart
 import 'package:decimal/decimal.dart';
+import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:portfolio_tracker/logic/history_aggregator.dart';
+import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/utils/localized_labels.dart';
 import 'package:portfolio_tracker/model/asset.dart';
@@ -88,6 +91,47 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   // --- Analyse du journal (LOT F1) ---
   TransactionAnalytics? _analytics;
 
+  // --- Mode « Évolution réelle » de la position (parité écran compte) ---
+  //
+  // La courbe historique de cette page était du pur mode 1 : `prix passé ×
+  // quantité d'AUJOURD'HUI`. C'est sur une position que cette rétro-projection
+  // ment le plus — un renfort récent est reprojeté sur toute la fenêtre, comme
+  // si la quantité actuelle avait toujours été détenue. Et depuis que le mode
+  // réel est le défaut de l'écran compte, ouvrir une position basculait
+  // silencieusement l'utilisateur sur une vue théorique.
+  //
+  // Reconstruction par la MÊME machinerie que le compte, appelée sur un seul
+  // symbole et SANS trésorerie (une position n'a pas de cash : `txsByAccount`
+  // vide) — cas plus simple que le compte, aucune logique financière nouvelle.
+
+  /// Grille de la courbe réelle : dates de l'historique de cotation, rognées à
+  /// gauche sur « Max » à la date du premier mouvement (sans quoi 20 ans de
+  /// plat à zéro précèdent le premier achat, cf. [HistoryAggregator.
+  /// applyGridFrom]).
+  List<DateTime> _realDates = [];
+  List<double> _realValues = [];
+
+  /// Capital investi cumulé de la position (coût d'acquisition), aligné
+  /// index-par-index sur [_realDates] — l'écart à [_realValues] EST la
+  /// plus-value latente.
+  List<double> _realContributions = [];
+
+  /// Gain de période HORS APPORTS (Modified Dietz). Indispensable dès qu'une
+  /// courbe réelle est affichée : `valeur fin − valeur début` compterait un
+  /// achat de la fenêtre comme un gain.
+  double? _realPeriodGain;
+  double? _realPeriodGainPercent;
+  double? _realPeriodGainPercentAnnualized;
+
+  /// Mode réel par défaut, comme les écrans compte et patrimoine (Lot 8).
+  bool _showRealCurve = true;
+
+  /// Une courbe réelle n'existe que si la position a un journal exploitable —
+  /// une position legacy (saisie à la main, journal vide) n'a rien à
+  /// reconstruire. Le sélecteur est alors masqué, jamais offert à vide.
+  bool get _hasRealCurve => _realValues.isNotEmpty;
+  bool get _useRealCurve => _showRealCurve && _hasRealCurve;
+
   @override
   void initState() {
     super.initState();
@@ -121,6 +165,12 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         _isLoadingTransactions = false;
         // Recalcule la plus-value réalisée à chaque chargement.
         _analytics = computeTransactionAnalytics(txs);
+        // Le journal et l'historique de cotation arrivent par deux chemins
+        // asynchrones indépendants : la reconstruction est relancée depuis les
+        // DEUX, faute de quoi elle dépendrait de l'ordre d'arrivée. Toute
+        // mutation du journal repasse aussi par ici (`_reloadProjection` se
+        // termine sur `_loadTransactions`), donc la courbe suit.
+        _computeRealCurve();
       });
     }
   }
@@ -305,6 +355,10 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       setState(() {
         _historicalData = data;
         _isLoadingHistory = false;
+        // JAMAIS bloquant pour le mode 1 : une reconstruction impossible
+        // (journal vide, historique absent) laisse simplement `_hasRealCurve`
+        // faux, donc aucun sélecteur — la courbe théorique reste affichée.
+        _computeRealCurve();
       });
     } catch (e) {
       setState(() {
@@ -312,6 +366,93 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         _isLoadingHistory = false;
       });
     }
+  }
+
+  /// Reconstruit la courbe RÉELLE de la position depuis son journal.
+  ///
+  /// Synchrone et sans réseau : tout est déjà en mémoire (le journal via
+  /// [_transactions], les cotations via [_historicalData]). Appelée depuis les
+  /// deux chargements et après chaque mutation du journal.
+  ///
+  /// Périmètre volontairement RÉDUIT par rapport au compte : un seul symbole,
+  /// et `txsByAccount` VIDE — une position n'a pas de trésorerie propre (les
+  /// espèces vivent au niveau du compte). Aucune question d'ancrage cash ne se
+  /// pose donc ici.
+  void _computeRealCurve() {
+    final data = _historicalData;
+    final symbol = _currentPosition.symbol;
+
+    // Journal vide (position legacy) ou aucune cotation : rien à reconstruire.
+    if (data == null || data.isEmpty || _transactions.isEmpty) {
+      _resetRealCurve();
+      return;
+    }
+
+    final txsBySymbol = {symbol: _transactions};
+
+    // Borne gauche « Max » : la grille naît de l'historique de COTATION, qui
+    // remonte à l'introduction du support — sans ce rognage, un titre coté
+    // depuis 2001 impose vingt ans de ligne plate à zéro avant le premier
+    // achat (même correctif que l'écran compte).
+    DateTime? firstTxDate;
+    for (final tx in _transactions) {
+      if (firstTxDate == null || tx.date.isBefore(firstTxDate)) {
+        firstTxDate = tx.date;
+      }
+    }
+    final gridDates = HistoryAggregator.applyGridFrom(
+      List<DateTime>.from(data.dates)..sort(),
+      _selectedPeriod == ChartPeriod.max ? firstTxDate : null,
+    );
+    if (gridDates.isEmpty) {
+      _resetRealCurve();
+      return;
+    }
+
+    final symbolToData = <String, AssetHistoricalData?>{symbol: data};
+    final assetBySymbol = <String, Asset>{symbol: _currentPosition.asset};
+
+    final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+      txsBySymbol: txsBySymbol,
+      txsByAccount: const {},
+      symbolToData: symbolToData,
+      assetBySymbol: assetBySymbol,
+      usdToEurRate: _usdToEurRate,
+      gridDates: gridDates,
+    );
+
+    final contributions = HistoryAggregator.buildExternalFlowsCurve(
+      txsBySymbol: txsBySymbol,
+      txsByAccount: const {},
+      symbolToData: symbolToData,
+      assetBySymbol: assetBySymbol,
+      usdToEurRate: _usdToEurRate,
+      gridDates: gridDates,
+    );
+
+    // Gain de période APRÈS les deux courbes : [computeRealGains] les suppose
+    // déjà alignées index-par-index.
+    final gains = HistoryAggregator.computeRealGains(
+      values: reconstructed.values,
+      externalFlows: contributions,
+      gridDates: gridDates,
+    );
+
+    _realDates = reconstructed.dates;
+    _realValues = reconstructed.values;
+    _realContributions = contributions;
+    _realPeriodGain = gains.periodGain;
+    _realPeriodGainPercent = gains.periodGainPercent;
+    _realPeriodGainPercentAnnualized = gains.periodGainPercentAnnualized;
+  }
+
+  void _resetRealCurve() {
+    _realDates = [];
+    _realValues = [];
+    _realContributions = [];
+    _realPeriodGain = null;
+    _realPeriodGainPercent = null;
+    _realPeriodGainPercentAnnualized = null;
   }
 
   void _calculatePeriodVariation(AssetHistoricalData data) {
@@ -941,6 +1082,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                   ),
                   const SizedBox(height: 8),
                   _buildPeriodSelector(),
+                  _buildModeSelector(),
                 ],
               ),
               const SizedBox(height: 16),
@@ -1181,11 +1323,81 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
+  /// Sélecteur de mode, identique à celui de l'écran compte — masqué tant
+  /// qu'il n'y a pas de courbe réelle (une position legacy n'a qu'un mode : lui
+  /// proposer un choix tautologique n'aurait aucun sens).
+  Widget _buildModeSelector() {
+    if (!_hasRealCurve) return const SizedBox.shrink();
+    final l10n = AppLocalizations.of(context)!;
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SegmentedButton<bool>(
+            // « Évolution réelle » en premier : c'est le mode par défaut et
+            // celui qui dit ce qui s'est vraiment passé (même ordre que les
+            // écrans compte et patrimoine).
+            segments: [
+              ButtonSegment(
+                value: true,
+                label: Text(l10n.chartModeRealEvolution),
+              ),
+              ButtonSegment(
+                value: false,
+                label: Text(l10n.chartModePerformance),
+              ),
+            ],
+            selected: {_showRealCurve},
+            showSelectedIcon: false,
+            style: const ButtonStyle(visualDensity: VisualDensity.compact),
+            onSelectionChanged: (selection) {
+              setState(() => _showRealCurve = selection.first);
+            },
+          ),
+          Tooltip(
+            message: l10n.chartHelpTooltip,
+            child: InkWell(
+              onTap: () => showHelpDialog(
+                context,
+                title: l10n.chartModeHelpTitle,
+                body: l10n.chartModeHelpPositionBody,
+              ),
+              borderRadius: BorderRadius.circular(12),
+              child: const Padding(
+                padding: EdgeInsets.all(8),
+                child: Icon(Icons.info_outline, size: 16),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildInfoCard() {
     final l10n = AppLocalizations.of(context)!;
     final position = _currentPosition;
     final isUsd = position.currency.toUpperCase() == 'USD';
-    final isPositive = _periodChange != null ? _periodChange! >= 0 : true;
+
+    // Chiffres de la carte de PÉRIODE, résolus selon le mode affiché. En mode
+    // réel le gain est celui HORS APPORTS (Modified Dietz) : `valeur fin −
+    // valeur début` compterait un achat de la fenêtre comme un gain, et
+    // contredirait la courbe juste au-dessus. Les valeurs de début/fin, elles,
+    // viennent alors de la courbe réelle — ce sont bien les montants détenus.
+    final useReal = _useRealCurve;
+    final periodChange = useReal ? _realPeriodGain : _periodChange;
+    final periodChangePercent =
+        useReal ? _realPeriodGainPercent : _periodChangePercent;
+    final periodStartValue =
+        useReal ? (_realValues.isNotEmpty ? _realValues.first : null)
+                : _periodStartValue;
+    final periodEndValue =
+        useReal ? (_realValues.isNotEmpty ? _realValues.last : null)
+                : _periodEndValue;
+
+    final isPositive = periodChange != null ? periodChange >= 0 : true;
     final changeColor = AppColors.gainLoss(context, isPositive);
     // Couleur d'identité de l'avatar : stable (dérivée du symbole), indépendante
     // de la performance — contrairement à changeColor utilisé ailleurs sur cette carte.
@@ -1383,8 +1595,16 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                       ),
                       const SizedBox(width: 6),
                       Text(
-                        l10n.variationOverPeriod(
-                            _selectedPeriod.localizedLabel(l10n)),
+                        // En mode réel, le titre DIT que les apports sont
+                        // exclus : sans cette mention, un gain plus petit que
+                        // « fin − début » passerait pour une erreur.
+                        useReal
+                            ? (_selectedPeriod == ChartPeriod.max
+                                ? l10n.chartPeriodGainScopeMax
+                                : l10n.chartPeriodGainScope(
+                                    _selectedPeriod.localizedLabel(l10n)))
+                            : l10n.variationOverPeriod(
+                                _selectedPeriod.localizedLabel(l10n)),
                         style: TextStyle(
                           color: changeColor,
                           fontSize: 12,
@@ -1402,8 +1622,8 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                           children: [
                             Text(
                               l10n.startValue(
-                                _periodStartValue != null
-                                    ? Formatters.formatEur(_periodStartValue!)
+                                periodStartValue != null
+                                    ? Formatters.formatEur(periodStartValue)
                                     : l10n.notAvailable,
                               ),
                               style: TextStyle(
@@ -1416,8 +1636,8 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                             const SizedBox(height: 4),
                             Text(
                               l10n.endValue(
-                                _periodEndValue != null
-                                    ? Formatters.formatEur(_periodEndValue!)
+                                periodEndValue != null
+                                    ? Formatters.formatEur(periodEndValue)
                                     : l10n.notAvailable,
                               ),
                               style: TextStyle(
@@ -1434,8 +1654,8 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                         crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
                           Text(
-                            _periodChange != null
-                                ? Formatters.formatEurSigned(_periodChange!)
+                            periodChange != null
+                                ? Formatters.formatEurSigned(periodChange)
                                 : l10n.notAvailable,
                             style: TextStyle(
                               color: changeColor,
@@ -1444,11 +1664,21 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                             ),
                           ),
                           Text(
-                            _periodChangePercent != null
-                                ? Formatters.formatPercentFr(
-                                    _periodChangePercent!,
-                                  )
-                                : l10n.notAvailable,
+                            periodChangePercent == null
+                                ? l10n.notAvailable
+                                // Rendement annualisé en second nombre dès que
+                                // la fenêtre atteint un an, comme l'écran
+                                // compte — il ne remplace jamais le cumulé.
+                                : (useReal &&
+                                        _realPeriodGainPercentAnnualized != null
+                                    ? l10n.chartPercentWithAnnualized(
+                                        Formatters.formatPercentFr(
+                                            periodChangePercent),
+                                        Formatters.formatPercentFr(
+                                            _realPeriodGainPercentAnnualized!),
+                                      )
+                                    : Formatters.formatPercentFr(
+                                        periodChangePercent)),
                             style: TextStyle(
                               color: changeColor,
                               fontSize: 14,
@@ -1634,19 +1864,40 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         ? 350.0
         : (data.prices.length > 100 ? 300.0 : 250.0);
 
+    // Mode réel : quantité RÉELLEMENT détenue à chaque date, reconstruite
+    // depuis le journal, plus la ligne du capital investi (l'écart aux deux
+    // courbes est la plus-value latente). Mode 1 : quantité d'aujourd'hui
+    // appliquée aux cours passés, comportement historique de cette page.
+    final useReal = _useRealCurve;
+
     // Graphe partagé avec WalletView et AccountView : même rendu d'axes
     // (graduations Y « nice », labels X temps-based, tooltip année > 1 an),
     // même adaptation aux thèmes clair/sombre.
     return ValuationLineChart(
-      dates: data.dates,
-      values: totalValues,
+      dates: useReal ? _realDates : data.dates,
+      values: useReal ? _realValues : totalValues,
       selectedPeriod: _selectedPeriod,
-      periodChange: _periodChange,
+      // Colore la courbe sur le gain du mode AFFICHÉ : en mode réel c'est le
+      // gain hors apports, jamais la variation naïve (même correctif que
+      // l'écran compte, sans quoi la courbe passe au rouge sur un simple
+      // renfort).
+      periodChange: useReal ? _realPeriodGain : _periodChange,
       height: chartHeight,
       leftTitlesReservedSize: 50,
       barWidth: 2,
       showSnapshotLegend: false,
+      contributionsSpots:
+          useReal ? _buildContributionsSpots(_realContributions) : const [],
     );
+  }
+
+  /// Série « capital investi » au format du graphe. Vide si tout est à zéro :
+  /// une ligne plate à zéro n'apporte rien et écraserait l'échelle.
+  List<FlSpot> _buildContributionsSpots(List<double> values) {
+    if (values.isEmpty || values.every((v) => v == 0)) return const [];
+    return [
+      for (int i = 0; i < values.length; i++) FlSpot(i.toDouble(), values[i]),
+    ];
   }
 
   // ---------------------------------------------------------------------------
