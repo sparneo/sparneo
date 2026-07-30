@@ -1279,6 +1279,11 @@ class _AccountViewState extends State<AccountView> {
                             periodChangePercent: positionData.periodChangePercent,
                             onTap: () => _navigateToDetail(positionData),
                             usdToEurRate: _ctrl.usdToEurRate,
+                            // Même libellé que le sélecteur de période (« 1M »,
+                            // « Max »…) : le chiffre est ainsi rattachable au
+                            // réglage qui le pilote, sans passer par le
+                            // sélecteur de MODE, qui ne le change pas.
+                            periodLabel: _ctrl.selectedPeriod.label,
                             // Badge « Cours du JJ/MM » : non-null uniquement pour un
                             // cours servi depuis le cache (dernier cours connu). En
                             // direct lastUpdated est null → aucun badge.

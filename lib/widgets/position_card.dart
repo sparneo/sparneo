@@ -14,6 +14,12 @@ class PositionCard extends StatelessWidget {
   final VoidCallback? onTap;
   final double usdToEurRate;
 
+  /// Libellé court de la période sélectionnée (« 1M », « 1A », « Max »… — celui
+  /// même du sélecteur, cf. [ChartPeriod.label]), préfixé au pourcentage de
+  /// période. Sans lui, deux pourcentages voisins seraient indiscernables.
+  /// `null` (défaut) : la variation de période n'est pas affichée.
+  final String? periodLabel;
+
   /// Date de mise en cache du cours (null = cotation en direct). Affiche un
   /// badge « Cours du JJ/MM » quand la donnée provient du cache.
   final DateTime? lastUpdated;
@@ -27,6 +33,7 @@ class PositionCard extends StatelessWidget {
     this.onTap,
     this.usdToEurRate = 0.92,
     this.lastUpdated,
+    this.periodLabel,
   });
 
   @override
@@ -41,10 +48,25 @@ class PositionCard extends StatelessWidget {
         ? (currentPrice! - pru) / pru * 100
         : null;
 
+    // Variation de PÉRIODE, affichée À CÔTÉ de la PV et non à sa place : les
+    // deux répondent à des questions différentes (« où j'en suis depuis mes
+    // achats » / « ce que le titre a fait sur la fenêtre choisie »). Elle n'est
+    // volontairement PAS liée au sélecteur de mode du graphe : ce pourcentage
+    // est le mouvement du COURS (cf. `computeIndividualPeriodChanges`), donc
+    // identique dans les deux modes — l'y accrocher ferait croire que le mode
+    // change les chiffres des positions. Seul le [periodChange] en euros, lui,
+    // serait mode-dépendant (il suppose la quantité d'aujourd'hui sur toute la
+    // fenêtre) : c'est pourquoi la carte n'affiche que le pourcentage.
+    final double? periodPercent = periodLabel != null
+        ? periodChangePercent
+        : null;
+
+    // Le pictogramme suit la PV quand elle existe (chiffre principal), sinon la
+    // variation de période — jamais un mélange des deux signes.
     final isPositive = gainPercent != null
         ? gainPercent >= 0
-        : (periodChangePercent != null
-              ? periodChangePercent! >= 0
+        : (periodPercent != null
+              ? periodPercent >= 0
               : (periodChange != null && periodChange! >= 0));
 
     final changeColor = AppColors.gainLoss(context, isPositive);
@@ -135,8 +157,18 @@ class PositionCard extends StatelessWidget {
                     const SizedBox(height: 4),
 
                     // LIGNE 2 : QUANTITÉ x PRIX UNITAIRE + VARIATION
+                    //
+                    // Les DEUX côtés sont flexibles, avec plus de poids à droite
+                    // (3 contre 2) : depuis que la variation porte deux chiffres
+                    // au lieu d'un, sa largeur naturelle pouvait dépasser la
+                    // carte sur mobile étroit — un bloc non contraint débordait
+                    // alors (mesuré : 80 px sur une carte de 280). Sous
+                    // pression, chaque côté se réduit au lieu que la ligne
+                    // déborde ; les chiffres passent à la ligne plutôt que
+                    // d'être tronqués, la quantité s'abrège.
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         // ⭐ ESPACE APRÈS LA QUANTITÉ
                         // Flexible + ellipsis : le prix sans perte (cf.
@@ -144,6 +176,7 @@ class PositionCard extends StatelessWidget {
                         // arrondi à 2 décimales, ne pas laisser cette ligne
                         // déborder la carte sur un écran étroit.
                         Flexible(
+                          flex: 2,
                           child: Text(
                             '${position.quantity} x ${_formatPriceWithConversion(price)}',
                             style: TextStyle(
@@ -157,35 +190,38 @@ class PositionCard extends StatelessWidget {
                           ),
                         ),
 
-                        // Variation : plus-value latente (PV) si PRU défini,
-                        // sinon variation sur la période sélectionnée.
-                        Row(
-                          children: [
-                            Icon(
-                              isPositive
-                                  ? Icons.trending_up
-                                  : Icons.trending_down,
-                              color: changeColor,
-                              size: 12,
-                            ),
-                            const SizedBox(width: 2),
-                            Text(
-                              gainPercent != null
-                                  ? l10n.unrealizedGainShort(
-                                      Formatters.formatPercentFr(gainPercent),
-                                    )
-                                  : (periodChangePercent != null
-                                        ? Formatters.formatPercentFr(
-                                            periodChangePercent!,
-                                          )
-                                        : l10n.notAvailable),
-                              style: TextStyle(
+                        // Variation : plus-value latente (PV) et/ou variation
+                        // sur la période sélectionnée, chacune COLORÉE PAR SON
+                        // PROPRE SIGNE (une PV en hausse peut coexister avec un
+                        // mois en baisse — une couleur unique mentirait).
+                        // `Text.rich` plutôt que deux widgets : un seul flux de
+                        // texte, donc pas de retour à la ligne entre le nombre
+                        // et son signe sur écran étroit.
+                        const SizedBox(width: 8),
+                        Flexible(
+                          flex: 3,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                isPositive
+                                    ? Icons.trending_up
+                                    : Icons.trending_down,
                                 color: changeColor,
-                                fontSize: 12,
-                                fontWeight: FontWeight.w500,
+                                size: 12,
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 2),
+                              Flexible(
+                                child: _changeText(
+                                  context,
+                                  l10n,
+                                  gainPercent: gainPercent,
+                                  periodPercent: periodPercent,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -211,6 +247,59 @@ class PositionCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  /// « PV +12,3 % · 1M −1,4 % » — l'un, l'autre, ou les deux.
+  ///
+  /// Le préfixe de période (« 1M », « Max »…) est indispensable : sans lui deux
+  /// pourcentages côte à côte seraient impossibles à attribuer.
+  Widget _changeText(
+    BuildContext context,
+    AppLocalizations l10n, {
+    required double? gainPercent,
+    required double? periodPercent,
+  }) {
+    const style = TextStyle(fontSize: 12, fontWeight: FontWeight.w500);
+
+    if (gainPercent == null && periodPercent == null) {
+      return Text(
+        l10n.notAvailable,
+        style: style.copyWith(color: AppColors.gainLoss(context, true)),
+      );
+    }
+
+    return Text.rich(
+      textAlign: TextAlign.end,
+      TextSpan(
+        style: style,
+        children: [
+          if (gainPercent != null)
+            TextSpan(
+              text: l10n.unrealizedGainShort(
+                Formatters.formatPercentFr(gainPercent),
+              ),
+              style: TextStyle(
+                color: AppColors.gainLoss(context, gainPercent >= 0),
+              ),
+            ),
+          if (gainPercent != null && periodPercent != null)
+            TextSpan(
+              text: ' · ',
+              style: TextStyle(
+                color: Theme.of(context).colorScheme.onSurfaceVariant,
+              ),
+            ),
+          if (periodPercent != null)
+            TextSpan(
+              text:
+                  '$periodLabel ${Formatters.formatPercentFr(periodPercent)}',
+              style: TextStyle(
+                color: AppColors.gainLoss(context, periodPercent >= 0),
+              ),
+            ),
+        ],
       ),
     );
   }
