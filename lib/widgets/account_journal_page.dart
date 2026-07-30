@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
@@ -10,7 +11,9 @@ import 'package:portfolio_tracker/utils/app_snackbar.dart';
 import 'package:portfolio_tracker/utils/error_text.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/common/empty_state.dart';
+import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
+import 'package:portfolio_tracker/widgets/position_detail_page.dart';
 import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 
 // ---------------------------------------------------------------------------
@@ -206,6 +209,37 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     }
   }
 
+  /// Libellé d'une ligne : la NATURE de l'opération sur titre quand l'import
+  /// l'a conservée (`meta['corporateAction']`), sinon le kind seul.
+  ///
+  /// Motif (retour auteur, « pourquoi je vois des ajustements ? ») : `adjustment`
+  /// recouvre une attribution GRATUITE, un CHANGEMENT DE PLACE et une
+  /// RÉGULARISATION PEA — trois choses sans rapport. Affiché « Ajustement », ça
+  /// se lit comme une correction douteuse alors que la ligne est légitime.
+  ///
+  /// Purement cosmétique : un `meta` absent (mouvement saisi à la main, ou
+  /// importé AVANT que cette clé existe) retombe simplement sur le kind — aucun
+  /// calcul n'en dépend, et un nom d'enum inconnu (backup d'une version future)
+  /// est ignoré plutôt que de faire échouer l'affichage.
+  String _txNatureLabel(AppLocalizations l10n, AssetTransaction tx) {
+    final raw = tx.meta?['corporateAction'];
+    if (raw is String) {
+      switch (raw) {
+        case 'freeAttribution':
+          return l10n.corporateActionFreeAttribution;
+        case 'placeChange':
+          return l10n.corporateActionPlaceChange;
+        case 'cashRegularization':
+          return l10n.corporateActionCashRegularization;
+        case 'fractionalRedemption':
+          return l10n.corporateActionFractionalRedemption;
+        case 'transferOut':
+          break; // le kind transferOut est déjà explicite
+      }
+    }
+    return _kindLabel(l10n, tx.kind);
+  }
+
   String _formatTxDate(DateTime dt) =>
       '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
 
@@ -320,6 +354,56 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       );
       await _load();
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Navigation vers la fiche position (foyer d'édition d'un mouvement TITRE).
+  //
+  // Un mouvement rattaché à un titre (`symbol != null` : buy/sell/dividend, ou
+  // une jambe titre système) ne s'édite PAS ici — le dialogue de ce journal
+  // force `symbol: null` et le transformerait en espèces pures. Sa fiche
+  // position porte le dialogue titre complet (quantité × prix, frais,
+  // reprojection du PRU). On y navigue donc plutôt que de laisser un tap mort.
+  // ---------------------------------------------------------------------------
+
+  Future<void> _openPositionForSymbol(String symbol) async {
+    final l10n = AppLocalizations.of(context)!;
+    final positions = await _accountStorage.getPositions(widget.accountId);
+    if (!mounted) return;
+    final position = positions.cast<Position?>().firstWhere(
+          (p) => p?.symbol == symbol,
+          orElse: () => null,
+        );
+    // Titre SOLDÉ (aucune position résiduelle) : rien à ouvrir. On explique au
+    // lieu de laisser croire à un bug — le mouvement reste consultable ici.
+    if (position == null) {
+      showHelpDialog(
+        context,
+        title: l10n.journalTitleLineTitle,
+        body: l10n.journalSoldTitleBody,
+      );
+      return;
+    }
+    await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PositionDetailPage(position: position),
+      ),
+    );
+    if (mounted) await _load();
+  }
+
+  // Ligne SYSTÈME espèces (openingBalance/adjustment/transferOut, `symbol` null)
+  // : lecture seule — sémantique câblée ailleurs (ancre de trésorerie, jambe
+  // d'OST) qu'un dialogue générique casserait. Un tap explique le pourquoi au
+  // lieu de rester inerte (le vrai défaut relevé : un tap mort sans raison).
+  void _showSystemLineHelp() {
+    final l10n = AppLocalizations.of(context)!;
+    showHelpDialog(
+      context,
+      title: l10n.journalSystemLineTitle,
+      body: l10n.journalSystemLineBody,
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -515,31 +599,84 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     // Ligne symbole / libellé cash
     final symbolLabel = tx.symbol ?? l10n.cashLabel;
 
-    // Sous-titre : qty × prix si disponibles, sinon type
-    String subtitle;
-    if (tx.quantity != null && tx.unitPrice != null) {
-      subtitle = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
+    // Sous-titre : la NATURE de l'opération d'abord quand l'import l'a
+    // conservée, car « qty × prix » la masquait au pire moment — une attribution
+    // gratuite s'affichait « 89 × 0 EUR » et un changement de place « 0 × 0 »,
+    // deux lignes indéchiffrables. Les chiffres restent appondus quand ils
+    // portent une information (rachat de rompus). Sans nature connue :
+    // comportement d'origine inchangé (qty × prix, sinon le kind).
+    final hasQtyPrice = tx.quantity != null && tx.unitPrice != null;
+    final qtyPrice = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
+    final nature = _txNatureLabel(l10n, tx);
+    final String subtitle;
+    if (tx.meta?['corporateAction'] is String) {
+      final meaningfulNumbers = hasQtyPrice &&
+          (double.tryParse(tx.quantity!) ?? 0) != 0 &&
+          (double.tryParse(tx.unitPrice!) ?? 0) != 0;
+      subtitle = meaningfulNumbers ? '$nature · $qtyPrice' : nature;
+    } else if (hasQtyPrice) {
+      subtitle = qtyPrice;
     } else {
-      subtitle = _kindLabel(l10n, tx.kind);
+      subtitle = nature;
     }
 
-    // Mouvement système (openingBalance/adjustment/transferOut) : lecture
-    // seule dans CE journal (cf. TransactionKind.isSystemGenerated) — ni tap
-    // ni bouton supprimer, tuile visuellement inchangée. Seuls les 4 kinds
-    // cash saisis à la main (deposit/withdrawal/interest/charge, les mêmes que
-    // _openAddCashTransaction) sont éditables/supprimables ici.
+    // TROIS familles, chacune avec un tap PRÉVISIBLE (uniformisation du 30/07 :
+    // le vrai défaut n'était pas que les espèces soient éditables, mais qu'une
+    // ligne titre soit un tap MORT sans explication) :
     //
-    // `tx.symbol == null` est une seconde garde NÉCESSAIRE : ce journal liste
-    // TOUTES les transactions du compte (TransactionStorage.getByAccount ne
-    // filtre que par account_id, pas par symbole) — sur un compte titres, les
-    // lignes buy/sell/dividend y apparaissent aussi et ne sont PAS
-    // isSystemGenerated. Sans cette garde, taper une ligne buy l'ouvrirait
-    // dans _openEditTransaction qui force symbol: null, la ré-émettant en
-    // mouvement cash pur et lui faisant perdre son rattachement au titre.
-    final editable = !tx.kind.isSystemGenerated && tx.symbol == null;
+    // 1. ESPÈCES ORDINAIRES (`!isSystemGenerated && symbol == null` :
+    //    deposit/withdrawal/interest/charge) → éditables/supprimables ICI, seul
+    //    foyer de leur sémantique. Le critère est la NATURE de la ligne, jamais
+    //    son origine : un dépôt importé d'un relevé est aussi éditable qu'un
+    //    dépôt saisi à la main (l'utilisateur doit pouvoir corriger un import).
+    // 2. TITRE (`symbol != null` : buy/sell/dividend, ou une jambe titre
+    //    système) → tap qui NAVIGUE vers la fiche position, où vit le dialogue
+    //    titre complet. Éditer ici forcerait `symbol: null` (cf.
+    //    _openEditTransaction) et casserait le rattachement au titre.
+    // 3. SYSTÈME espèces (`isSystemGenerated && symbol == null`) → lecture
+    //    seule, mais un tap EXPLIQUE le pourquoi (ancre de trésorerie / jambe
+    //    d'OST, câblées ailleurs) au lieu de rester inerte.
+    final isPlainCash = !tx.kind.isSystemGenerated && tx.symbol == null;
+    final isTitleLinked = tx.symbol != null;
+
+    final VoidCallback? onTap;
+    if (isPlainCash) {
+      onTap = () => _openEditTransaction(tx);
+    } else if (isTitleLinked) {
+      onTap = () => _openPositionForSymbol(tx.symbol!);
+    } else {
+      onTap = _showSystemLineHelp;
+    }
+
+    // Affordance de fin de tuile, alignée sur le tap : supprimer (espèces),
+    // chevron « ouvre ailleurs » (titre), ⓘ « pourquoi verrouillé » (système).
+    final Widget trailing;
+    if (isPlainCash) {
+      trailing = IconButton(
+        icon: Icon(
+          Icons.delete_outline,
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        tooltip: l10n.deleteTooltip,
+        onPressed: () => _confirmDeleteTransaction(tx),
+      );
+    } else if (isTitleLinked) {
+      trailing = Icon(
+        Icons.chevron_right,
+        size: 20,
+        color: theme.colorScheme.onSurfaceVariant,
+      );
+    } else {
+      trailing = Icon(
+        Icons.info_outline,
+        size: 18,
+        color: theme.colorScheme.onSurfaceVariant,
+      );
+    }
 
     return InkWell(
-      onTap: editable ? () => _openEditTransaction(tx) : null,
+      onTap: onTap,
       borderRadius: BorderRadius.circular(8),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -583,16 +720,8 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
               amountLabel,
               style: TextStyle(color: amountColor, fontWeight: FontWeight.w600),
             ),
-            if (editable)
-              IconButton(
-                icon: Icon(
-                  Icons.delete_outline,
-                  size: 18,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                tooltip: l10n.deleteTooltip,
-                onPressed: () => _confirmDeleteTransaction(tx),
-              ),
+            const SizedBox(width: 4),
+            trailing,
           ],
         ),
       ),

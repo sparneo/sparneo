@@ -110,6 +110,39 @@ void main() {
       expect(tx.amount, isNull);
     });
 
+    test(
+        'la NATURE de l\'opération est conservée dans meta (affichage du '
+        'journal : « Ajustement » seul est indéchiffrable)', () {
+      // Trois lignes produisant le MÊME kind `adjustment` pour trois opérations
+      // sans rapport — c'est précisément ce qui a alarmé l'auteur sur un import
+      // pourtant sain. `meta['corporateAction']` porte le nom de l'enum, stable
+      // et traduisible côté UI ; jamais le libellé brut du relevé.
+      expect(
+        _one(['20200117', 'ATTRI', 'Attribution', _isin, '2', '15', '', ''])
+            .transaction!
+            .meta?['corporateAction'],
+        'freeAttribution',
+      );
+      expect(
+        _one(['20200119', 'CHGPL', 'Changement place', _isin, '7', '20', '', ''])
+            .transaction!
+            .meta?['corporateAction'],
+        'placeChange',
+      );
+      expect(
+        _one(['20200118', 'ODRMP', 'Rompus', _isin, '0.4', '12', '', '4.8'])
+            .transaction!
+            .meta?['corporateAction'],
+        'fractionalRedemption',
+      );
+      // La clé de dédup n'est PAS affectée par l'ajout de cette clé meta
+      // (elle est calculée sur le CONTENU de la ligne, pas sur meta) : un
+      // ré-import d'un relevé déjà importé doit rester un doublon.
+      final again =
+          _one(['20200117', 'ATTRI', 'Attribution', _isin, '2', '15', '', '']);
+      expect(again.importKey, isNotNull);
+    });
+
     test('DS → rejet motivé (à revoir manuellement)', () {
       final m = _one(
         ['20200120', 'DS', 'Détachement droit', _isin, '1', '', '', ''],

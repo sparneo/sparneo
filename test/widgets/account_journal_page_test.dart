@@ -23,6 +23,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseExecutor;
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
@@ -41,6 +42,13 @@ class _FakeAccountStorage extends AccountStorage {
 
   @override
   Future<Account?> getAccount(String id) async => account;
+
+  // Aucune position en mémoire : taper une ligne TITRE emprunte donc la branche
+  // « titre soldé » de _openPositionForSymbol (popup d'explication), qui ne
+  // navigue pas — la navigation vers PositionDetailPage ouvrirait une vraie base
+  // SQLite, ce que ces tests widget ne peuvent pas (cf. entête de fichier).
+  @override
+  Future<List<Position>> getPositions(String accountId) async => const [];
 }
 
 class _FakeTransactionStorage extends TransactionStorage {
@@ -199,8 +207,9 @@ void main() {
     );
 
     testWidgets(
-      'openingBalance / adjustment / transferOut / buy-sell-dividend '
-      '(titres) : lecture seule (ni tap ni bouton supprimer)',
+      'openingBalance / adjustment ESPÈCES (système) : tap → popup '
+      '« Mouvement automatique », JAMAIS le dialogue d\'édition, aucun '
+      'bouton supprimer',
       (tester) async {
         final txs = [
           _cashTx(
@@ -215,11 +224,48 @@ void main() {
             date: DateTime(2024, 2, 2),
             amount: '20',
           ),
-          // transferOut : sortie de TITRES (symbol non-null), AUCUN effet
-          // cash (amount null). Atteignable dans CE journal de compte car
-          // TransactionStorage.getByAccount filtre par account_id, pas par
-          // symbole — un compte titres avec un transfert sortant fait
-          // remonter cette ligne ici aussi.
+        ];
+
+        final ledger = _FakeLedgerService(txs);
+
+        for (final tx in txs) {
+          await tester.pumpWidget(_host(txs: List.of(txs), ledger: ledger));
+          await tester.pumpAndSettle();
+
+          final dateText = _fmtDate(tx.date);
+          // La tuile RÉAGIT (plus de tap mort — le défaut corrigé), mais
+          // n'édite pas : jamais de bouton supprimer.
+          expect(_tileInkWell(tester, dateText).onTap, isNotNull);
+          expect(
+            _tileDeleteButton(dateText),
+            findsNothing,
+            reason: '${tx.kind.wire} ne doit PAS afficher de bouton supprimer',
+          );
+
+          await tester.tap(find.text(dateText));
+          await tester.pumpAndSettle();
+
+          // Popup d'explication, PAS le dialogue d'édition cash.
+          expect(find.text('Mouvement automatique'), findsOneWidget);
+          expect(ledger.recorded, isEmpty,
+              reason: 'aucune écriture ne doit partir d\'un tap système');
+          // Referme la popup avant l'itération suivante.
+          await tester.tap(find.text('Fermer'));
+          await tester.pumpAndSettle();
+        }
+      },
+    );
+
+    testWidgets(
+      'ligne TITRE (buy/transferOut, symbol non-null) : tap → fiche position '
+      '(ici titre soldé ⇒ popup), JAMAIS le dialogue cash ; aucun bouton '
+      'supprimer',
+      (tester) async {
+        // transferOut (sortie de titres) et buy portent un `symbol` : ils
+        // remontent dans CE journal de compte (getByAccount ne filtre pas par
+        // symbole). Sans routage, taper une ligne buy l'aurait ré-émise avec
+        // symbol: null et lui aurait fait perdre son rattachement au titre.
+        final txs = [
           _cashTx(
             id: 'tx-transferout',
             kind: TransactionKind.transferOut,
@@ -227,12 +273,6 @@ void main() {
             symbol: 'AAPL',
             quantity: '-5',
           ),
-          // buy : PAS isSystemGenerated, mais porte un symbole — même
-          // raison qu'au-dessus, un compte titres fait remonter ses achats
-          // dans ce journal de compte. Sans la garde `tx.symbol == null`,
-          // cette ligne serait tapable et _openEditTransaction la
-          // ré-émettrait avec symbol: null, lui faisant perdre son
-          // rattachement au titre (risque identifié en revue, pas théorique).
           _cashTx(
             id: 'tx-buy',
             kind: TransactionKind.buy,
@@ -244,23 +284,24 @@ void main() {
         ];
 
         final ledger = _FakeLedgerService(txs);
-        await tester.pumpWidget(_host(txs: List.of(txs), ledger: ledger));
-        await tester.pumpAndSettle();
 
         for (final tx in txs) {
+          await tester.pumpWidget(_host(txs: List.of(txs), ledger: ledger));
+          await tester.pumpAndSettle();
+
           final dateText = _fmtDate(tx.date);
-          final inkWell = _tileInkWell(tester, dateText);
-          expect(
-            inkWell.onTap,
-            isNull,
-            reason: '${tx.kind.wire} doit rester en lecture seule (pas de tap)',
-          );
-          expect(
-            _tileDeleteButton(dateText),
-            findsNothing,
-            reason:
-                '${tx.kind.wire} ne doit PAS afficher de bouton supprimer',
-          );
+          expect(_tileInkWell(tester, dateText).onTap, isNotNull);
+          expect(_tileDeleteButton(dateText), findsNothing);
+
+          await tester.tap(find.text(dateText));
+          await tester.pumpAndSettle();
+
+          // _FakeAccountStorage.getPositions renvoie [] → branche « titre
+          // soldé » : popup dédiée, jamais le dialogue d'édition cash.
+          expect(find.text('Mouvement sur titre'), findsOneWidget);
+          expect(ledger.recorded, isEmpty);
+          await tester.tap(find.text('Fermer'));
+          await tester.pumpAndSettle();
         }
       },
     );

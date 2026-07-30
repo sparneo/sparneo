@@ -113,9 +113,9 @@
     "description": "Title of the help popup explaining both chart modes at once, opened via the info icon next to the mode selector (SegmentedButton)"
   },
 
-  "chartModeHelpBody": "\"Your holdings\": value your current holdings would have had at past prices (today's quantities assumed constant) — doesn't reflect your real buys and sells.\n\n\"Real evolution\": reconstructed from your journaled transactions (buys, sells, deposits, withdrawals) — the actual course of your wealth over time.",
+  "chartModeHelpBody": "\"Real evolution\": reconstructed from your journaled transactions (buys, sells, deposits, withdrawals) — the actual course of your wealth over time.\n\n\"Your holdings\": value your current holdings would have had at past prices (today's quantities assumed constant) — doesn't reflect your real buys and sells.",
   "@chartModeHelpBody": {
-    "description": "Body of the help popup explaining both chart modes at once (merges the former chartModePerformanceCaption method explanation and chartModeRealCaption's journal-reconstruction sentence)"
+    "description": "Body of the help popup explaining both chart modes at once (merges the former chartModePerformanceCaption method explanation and chartModeRealCaption's journal-reconstruction sentence). ORDER MATTERS: \"Real evolution\" comes FIRST, matching both the mode selector order and the default mode since the UI decluttering pass — the popup used to open on the non-default mode, which read as if it were the main one."
   },
 
   "chartRealExcludedLegacyCaption": "{count, plural, =1{One position entered without history isn't included in this curve.} other{{count} positions entered without history aren't included in this curve.}}",
@@ -1494,6 +1494,23 @@
     "description": "Transaction kind: inventory adjustment movement emitted on position edit"
   },
 
+  "corporateActionFreeAttribution": "Free share attribution",
+  "@corporateActionFreeAttribution": {
+    "description": "Journal line label for an imported free-share attribution. Shown INSTEAD of the generic kind name: 'adjustment' covers three unrelated operations (free attribution, listing-venue change, cash regularisation) and reads like a dubious manual correction, which alarmed the author on a perfectly clean import."
+  },
+  "corporateActionPlaceChange": "Listing venue change",
+  "@corporateActionPlaceChange": {
+    "description": "Journal line label for an imported listing-venue change. Deliberately journalled as a quantity-0 no-op: it keeps the statement's trace without ever altering the position, so a precise label is what makes the otherwise empty line meaningful."
+  },
+  "corporateActionCashRegularization": "Cash regularisation",
+  "@corporateActionCashRegularization": {
+    "description": "Journal line label for an imported pure-cash corporate action (e.g. Bourse Direct PEAMI/ODOST), where any ISIN on the source row is only a reference"
+  },
+  "corporateActionFractionalRedemption": "Fractional share redemption",
+  "@corporateActionFractionalRedemption": {
+    "description": "Journal line label for an imported cash redemption of fractional shares left over from an attribution or split"
+  },
+
   "transactionKindInterest": "Interest",
   "@transactionKindInterest": {
     "description": "Transaction kind: interest earned on cash (cash movement)"
@@ -1629,6 +1646,23 @@
         "example": "PEA BNP"
       }
     }
+  },
+
+  "journalTitleLineTitle": "Security movement",
+  "@journalTitleLineTitle": {
+    "description": "Title of the help popup shown when tapping a security-linked line (buy/sell/dividend) in the account journal whose position no longer exists (sold out)"
+  },
+  "journalSoldTitleBody": "This movement belongs to a security you no longer hold: its detail page went away with the closed position. The movement stays viewable here, read-only.",
+  "@journalSoldTitleBody": {
+    "description": "Body explaining why a security-linked line can't be opened (position sold out)"
+  },
+  "journalSystemLineTitle": "Automatic movement",
+  "@journalSystemLineTitle": {
+    "description": "Title of the help popup shown when tapping a read-only system-generated cash line in the account journal"
+  },
+  "journalSystemLineBody": "This line was generated automatically (opening balance, adjustment or corporate action) and anchors other figures — cash balance, cost basis. It can't be edited here so those figures stay correct. To change it, edit the original operation (a buy, a deposit) from its detail page.",
+  "@journalSystemLineBody": {
+    "description": "Body explaining why a system-generated cash line is read-only and where to make a correction instead"
   },
 
   "openJournalTooltip": "Transaction journal",

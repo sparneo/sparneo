@@ -1082,6 +1082,7 @@ class StatementImportService {
           amount: amount,
           symbol: r.symbol,
           needsResolution: r.symbol == null,
+          corporateAction: ca,
         );
 
     switch (ca) {
@@ -1168,6 +1169,7 @@ class StatementImportService {
           amount: signedAmount.toString(),
           symbol: null,
           needsResolution: false,
+          corporateAction: ca,
         );
     }
   }
@@ -1190,6 +1192,7 @@ class StatementImportService {
     String? amount,
     String? symbol,
     required bool needsResolution,
+    CorporateActionKind? corporateAction,
   }) {
     final currency = r.currencyRaw ?? accountCurrency;
 
@@ -1198,6 +1201,21 @@ class StatementImportService {
     // Séquence de fichier (ordre chronologique/intraday réel) : départage les
     // mouvements de même date au rejeu (cf. AssetTransaction.compareChronological).
     meta['seq'] = seq;
+
+    // NATURE de l'opération sur titre, conservée pour l'AFFICHAGE (retour
+    // auteur : « pourquoi je vois des ajustements ? »). Le kind seul est trop
+    // vague — `adjustment` recouvre une attribution gratuite, un changement de
+    // place et une régularisation PEA, trois choses sans rapport. Sans cette
+    // clé, le journal ne peut afficher que « Ajustement », qui se lit comme une
+    // correction douteuse alors que la ligne est parfaitement légitime.
+    //
+    // On stocke le nom de l'ENUM (stable, traduisible côté UI), jamais le
+    // libellé brut du relevé (non traduisible, tronqué par le courtier). Sert à
+    // l'affichage UNIQUEMENT : aucun calcul ne doit en dépendre — la sémantique
+    // est déjà entièrement portée par kind/quantity/unitPrice/amount/symbol.
+    if (corporateAction != null) {
+      meta['corporateAction'] = corporateAction.name;
+    }
 
     // ---- Clé de dédup ----
     final contentKey = _contentKey(
