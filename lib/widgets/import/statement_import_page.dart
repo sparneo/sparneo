@@ -161,6 +161,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
   String? _previewError;
   ImportPreview? _preview;
 
+  /// Choix utilisateur sur les doublons PROBABLES d'espèces (cf.
+  /// [ImportPreview.probableDuplicates]) : `false` par défaut = ne pas les
+  /// importer, le choix prudent. Le rapprochement étant INDÉCIDABLE (aucune
+  /// heure dans les relevés), la décision revient à l'utilisateur — on ne fait
+  /// que la lui présenter avec les éléments pour trancher.
+  bool _importProbableDuplicates = false;
+
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
   final Map<String, TextEditingController> _newAssetSymbolControllers = {};
 
@@ -826,8 +833,29 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return ImportPreview(
       toCreate: patchedToCreate,
       duplicates: preview.duplicates,
+      probableDuplicates: preview.probableDuplicates,
       rejects: preview.rejects,
       newAssets: patchedNewAssets,
+      projectedDeltas: preview.projectedDeltas,
+      legacySymbols: preview.legacySymbols,
+    );
+  }
+
+  /// Aperçu tel qu'il sera ÉCRIT : replie les doublons probables dans
+  /// `toCreate` si l'utilisateur a demandé de les importer quand même
+  /// ([_importProbableDuplicates]). Par défaut ils restent dehors — le
+  /// contrôleur les a délibérément exclus (cf.
+  /// [ImportPreview.probableDuplicates]).
+  ImportPreview _previewToWrite(ImportPreview preview) {
+    if (!_importProbableDuplicates || preview.probableDuplicates.isEmpty) {
+      return preview;
+    }
+    return ImportPreview(
+      toCreate: [...preview.toCreate, ...preview.probableDuplicates],
+      duplicates: preview.duplicates,
+      probableDuplicates: preview.probableDuplicates,
+      rejects: preview.rejects,
+      newAssets: preview.newAssets,
       projectedDeltas: preview.projectedDeltas,
       legacySymbols: preview.legacySymbols,
     );
@@ -954,7 +982,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
 
     setState(() => _confirming = true);
 
-    final resolvedPreview = _applyResolvedSymbols(preview);
+    final resolvedPreview = _previewToWrite(_applyResolvedSymbols(preview));
     final erreur = await widget.controller.confirmStatementImport(
       resolvedPreview,
       accountId: widget.accountId,
@@ -1479,11 +1507,22 @@ class _StatementImportPageState extends State<StatementImportPage> {
       // ou ne portant qu'une OST doit toujours montrer POURQUOI. Groupes rendus
       // à l'identique de la branche principale via [_rejectGroups].
       final rejectGroups = _rejectGroups(l10n, preview);
+      // Message CHIFFRÉ sur les DEUX axes. L'ancienne cascade testait les
+      // rejets d'abord et taisait alors le nombre de doublons : sur un
+      // ré-import réel (1334 doublons + 2 rejets), l'écran n'annonçait que
+      // « 2 lignes rejetées » — rien ne disait que le relevé avait bien été lu
+      // ni que ses 1334 autres lignes étaient déjà en base (retour auteur).
       final String emptyMessage;
-      if (preview.rejects.isNotEmpty) {
-        emptyMessage = l10n.importNoMovementsButRejected(preview.rejects.length);
+      if (preview.duplicates.isNotEmpty && preview.rejects.isNotEmpty) {
+        emptyMessage = l10n.importNoNewMovementsWithRejects(
+          preview.duplicates.length,
+          preview.rejects.length,
+        );
       } else if (preview.duplicates.isNotEmpty) {
-        emptyMessage = l10n.importNoNewMovements;
+        emptyMessage =
+            l10n.importNoNewMovementsCounted(preview.duplicates.length);
+      } else if (preview.rejects.isNotEmpty) {
+        emptyMessage = l10n.importNoMovementsButRejected(preview.rejects.length);
       } else {
         emptyMessage = l10n.importNothingToImport;
       }
@@ -1493,15 +1532,42 @@ class _StatementImportPageState extends State<StatementImportPage> {
           Text(l10n.importStep3Heading, style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 16),
           Text(emptyMessage),
+          // Même sur un ré-import intégral (tout en doublon, donc aucun groupe
+          // de mouvements affiché), les doublons probables et le repli de ligne
+          // restent signalés : c'est la SEULE occasion de les voir dans ce cas.
+          ..._probableDuplicateGroup(l10n, preview),
+          ..._mergedLegGroup(l10n, preview),
+          // Groupe des doublons rendu ICI AUSSI (replié, comme dans la branche
+          // principale) : sans lui, un ré-import intégral n'offrait AUCUN moyen
+          // de vérifier CE QUI avait été reconnu comme déjà présent — seul le
+          // nombre était annoncé, et même pas quand des rejets coexistaient.
+          if (preview.duplicates.isNotEmpty)
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              title: Text(l10n.importGroupDuplicates(preview.duplicates.length)),
+              children: _cappedMovementTiles(l10n, preview.duplicates),
+            ),
           if (rejectGroups.isNotEmpty) ...[
             const SizedBox(height: 8),
             ...rejectGroups,
           ],
           const SizedBox(height: 24),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: Text(l10n.importCloseButton),
-          ),
+          // Cette branche ne propose normalement que « Fermer » (rien à
+          // écrire). MAIS si l'utilisateur a demandé d'importer les doublons
+          // probables, il y a bel et bien quelque chose à écrire : sans ce
+          // bouton, la bascule ci-dessus serait inactionnable — c'est le cas
+          // EXACT d'un ré-import où toutes les lignes non-doublons sont des
+          // doublons probables (constaté : 1314 doublons + 22 dépôts).
+          if (_importProbableDuplicates && preview.probableDuplicates.isNotEmpty)
+            FilledButton(
+              onPressed: _confirming ? null : _confirmImport,
+              child: Text(l10n.importConfirmButton),
+            )
+          else
+            FilledButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: Text(l10n.importCloseButton),
+            ),
         ],
       );
     }
@@ -1526,6 +1592,16 @@ class _StatementImportPageState extends State<StatementImportPage> {
           title: Text(l10n.importGroupToCreate(preview.toCreate.length)),
           children: _cappedMovementTiles(l10n, preview.toCreate),
         ),
+
+        // Doublons probables : en TÊTE des groupes, juste sous le delta —
+        // c'est le seul groupe qui retire des lignes de l'import et qui attend
+        // une décision de l'utilisateur.
+        ..._probableDuplicateGroup(l10n, preview),
+
+        // Lignes réunies : juste après « à créer », au même titre que les OST à
+        // revoir — une ligne du relevé a disparu de la liste, ça se signale
+        // près du delta qu'elle a servi à corriger.
+        ..._mergedLegGroup(l10n, preview),
 
         // OST à revoir (dépliées, en avertissement) juste après « à créer » :
         // proches du delta qu'elles nuancent silencieusement.
@@ -1848,6 +1924,119 @@ class _StatementImportPageState extends State<StatementImportPage> {
         ),
       );
 
+  /// Ligne source (1-based) de la jambe espèces absorbée par [m], ou `null` si
+  /// ce mouvement n'est pas le produit d'un repli (§14.8).
+  int? _mergedLegSourceRow(ImportedMovement m) {
+    final meta = m.transaction?.meta;
+    if (meta == null || meta['mergedSettlementLeg'] != true) return null;
+    return meta['mergedLegSourceRow'] as int?;
+  }
+
+  /// Groupe « Doublons probables » (mouvements d'espèces) — cf.
+  /// [ImportPreview.probableDuplicates].
+  ///
+  /// Rendu en AVERTISSEMENT et déplié : ces mouvements ne seront PAS importés
+  /// par défaut, ce qui est un écart au comportement attendu (« mon relevé
+  /// contient N lignes, l'app en importe N−22 ») qu'on ne peut pas passer sous
+  /// silence. La bascule finale rend la décision à l'utilisateur : le
+  /// rapprochement est indécidable (aucune heure dans les relevés), donc
+  /// l'app expose ce qu'elle a vu et n'impose rien.
+  List<Widget> _probableDuplicateGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final probable = preview.probableDuplicates;
+    if (probable.isEmpty) return const [];
+    final theme = Theme.of(context);
+    return [
+      Card(
+        color: theme.colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.importGroupProbableDuplicates(probable.length),
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: theme.colorScheme.onErrorContainer,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                l10n.importProbableDuplicatesExplain,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onErrorContainer,
+                ),
+              ),
+              ..._cappedMovementTiles(l10n, probable),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _importProbableDuplicates,
+                onChanged: (v) =>
+                    setState(() => _importProbableDuplicates = v),
+                title: Text(
+                  l10n.importProbableDuplicatesIncludeLabel,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+                subtitle: Text(
+                  _importProbableDuplicates
+                      ? l10n.importProbableDuplicatesIncludeOn(probable.length)
+                      : l10n.importProbableDuplicatesIncludeOff(probable.length),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onErrorContainer,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// Groupe « Lignes réunies » — traçabilité du repli (§14.8).
+  ///
+  /// Un groupe DÉDIÉ, et non la seule mention sous la tuile d'accueil, parce
+  /// que celle-ci est inatteignable en pratique : les groupes sont plafonnés à
+  /// [_groupDisplayCap] tuiles dans l'ordre du fichier, et sur un relevé de
+  /// ~1 200 lignes l'accueil tombe derrière le « … et N autres ». Pire, un
+  /// ré-import intégral n'affiche AUCUN groupe de mouvements (branche
+  /// `toCreate.isEmpty`). Sans ce groupe, la ligne repliée disparaissait donc
+  /// de l'aperçu exactement comme avant le marqueur.
+  ///
+  /// Balaie UNIQUEMENT les mouvements qui seront RÉELLEMENT ÉCRITS (`toCreate`,
+  /// plus les doublons probables si l'utilisateur a choisi de les importer).
+  /// Les DOUBLONS en sont exclus délibérément (retour auteur) : pour eux rien
+  /// n'est écrit, la ligne repliée n'a donc aucune conséquence — l'annoncer est
+  /// du bruit sur un écran qui dit « rien à importer », et surtout c'est
+  /// TROMPEUR : ça suggère qu'on vient de réunir deux lignes du journal alors
+  /// qu'il n'a pas bougé. Cas le plus perfide : une opération importée AVANT
+  /// le correctif de fusion laisse la paire scindée en base, et l'écran
+  /// affirmerait « ces deux lignes ont été réunies » pendant qu'elles y sont
+  /// toujours toutes les deux (cf. la limite « ne répare pas un journal
+  /// existant », doc 17 §14.8).
+  ///
+  /// Déplié par défaut (une ligne du relevé a disparu de la liste des
+  /// mouvements à créer : ça se signale, ça ne se cherche pas).
+  List<Widget> _mergedLegGroup(AppLocalizations l10n, ImportPreview preview) {
+    final merged = [
+      for (final m in _previewToWrite(preview).toCreate)
+        if (_mergedLegSourceRow(m) != null) m,
+    ];
+    if (merged.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        initiallyExpanded: true,
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupMergedLegs(merged.length)),
+        children: _cappedMovementTiles(l10n, merged),
+      ),
+    ];
+  }
+
   /// Groupe « Nouveaux actifs » de l'aperçu : ne présente QUE les positions
   /// OUVERTES (net > 0). Les lignes soldées ([NewAssetCandidate.closedLine] :
   /// titre clôturé, droit consommé) sont bien matérialisées pour l'intégrité du
@@ -1909,6 +2098,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
     final detail = tx.quantity != null
         ? '${tx.quantity} × ${unitPrice ?? '?'}${total != null ? ' · $total' : ''}'
         : (total ?? '');
+    // Traçabilité du repli de jambe espèces (§14.8) : le mouvement absorbé
+    // disparaît de la liste — on nomme la ligne source recollée sous l'accueil.
+    final mergedLegRow = _mergedLegSourceRow(m);
     return ListTile(
       dense: true,
       title: Text('$symbolLabel — ${_kindLabel(l10n, tx.kind)}'),
@@ -1917,6 +2109,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
         children: [
           Text('${_formatDate(tx.date)} · $detail'),
           _sourceRowRef(l10n, m),
+          if (mergedLegRow != null)
+            Text(
+              l10n.importMergedSettlementLeg(mergedLegRow),
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
         ],
       ),
     );

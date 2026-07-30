@@ -1676,6 +1676,7 @@ class _AccountViewState extends State<AccountView> {
                     realExcludedLegacyCount: _ctrl.realExcludedLegacyCount,
                     realCurveApproxSymbolsCount:
                         _ctrl.realCurveApproxSymbols.length,
+                    realUnanchoredRevenueEur: _ctrl.realUnanchoredRevenueEur,
                   ),
                 ],
               ),

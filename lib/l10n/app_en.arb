@@ -140,6 +140,17 @@
     }
   },
 
+  "chartRealUnanchoredRevenueCaption": "{amount} of income counted in total gain but absent from this curve (account with no tracked cash).",
+  "@chartRealUnanchoredRevenueCaption": {
+    "description": "Caption below the chart in real-evolution mode, only when an unanchored account carries dividends/interest/charges: these count toward total gain but never appear on the curve (no cash timeline is built for unanchored accounts). Names the known card-vs-curve residual rather than leaving it unexplained.",
+    "placeholders": {
+      "amount": {
+        "type": "String",
+        "example": "+205,79 €"
+      }
+    }
+  },
+
   "chartRealTotalGain": "Total gains: {amount} · {percent}",
   "@chartRealTotalGain": {
     "description": "Total gains since the journal's origin, shown below the chart in real-evolution mode (B7 Lot 4) — amount and percent are already formatted strings",
@@ -1987,6 +1998,42 @@
       "count": { "type": "int" }
     }
   },
+  "importGroupMergedLegs": "Merged rows ({count})",
+  "importGroupProbableDuplicates": "{count, plural, =1{1 movement may already be recorded} other{{count} movements may already be recorded}}",
+  "@importGroupProbableDuplicates": {
+    "description": "Warning card title for cash movements whose import key is unknown but which share date, kind and amount with an already-journalled movement. Deliberately hedged wording ('may'): the match is undecidable because statements carry no time of day.",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importProbableDuplicatesExplain": "These transfers share the date and amount of movements already recorded, but have a different label. Since the statement gives no time of day, there is no way to tell whether they are the same transfers or distinct ones.",
+  "@importProbableDuplicatesExplain": {
+    "description": "Explains WHY the app cannot decide: cash dedup identity is the free-text label, and statements have no time component. Sets up the user's choice below."
+  },
+  "importProbableDuplicatesIncludeLabel": "Import them anyway",
+  "@importProbableDuplicatesIncludeLabel": {
+    "description": "Switch label letting the user override the cautious default and import the probable duplicates"
+  },
+  "importProbableDuplicatesIncludeOn": "{count} movement(s) will be added — only do this if they really are distinct transfers.",
+  "@importProbableDuplicatesIncludeOn": {
+    "description": "Switch subtitle when ON",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importProbableDuplicatesIncludeOff": "{count} movement(s) will be skipped (default choice, avoids counting the same money twice).",
+  "@importProbableDuplicatesIncludeOff": {
+    "description": "Switch subtitle when OFF (the cautious default)",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "@importGroupMergedLegs": {
+    "description": "Section title for movements that absorbed a split cash settlement row. Deliberately plain wording, no back-office jargon (author feedback: 'jambe especes' is unintelligible to a normal user). Dedicated, expanded-by-default group because the per-tile caption alone is unreachable: groups are capped at 50 tiles in file order, and a full re-import shows no movement group at all.",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
   "importGroupRejects": "Rejected rows ({count})",
   "@importGroupRejects": {
     "description": "Section title for rejected rows",
@@ -2017,6 +2064,13 @@
     "description": "Compact reference to the source file row (1-based) shown under a preview/reject tile",
     "placeholders": {
       "n": { "type": "int" }
+    }
+  },
+  "importMergedSettlementLeg": "This operation and its settlement (row {row}) were on two separate statement rows.",
+  "@importMergedSettlementLeg": {
+    "description": "Caption under a preview movement whose split cash settlement row was merged into it, so the absorbed row stays visible instead of silently vanishing. Plain wording, no jargon.",
+    "placeholders": {
+      "row": { "type": "int" }
     }
   },
   "importDeltaSectionTitle": "Impact on your positions and cash",
@@ -2078,6 +2132,21 @@
     "description": "Actionable warning shown inside the expanded corporate-action rejects group"
   },
   "importNoNewMovements": "No new movement: everything has already been imported.",
+  "importNoNewMovementsCounted": "No new movement — all {count} rows in this statement are already recorded in this account.",
+  "@importNoNewMovementsCounted": {
+    "description": "Empty-preview message when every candidate row was recognised as already journalled. Counted on purpose: the former wording mentioned only the rejects, leaving the user unable to tell whether the statement had been read at all.",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importNoNewMovementsWithRejects": "No new movement — {duplicates} row(s) already recorded in this account, {rejects} row(s) rejected below.",
+  "@importNoNewMovementsWithRejects": {
+    "description": "Empty-preview message when there are BOTH duplicates and rejects. The previous logic dropped the duplicate count entirely in this case (reported by the author: 1334 duplicates went unmentioned).",
+    "placeholders": {
+      "duplicates": { "type": "int" },
+      "rejects": { "type": "int" }
+    }
+  },
   "@importNoNewMovements": {
     "description": "Shown when every parsed movement is a duplicate"
   },

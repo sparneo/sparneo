@@ -518,6 +518,23 @@ void main() {
       expect(tx.amount, equals('-78.32'));
       // La ligne d'accueil reste la ligne TITRE (n° de ligne source conservé).
       expect(m.isin, equals(isinRights));
+      // Traçabilité (§14.8) : l'accueil porte le marqueur de repli et la ligne
+      // source de la jambe absorbée, pour que le mouvement disparu ne le soit
+      // pas silencieusement. Ici `sourceRowIndex` est l'index de ligne de
+      // données (normalize appelé sans `sourceLines`) : l'accueil = 0, la
+      // jambe = 1 (en production, parseWithLineNumbers donne le n° physique).
+      expect(tx.meta!['mergedSettlementLeg'], isTrue);
+      expect(tx.meta!['mergedLegSourceRow'], equals(1));
+    });
+
+    test('un achat NON fusionné ne porte AUCUN marqueur de repli', () {
+      // Achat déjà réglé + régularisation sans appariement : rien à replier.
+      final movements = _normalizeOst(
+        '20/06/2026;Achat;$isinRights;NOUVELLES ACTIONS;10;100,00;0;1000,00;\r\n',
+      );
+      final tx = movements.single.transaction!;
+      expect(tx.meta?['mergedSettlementLeg'], isNull);
+      expect(tx.meta?['mergedLegSourceRow'], isNull);
     });
 
     test('ré-import du même relevé après fusion ⇒ même importKey (dédup '

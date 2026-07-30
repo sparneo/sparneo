@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
+import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/charts/period_gain_line.dart';
 
 /// Bloc de notes rendu SOUS le graphe (période + mode), extrait le 29/07
@@ -64,6 +65,13 @@ class ChartNotes extends StatelessWidget {
   /// cf. `realCurveApproxSymbols.length` des contrôleurs.
   final int realCurveApproxSymbolsCount;
 
+  /// Revenus (dividendes/intérêts/frais) d'un compte NON ancré, EUR signés —
+  /// cf. `realUnanchoredRevenueEur` des contrôleurs. Comptés dans le gain
+  /// total mais ABSENTS de la courbe (aucune timeline cash construite pour un
+  /// compte non ancré). `0.0` = pas de note (cas courant). Nommer cet écart
+  /// résiduel connu carte ↔ courbe plutôt que le laisser inexpliqué.
+  final double realUnanchoredRevenueEur;
+
   const ChartNotes({
     super.key,
     required this.selectedPeriod,
@@ -74,6 +82,7 @@ class ChartNotes extends StatelessWidget {
     this.onPeriodGainInfoPressed,
     this.realExcludedLegacyCount = 0,
     this.realCurveApproxSymbolsCount = 0,
+    this.realUnanchoredRevenueEur = 0.0,
   });
 
   @override
@@ -115,6 +124,19 @@ class ChartNotes extends StatelessWidget {
             Text(
               l10n.chartApproxValuesWarning(realCurveApproxSymbolsCount),
               style: warningStyle,
+            ),
+          ],
+          // Écart résiduel connu carte ↔ courbe : les revenus d'un compte non
+          // ancré comptent dans le gain total mais n'apparaissent pas ici.
+          // Nommé (avec son montant) plutôt que subi. Seuil au demi-centime
+          // pour ne pas afficher un « +0,00 € » né d'un arrondi.
+          if (realUnanchoredRevenueEur.abs() >= 0.005) ...[
+            const SizedBox(height: 4),
+            Text(
+              l10n.chartRealUnanchoredRevenueCaption(
+                Formatters.formatEurSigned(realUnanchoredRevenueEur),
+              ),
+              style: captionStyle,
             ),
           ],
         ] else ...[

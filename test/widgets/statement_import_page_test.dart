@@ -148,6 +148,84 @@ ImportedMovement _unresolvedMovementWithIsin() => ImportedMovement.candidate(
       importKey: 'ref:account-1:REF-NEW3',
     );
 
+/// Un mouvement d'accueil ayant ABSORBÉ une jambe espèces scindée (§14.8) :
+/// porte `mergedSettlementLeg`/`mergedLegSourceRow` dans son `meta`. Reflète le
+/// cas réel Bourse Direct (356 titres à 0,22 €, règlement −78,32 € porté par
+/// une ligne `ODOST` distincte, ici la ligne 42 du relevé).
+ImportedMovement _mergedHostMovement({String id = 'tx-merged'}) =>
+    ImportedMovement.candidate(
+      sourceRow: const ['04/12/2020', 'Achat', 'FR0013088606', '', 'Droits', '356', '0,22'],
+      sourceRowIndex: 41,
+      transaction: AssetTransaction(
+        id: id,
+        accountId: _accountId,
+        symbol: 'FR0013088606',
+        kind: TransactionKind.buy,
+        quantity: '356',
+        unitPrice: '0.22',
+        amount: '-78.32',
+        currency: 'EUR',
+        date: DateTime(2020, 12, 4),
+        meta: {
+          'importKey': 'hash:merged-$id',
+          'mergedSettlementLeg': true,
+          'mergedLegSourceRow': 42,
+        },
+      ),
+      isin: 'FR0013088606',
+      label: 'Droits',
+      needsAssetResolution: false,
+      resolvedSymbol: 'FR0013088606',
+      importKey: 'hash:merged-$id',
+    );
+
+/// Un DÉPÔT candidat, doublon PROBABLE d'espèces : même date et même montant
+/// qu'un mouvement déjà journalisé, mais libellé différent (cas mesuré sur un
+/// relevé réel où l'anonymisation avait réécrit le libellé du virement).
+ImportedMovement _cashDeposit(int i) => ImportedMovement.candidate(
+      sourceRow: const ['20/08/2020', 'Virement', '', '', 'VIRT MR NOM PREN', '', ''],
+      sourceRowIndex: 267 + i,
+      transaction: AssetTransaction(
+        id: 'tx-dep-$i',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '5000',
+        currency: 'EUR',
+        date: DateTime(2020, 8, 20),
+        meta: {'importKey': 'hash:dep-$i'},
+      ),
+      isin: null,
+      label: 'VIRT MR NOM PREN',
+      needsAssetResolution: false,
+      importKey: 'hash:dep-$i',
+    );
+
+/// Un mouvement ORDINAIRE sans marqueur de repli — sert à noyer le mouvement
+/// fusionné au-delà du plafond d'affichage des groupes. Employé aussi bien en
+/// candidat (`toCreate`) qu'en doublon selon le test.
+ImportedMovement _plainMovement(int i) => ImportedMovement.candidate(
+      sourceRow: const ['01/01/2024', 'Achat', 'FR0000120073', '', 'Air Liquide', '1', '150'],
+      sourceRowIndex: 100 + i,
+      transaction: AssetTransaction(
+        id: 'tx-dup-$i',
+        accountId: _accountId,
+        symbol: 'AI.PA',
+        kind: TransactionKind.buy,
+        quantity: '1',
+        unitPrice: '150',
+        amount: '-150',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+        meta: {'importKey': 'hash:dup-$i'},
+      ),
+      isin: 'FR0000120073',
+      label: 'Air Liquide',
+      needsAssetResolution: false,
+      resolvedSymbol: 'AI.PA',
+      importKey: 'hash:dup-$i',
+    );
+
 /// Une ligne d'OST rejetée « à revoir » (groupe déplié à l'aperçu), avec une
 /// ligne source brute non vide (non affichée : seul le numéro de ligne
 /// l'est, cf. _sourceRowRef).
@@ -430,6 +508,194 @@ void main() {
       // le SEUL numéro (1-based) — l'écho des cellules brutes a été retiré
       // (retour auteur : surchargeait l'interface).
       expect(find.text('Ligne 6'), findsOneWidget);
+    });
+
+    testWidgets(
+        'ligne réunie : groupe DÉDIÉ visible même noyée sous 60 '
+        'doublons (défaut constaté — la mention sous la tuile était '
+        'inatteignable au-delà du plafond de 50 tuiles)', (tester) async {
+      // Le mouvement fusionné est placé EN DERNIER parmi 61 mouvements à
+      // créer : dans le groupe « À créer », il tombe derrière le
+      // « … et N autres » et n'est même pas construit. Seul le groupe dédié le
+      // rend atteignable.
+      final preview = ImportPreview(
+        toCreate: [
+          for (var i = 0; i < 60; i++) _plainMovement(i),
+          _mergedHostMovement(),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Le groupe dédié existe, est titré au singulier et DÉPLIÉ par défaut :
+      // la mention de la ligne absorbée est visible sans aucune interaction.
+      expect(find.text('Lignes réunies (1)'), findsOneWidget);
+      expect(
+        find.text(
+          'Cette opération et son règlement (ligne 42) étaient sur deux '
+          'lignes du relevé.',
+        ),
+        findsOneWidget,
+        reason: 'le groupe dédié doit rendre la mention atteignable',
+      );
+    });
+
+    testWidgets(
+        'accueil fusionné qui est un DOUBLON : AUCUNE annonce de repli — rien '
+        'n\'est écrit, et le journal peut même contenir encore la paire scindée',
+        (tester) async {
+      // Décision produit (retour auteur) : sur un ré-import, annoncer « ces deux
+      // lignes ont été réunies » est du bruit — le journal n'a pas bougé — et
+      // trompeur si l'opération avait été importée AVANT le correctif de fusion
+      // (la paire scindée est alors toujours en base, cf. doc 17 §14.8).
+      final preview = ImportPreview(
+        toCreate: const [],
+        duplicates: [
+          for (var i = 0; i < 60; i++) _plainMovement(i),
+          _mergedHostMovement(),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Lignes réunies'), findsNothing);
+      expect(find.textContaining('étaient sur deux'), findsNothing);
+      // Le ré-import reste lisible par ailleurs : le nombre de doublons est
+      // annoncé et leur groupe consultable.
+      expect(find.text('Doublons ignorés (61)'), findsOneWidget);
+    });
+
+    testWidgets(
+        'doublons PROBABLES d\'espèces : avertissement chiffré, exclus par '
+        'défaut, et le ré-import intégral offre quand même un bouton de '
+        'confirmation dès que l\'utilisateur bascule', (tester) async {
+      // Cas EXACT constaté : tout est doublon sauf 22 dépôts dont le libellé a
+      // changé → toCreate vide, donc branche « rien à créer ». Sans bouton de
+      // confirmation dans cette branche, la bascule serait inactionnable.
+      final preview = ImportPreview(
+        toCreate: const [],
+        duplicates: [for (var i = 0; i < 60; i++) _plainMovement(i)],
+        probableDuplicates: [for (var i = 0; i < 22; i++) _cashDeposit(i)],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Avertissement chiffré, formulé au conditionnel (le rapprochement est
+      // indécidable : aucune heure dans les relevés).
+      expect(
+        find.text('22 mouvements peut-être déjà enregistrés'),
+        findsOneWidget,
+      );
+      // Défaut prudent : ignorés, et le bouton est « Fermer » (rien à écrire).
+      expect(
+        find.textContaining('22 mouvement(s) seront ignorés'),
+        findsOneWidget,
+      );
+      expect(find.text('Fermer'), findsOneWidget);
+
+      // L'utilisateur tranche : bascule « Les importer quand même ». La liste
+      // des 22 mouvements la pousse hors écran — on l'amène en vue d'abord.
+      await tester.ensureVisible(find.byType(SwitchListTile));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('22 mouvement(s) seront ajoutés'),
+        findsOneWidget,
+      );
+      // Le bouton de confirmation apparaît — sinon le choix serait inopérant.
+      expect(find.text('Confirmer l\'import'), findsOneWidget);
+      expect(find.text('Fermer'), findsNothing);
+    });
+
+    testWidgets('aucun doublon probable ⇒ AUCUN avertissement', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovement()],
+        newAssets: const [
+          NewAssetCandidate(isin: null, label: 'New Co', proposedSymbol: null),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('peut-être déjà enregistré'), findsNothing);
+    });
+
+    testWidgets('aucun repli ⇒ AUCUN groupe « lignes réunies »',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_unresolvedMovement()],
+        duplicates: [_plainMovement(0)],
+        newAssets: const [
+          NewAssetCandidate(isin: null, label: 'New Co', proposedSymbol: null),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Lignes réunies'), findsNothing);
+    });
+
+    testWidgets(
+        'ré-import intégral avec des rejets : le nombre de DOUBLONS est annoncé '
+        'et son groupe est consultable (défaut constaté : seuls les rejets '
+        'étaient mentionnés, 1334 doublons passaient sous silence)',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: const [],
+        duplicates: [for (var i = 0; i < 60; i++) _plainMovement(i)],
+        rejects: [_rejectedOstMovement(), _rejectedTechMovement()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Les DEUX nombres, pas seulement les rejets.
+      expect(
+        find.text('Aucun nouveau mouvement — 60 ligne(s) déjà enregistrée(s) '
+            'dans ce compte, 2 ligne(s) rejetée(s) ci-dessous.'),
+        findsOneWidget,
+      );
+      // Et le groupe des doublons est présent (replié) pour vérifier QUOI.
+      expect(find.text('Doublons ignorés (60)'), findsOneWidget);
+    });
+
+    testWidgets(
+        'ré-import intégral SANS rejet : le nombre de doublons est chiffré',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: const [],
+        duplicates: [for (var i = 0; i < 60; i++) _plainMovement(i)],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Aucun nouveau mouvement — les 60 lignes de ce relevé sont '
+            'déjà enregistrées dans ce compte.'),
+        findsOneWidget,
+      );
     });
 
     testWidgets(

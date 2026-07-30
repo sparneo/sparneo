@@ -796,6 +796,8 @@ class _WalletViewState extends State<WalletView> {
                                     _controller.realExcludedLegacyCount,
                                 realCurveApproxSymbolsCount:
                                     _controller.realCurveApproxSymbols.length,
+                                realUnanchoredRevenueEur:
+                                    _controller.realUnanchoredRevenueEur,
                               ),
                             ],
                           ),

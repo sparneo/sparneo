@@ -250,6 +250,10 @@ class WalletController extends ChangeNotifier {
   // Symboles EXCLUS du calcul ci-dessus faute de PRU connu — cf.
   // [RealTotalGain.noBasisSymbols], destiné à l'avertissement UI (Lot C).
   Set<String> _realNoBasisSymbols = {};
+  // Revenus des comptes non ancrés, comptés dans le gain total mais invisibles
+  // dans la courbe — cf. [RealTotalGain.unanchoredRevenueEur], destiné à la
+  // note explicative sous le graphe (ChartNotes).
+  double _realUnanchoredRevenueEur = 0.0;
 
   // Variations par compte
   Map<String, double> _accountPeriodChanges = {};
@@ -346,6 +350,11 @@ class WalletController extends ChangeNotifier {
   /// Symboles EXCLUS du calcul des gains totaux faute de PRU connu — cf.
   /// [HistoryAggregator.computeRealTotalGain].
   Set<String> get realNoBasisSymbols => _realNoBasisSymbols;
+
+  /// Revenus (dividendes/intérêts/frais) des comptes NON ancrés, comptés dans
+  /// [realTotalGain] mais absents de la courbe réelle — cf.
+  /// [RealTotalGain.unanchoredRevenueEur]. `0.0` si aucun (cas courant).
+  double get realUnanchoredRevenueEur => _realUnanchoredRevenueEur;
 
   Map<String, double> get accountPeriodChanges => _accountPeriodChanges;
   Map<String, double> get accountPeriodChangePercents =>
@@ -1339,6 +1348,7 @@ class WalletController extends ChangeNotifier {
     _realTotalGainPercent = null;
     _realTotalGainCharges = null;
     _realNoBasisSymbols = {};
+    _realUnanchoredRevenueEur = 0.0;
   }
 
   /// Calcule le mode 2 « évolution réelle » (B7 Lot 2, design doc 18 §9 ;
@@ -1549,6 +1559,7 @@ class WalletController extends ChangeNotifier {
     _realTotalGainPercent = totalGain.totalGainPercent;
     _realTotalGainCharges = totalGain.chargesTotal;
     _realNoBasisSymbols = totalGain.noBasisSymbols;
+    _realUnanchoredRevenueEur = totalGain.unanchoredRevenueEur;
   }
 
   // ---------------------------------------------------------------------------

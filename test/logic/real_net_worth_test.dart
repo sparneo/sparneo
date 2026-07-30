@@ -1665,6 +1665,94 @@ void main() {
       // chargesTotal isole la SEULE part `charge` (-5), signée, sans changer
       // totalGain (toujours 55, dividende+intérêt+frais confondus).
       expect(result.chargesTotal, closeTo(-5.0, 1e-9));
+      // Compte ANCRÉ (dépôt + intérêt + frais) : les revenus entrent dans la
+      // courbe → aucun résidu invisible à signaler.
+      expect(result.unanchoredRevenueEur, closeTo(0.0, 1e-9));
+    });
+
+    test('résidu invisible : dividende sur un compte NON ancré remonté à part',
+        () {
+      // Compte titres sans trésorerie suivie (aucun deposit/withdrawal/
+      // interest/charge/openingBalance espèces) : un achat l'ouvre, un
+      // dividende est encaissé. Le dividende compte dans le gain total mais
+      // reste invisible dans la courbe (aucune timeline cash construite) — il
+      // doit ressortir dans unanchoredRevenueEur pour la note sous le graphe.
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final dividend = AssetTransaction(
+        id: 'div1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.dividend,
+        amount: '205.79',
+        currency: 'EUR',
+        date: DateTime(2024, 6, 1),
+      );
+      final pos = makePos(
+        symbol: 'AAPL',
+        currency: 'EUR',
+        quantity: '10',
+        price: 100.0,
+        pru: 100.0,
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: [pos],
+        txsBySymbol: {
+          'AAPL': [buy, dividend],
+        },
+        txsByAccount: {
+          'acc1': [buy, dividend],
+        },
+        usdToEurRate: 1.0,
+      );
+
+      // Le dividende est dans le gain total ET isolé comme résidu invisible.
+      expect(result.totalGain, closeTo(205.79, 1e-9));
+      expect(result.unanchoredRevenueEur, closeTo(205.79, 1e-9));
+    });
+
+    test('un compte ANCRÉ par un simple dépôt n\'a aucun résidu de revenus', () {
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc1',
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final dividend = AssetTransaction(
+        id: 'div1',
+        accountId: 'acc1',
+        symbol: 'AAPL',
+        kind: TransactionKind.dividend,
+        amount: '42',
+        currency: 'EUR',
+        date: DateTime(2024, 6, 1),
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: const [],
+        txsBySymbol: const {},
+        txsByAccount: {
+          'acc1': [deposit, dividend],
+        },
+        usdToEurRate: 1.0,
+      );
+
+      // Dividende compté au gain, mais le dépôt ancre le compte → pas de résidu.
+      expect(result.totalGain, closeTo(42.0, 1e-9));
+      expect(result.unanchoredRevenueEur, closeTo(0.0, 1e-9));
     });
 
     test('chargesTotal isole la part frais (fx règlement), totalGain inchangé', () {

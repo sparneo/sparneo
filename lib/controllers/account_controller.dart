@@ -187,6 +187,10 @@ class AccountController extends ChangeNotifier {
   // Symboles EXCLUS du calcul ci-dessus faute de PRU connu — cf.
   // [RealTotalGain.noBasisSymbols], destiné à l'avertissement UI (Lot C).
   Set<String> _realNoBasisSymbols = {};
+  // Revenus d'un compte non ancré, comptés dans le gain total mais invisibles
+  // dans la courbe — cf. [RealTotalGain.unanchoredRevenueEur], destiné à la
+  // note explicative sous le graphe (ChartNotes).
+  double _realUnanchoredRevenueEur = 0.0;
 
   double _usdToEurRate; // initialisé par le constructeur (0.92 par défaut)
 
@@ -309,6 +313,11 @@ class AccountController extends ChangeNotifier {
   /// Symboles EXCLUS du calcul des gains totaux faute de PRU connu — cf.
   /// [HistoryAggregator.computeRealTotalGain].
   Set<String> get realNoBasisSymbols => _realNoBasisSymbols;
+
+  /// Revenus (dividendes/intérêts/frais) d'un compte NON ancré, comptés dans
+  /// [realTotalGain] mais absents de la courbe réelle — cf.
+  /// [RealTotalGain.unanchoredRevenueEur]. `0.0` si aucun (cas courant).
+  double get realUnanchoredRevenueEur => _realUnanchoredRevenueEur;
 
   double get usdToEurRate => _usdToEurRate;
   Map<String, double> get assetValues => _assetValues;
@@ -909,6 +918,7 @@ class AccountController extends ChangeNotifier {
     _realTotalGainPercent = null;
     _realTotalGainCharges = null;
     _realNoBasisSymbols = {};
+    _realUnanchoredRevenueEur = 0.0;
   }
 
   /// Calcule le mode 2 « évolution réelle » du COMPTE (B7, design doc 18) :
@@ -1117,6 +1127,7 @@ class AccountController extends ChangeNotifier {
     _realTotalGainPercent = totalGain.totalGainPercent;
     _realTotalGainCharges = totalGain.chargesTotal;
     _realNoBasisSymbols = totalGain.noBasisSymbols;
+    _realUnanchoredRevenueEur = totalGain.unanchoredRevenueEur;
   }
 
   /// Appelé par la vue lorsque l'utilisateur sélectionne une nouvelle période.
@@ -1497,6 +1508,42 @@ class AccountController extends ChangeNotifier {
       (isDuplicate ? duplicates : nonDuplicates).add(m);
     }
 
+    // ---- Doublons PROBABLES d'espèces (cf. ImportPreview.probableDuplicates) --
+    // L'identité d'un mouvement d'espèces dans la clé de dédup est son LIBELLÉ
+    // (texte libre) : une reformulation côté courtier casse la dédup et
+    // réimporte le même versement, gonflant la trésorerie en silence. On
+    // rapproche donc les mouvements d'espèces restants sur (jour, kind, montant)
+    // — indécidable avec certitude, le relevé ne portant aucune heure, d'où un
+    // signalement à l'utilisateur plutôt qu'une décision automatique.
+    //
+    // Empreintes du journal existant CONSOMMABLES : un mouvement déjà journalisé
+    // ne peut couvrir qu'UN entrant. Sans ce décompte, deux versements
+    // réellement distincts de même montant le même jour seraient tous deux
+    // signalés alors qu'un seul est en base.
+    final existingCashPrints = <String, int>{};
+    for (final t in existingJournal) {
+      if (!_isCashMovementForMatching(t.kind, t.symbol)) continue;
+      final print = _cashMatchPrint(t.kind, t.date, t.amount);
+      if (print == null) continue;
+      existingCashPrints.update(print, (v) => v + 1, ifAbsent: () => 1);
+    }
+
+    final probableDuplicates = <ImportedMovement>[];
+    final toCreateCandidates = <ImportedMovement>[];
+    for (final m in nonDuplicates) {
+      final tx = m.transaction!;
+      final print = _isCashMovementForMatching(tx.kind, tx.symbol)
+          ? _cashMatchPrint(tx.kind, tx.date, tx.amount)
+          : null;
+      final remaining = print == null ? 0 : (existingCashPrints[print] ?? 0);
+      if (remaining > 0) {
+        existingCashPrints[print!] = remaining - 1;
+        probableDuplicates.add(m);
+      } else {
+        toCreateCandidates.add(m);
+      }
+    }
+
     // ---- Résolution d'actif (§4, MVP manuel/direct) ----
     final existingPositions = await _storage.getPositions(accountId);
     final existingSymbols = <String>{};
@@ -1525,7 +1572,7 @@ class AccountController extends ChangeNotifier {
     // boucle ci-dessous pour n'agréger QUE les mouvements y atteignant la
     // branche « non résolu » (finalSymbol == null).
     final unresolvedTxByKey = <String, List<AssetTransaction>>{};
-    for (final m in nonDuplicates) {
+    for (final m in toCreateCandidates) {
       final tx = m.transaction!;
       final hasIdentity =
           !tx.kind.isCashOnly && (m.isin != null || tx.symbol != null);
@@ -1540,7 +1587,7 @@ class AccountController extends ChangeNotifier {
     // journalisés mais EXCLUS des deltas titres (pas de ligne « 0 → 0 »).
     final soldeeSymbols = <String>{};
 
-    for (final m in nonDuplicates) {
+    for (final m in toCreateCandidates) {
       final tx = m.transaction!;
       // Un actif n'est requis que si le mouvement référence réellement un TITRE.
       // Deux garde-fous :
@@ -1691,11 +1738,53 @@ class AccountController extends ChangeNotifier {
     return ImportPreview(
       toCreate: resolved,
       duplicates: duplicates,
+      probableDuplicates: probableDuplicates,
       rejects: rejects,
       newAssets: newAssets,
       projectedDeltas: projectedDeltas,
       legacySymbols: legacySymbols,
     );
+  }
+
+  /// Vrai si un mouvement relève du rapprochement « doublon probable
+  /// d'espèces » (cf. [ImportPreview.probableDuplicates]) : un mouvement de
+  /// TRÉSORERIE PURE, dont l'identité de dédup se réduit au libellé.
+  ///
+  /// Restreint aux kinds dont le relevé ne fournit AUCUN identifiant plus
+  /// solide : `deposit`/`withdrawal` (virements, le cas mesuré),
+  /// `interest`/`charge`. **Exclut** délibérément `adjustment` et
+  /// `openingBalance` (gestes de correction/initialisation, non répétitifs par
+  /// nature) et tout mouvement portant un `symbol` (une opération sur titre est
+  /// identifiée par son ISIN, pas par son libellé).
+  static bool _isCashMovementForMatching(TransactionKind kind, String? symbol) {
+    if (symbol != null) return false;
+    return kind == TransactionKind.deposit ||
+        kind == TransactionKind.withdrawal ||
+        kind == TransactionKind.interest ||
+        kind == TransactionKind.charge;
+  }
+
+  /// Empreinte de rapprochement d'un mouvement d'espèces : `kind|jour|montant`,
+  /// montant NORMALISÉ via [Decimal] pour que « 5000 » et « 5000.00 » se
+  /// rapprochent. `null` si le montant est absent ou illisible (rien à
+  /// rapprocher — jamais signalé plutôt que signalé à tort).
+  ///
+  /// Le LIBELLÉ est délibérément absent : c'est précisément lui qui varie et
+  /// casse la clé de dédup. L'HEURE ne peut pas y figurer — les relevés n'en
+  /// portent pas (d'où l'incertitude assumée, tranchée par l'utilisateur).
+  static String? _cashMatchPrint(
+    TransactionKind kind,
+    DateTime date,
+    String? amount,
+  ) {
+    final raw = amount?.replaceAll(',', '.').trim();
+    if (raw == null || raw.isEmpty) return null;
+    final value = Decimal.tryParse(raw);
+    if (value == null) return null;
+    final day = DateTime(date.year, date.month, date.day)
+        .toIso8601String()
+        .substring(0, 10);
+    return '${kind.name}|$day|${value.toString()}';
   }
 
   /// Confirme un [preview] préalablement établi par [previewStatementImport] :

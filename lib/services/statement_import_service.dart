@@ -595,6 +595,10 @@ class StatementImportService {
     }
 
     final foldedAmountByHost = <int, String>{};
+    // Ligne SOURCE (1-based) de la jambe absorbée, par accueil : trace remontée
+    // dans meta puis affichée à l'aperçu, pour que le repli ne fasse pas
+    // disparaître une ligne du relevé sans laisser d'accroche (cf. §14.8).
+    final foldedLegRowByHost = <int, int>{};
     final droppedLegs = <int>{};
     for (final entry in hostsOfLeg.entries) {
       if (entry.value.length != 1) continue; // plusieurs accueils possibles
@@ -605,6 +609,7 @@ class StatementImportService {
           movements[h].transaction!.kind == TransactionKind.buy;
       if ((amount.sign < 0) != expectsDebit) continue; // signe incohérent
       foldedAmountByHost[h] = amount.toString();
+      foldedLegRowByHost[h] = movements[entry.key].sourceRowIndex;
       droppedLegs.add(entry.key);
     }
     if (droppedLegs.isEmpty) return movements;
@@ -622,10 +627,21 @@ class StatementImportService {
       // de l'accueil était nulle, et `amount` inclut déjà frais et taxes par
       // convention du modèle). meta (dont `seq` et `importKey`) est conservé
       // par `copyWith`, et l'id n'est pas régénéré.
+      //
+      // TRAÇABILITÉ (§14.8) : on marque la transaction d'accueil pour que le
+      // repli soit VISIBLE — à l'aperçu (le mouvement absorbé disparaît de la
+      // liste) et, persisté dans `meta_json`, comme accroche à une éventuelle
+      // migration réparatrice sur les imports déjà passés. `mergedSettlementLeg`
+      // = le fait, `mergedLegSourceRow` = la ligne du relevé absorbée.
+      final mergedMeta = <String, dynamic>{
+        ...?m.transaction!.meta,
+        'mergedSettlementLeg': true,
+        'mergedLegSourceRow': foldedLegRowByHost[i],
+      };
       merged.add(ImportedMovement.candidate(
         sourceRow: m.sourceRow,
         sourceRowIndex: m.sourceRowIndex,
-        transaction: m.transaction!.copyWith(amount: folded),
+        transaction: m.transaction!.copyWith(amount: folded, meta: mergedMeta),
         isin: m.isin,
         label: m.label,
         needsAssetResolution: m.needsAssetResolution,

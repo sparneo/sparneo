@@ -112,6 +112,7 @@ class RealTotalGain {
     this.totalGainPercent,
     this.noBasisSymbols = const {},
     this.chargesTotal = 0.0,
+    this.unanchoredRevenueEur = 0.0,
   });
 
   /// Instance neutre — aucun symbole en base connue, gains `null`.
@@ -137,6 +138,19 @@ class RealTotalGain {
   /// `adjustment` jambe-cash décrits au terme (3) : ce sous-total reste
   /// réservé au kind `charge`.
   final double chargesTotal;
+
+  /// Somme EUR SIGNÉE des revenus (`dividend`/`interest`/`charge`) portés par
+  /// des comptes NON ancrés ([journalHasCashAnchor] faux). Ces revenus entrent
+  /// dans [totalGain] (terme (3)) mais restent INVISIBLES dans la courbe
+  /// d'évolution réelle : faute d'ancrage espèces, aucune timeline cash n'est
+  /// construite pour ces comptes (invariant « faux négatif interdit »,
+  /// design §6.7), donc le crédit du revenu n'apparaît nulle part sur le
+  /// graphe. C'est l'un des écarts résiduels CONNUS entre la carte et la
+  /// courbe (doc 18 §11.8 point 9, résidu 1) — PUREMENT informatif, n'entre
+  /// dans AUCUN calcul, destiné à une note explicative sous le graphe pour
+  /// que l'écart soit nommé plutôt que subi. `0.0` si tout compte porteur de
+  /// revenus est ancré.
+  final double unanchoredRevenueEur;
 }
 
 /// Agrégation de données historiques. Toutes les méthodes sont statiques et
@@ -1294,6 +1308,9 @@ class HistoryAggregator {
     // Sous-total `charge` SEUL, EN PLUS de `totalGain` (jamais à la place) —
     // cf. doc de [RealTotalGain.chargesTotal].
     var chargesTotal = 0.0;
+    // Revenus portés par des comptes NON ancrés — invisibles dans la courbe
+    // (cf. doc de [RealTotalGain.unanchoredRevenueEur]). Purement informatif.
+    var unanchoredRevenueEur = 0.0;
     // Le CASH fait partie de la valeur détenue, donc du capital investi
     // (`capital = valeur − gains`). L'OMETTRE amputerait le dénominateur du
     // `%` de tout le cash non investi et SURÉVALUERAIT la performance (ex.
@@ -1349,6 +1366,10 @@ class HistoryAggregator {
     // de ces trois familles à la fois (kinds disjoints), les conditions
     // ci-dessous sont donc mutuellement exclusives par construction.
     for (final txs in txsByAccount.values) {
+      // Ancrage évalué UNE fois par compte (même prédicat EXACT que le gating
+      // de reconstructRealNetWorth) : sert à isoler les revenus invisibles
+      // dans la courbe (unanchoredRevenueEur), sans changer aucun agrégat.
+      final accountAnchored = journalHasCashAnchor(txs);
       for (final tx in txs) {
         final isRevenueKind = tx.kind == TransactionKind.dividend ||
             tx.kind == TransactionKind.interest ||
@@ -1378,6 +1399,13 @@ class HistoryAggregator {
         if (tx.kind == TransactionKind.charge) {
           chargesTotal += converted;
         }
+        // Résidu informatif : SEULS les revenus (dividend/interest/charge)
+        // d'un compte non ancré sont invisibles dans la courbe. Les jambes
+        // cash d'opérations sur titre en sont exclues (elles n'ont pas de
+        // sens « revenu » à nommer à l'utilisateur, cf. doc du champ).
+        if (isRevenueKind && !accountAnchored) {
+          unanchoredRevenueEur += converted;
+        }
       }
     }
 
@@ -1391,6 +1419,7 @@ class HistoryAggregator {
       totalGainPercent: totalGainPercent,
       noBasisSymbols: noBasisSymbols,
       chargesTotal: chargesTotal,
+      unanchoredRevenueEur: unanchoredRevenueEur,
     );
   }
 

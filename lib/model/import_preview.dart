@@ -82,6 +82,26 @@ class ImportPreview {
   /// relevé = no-op).
   final List<ImportedMovement> duplicates;
 
+  /// Mouvements d'ESPÈCES dont l'`importKey` est INCONNUE du journal, mais qui
+  /// portent la même date, le même kind et le même montant qu'un mouvement
+  /// déjà journalisé : **doublons PROBABLES, pas certains**.
+  ///
+  /// Motif (constaté sur un relevé réel) : l'identité d'un mouvement d'espèces
+  /// dans la clé de dédup est son **libellé** (texte libre du relevé — un
+  /// dépôt n'a ni ISIN ni symbole, cf. `_contentKey`). Une simple reformulation
+  /// côté courtier suffit donc à casser la dédup et à réimporter le même
+  /// versement, gonflant la trésorerie **en silence**. Cas mesuré : 22 dépôts
+  /// sur 27, mêmes date et montant, libellé modifié → 22 doublons non détectés.
+  ///
+  /// **Indécidable par construction** : le relevé ne porte AUCUNE heure, donc
+  /// deux versements réellement distincts du même montant le même jour sont
+  /// indiscernables d'un doublon. On ne tranche donc PAS à la place de
+  /// l'utilisateur — ces mouvements sont EXCLUS de [toCreate] (défaut prudent :
+  /// une trésorerie gonflée en silence est plus dommageable qu'un versement
+  /// manquant, qui reste visible ici) et l'aperçu propose de les importer
+  /// quand même.
+  final List<ImportedMovement> probableDuplicates;
+
   /// Lignes rejetées (kind non mappé, date/montant invalide…), avec motif.
   final List<ImportedMovement> rejects;
 
@@ -104,6 +124,7 @@ class ImportPreview {
   const ImportPreview({
     this.toCreate = const [],
     this.duplicates = const [],
+    this.probableDuplicates = const [],
     this.rejects = const [],
     this.newAssets = const [],
     this.projectedDeltas = const [],

@@ -1578,15 +1578,18 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
+  /// Prix unitaire affiché SANS perte (PRU et cours courant) : le nombre de
+  /// décimales suit la valeur réelle (2 à 6), aligné sur la page compte — un
+  /// arrondi à 2 faisait mentir un PRU/cours fin (cf. `formatPriceLossless`).
   String _formatPriceDisplay(double price, bool isUsd) {
     if (isUsd) {
-      return Formatters.formatCurrencyWithConversion(
+      return Formatters.formatPriceWithConversionLossless(
         price,
         'USD',
         _usdToEurRate,
       );
     }
-    return Formatters.formatEur(price);
+    return Formatters.formatPriceLossless(price, 'EUR');
   }
 
   Widget _buildInfoItem(String label, String value) {
