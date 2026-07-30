@@ -498,42 +498,58 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
           Wrap(
             spacing: 6,
             runSpacing: 6,
-            children: _PeriodPreset.values.map((p) {
-              final selected = _periodFilter == p;
-              return ChoiceChip(
-                label: Text(_periodLabel(l10n, p)),
-                selected: selected,
-                onSelected: (_) => setState(() => _periodFilter = p),
-                selectedColor: Theme.of(context).colorScheme.primary,
-                labelStyle: TextStyle(
-                  fontSize: 12,
-                  color: selected
-                      ? Theme.of(context).colorScheme.onPrimary
-                      : Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-              );
-            }).toList(),
+            children: _PeriodPreset.values
+                .map(
+                  (p) => _filterChip(
+                    label: _periodLabel(l10n, p),
+                    selected: _periodFilter == p,
+                    onSelected: () => setState(() => _periodFilter = p),
+                  ),
+                )
+                .toList(),
           ),
         ],
       ),
     );
   }
 
-  Widget _kindChip(AppLocalizations l10n, TransactionKind? k, String label) {
-    final selected = _kindFilter == k;
+  Widget _kindChip(AppLocalizations l10n, TransactionKind? k, String label) =>
+      _filterChip(
+        label: label,
+        selected: _kindFilter == k,
+        onSelected: () => setState(() => _kindFilter = k),
+      );
+
+  /// Chip de filtre, unique style des deux rangées (type et période).
+  ///
+  /// Rembourrages resserrés et coche retirée pour une raison MESURÉE : au style
+  /// Material par défaut, « Achat » occupait 94,5 dp pour ~33 dp de texte, et
+  /// la rangée des huit types réclamait **912 dp** — impossible sur une page
+  /// bornée à 640 (cf. [ResponsiveBody], valeur commune à tout l'app). Le
+  /// resserrement la ramène sur une seule ligne sur desktop sans toucher à
+  /// cette largeur commune ni rapetisser le texte.
+  ///
+  /// `showCheckmark: false` : le fond `primary` et le texte `onPrimary`
+  /// signalent déjà la sélection, et la coche faisait en plus **changer la
+  /// largeur** du chip au moment du tap — toute la rangée se réorganisait.
+  Widget _filterChip({
+    required String label,
+    required bool selected,
+    required VoidCallback onSelected,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
     return ChoiceChip(
       label: Text(label),
       selected: selected,
-      onSelected: (_) => setState(() => _kindFilter = k),
-      selectedColor: Theme.of(context).colorScheme.primary,
+      onSelected: (_) => onSelected(),
+      showCheckmark: false,
+      selectedColor: scheme.primary,
       labelStyle: TextStyle(
         fontSize: 12,
-        color: selected
-            ? Theme.of(context).colorScheme.onPrimary
-            : Theme.of(context).colorScheme.onSurfaceVariant,
+        color: selected ? scheme.onPrimary : scheme.onSurfaceVariant,
       ),
+      labelPadding: EdgeInsets.zero,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       visualDensity: VisualDensity.compact,
       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
     );
