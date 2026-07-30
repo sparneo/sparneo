@@ -434,4 +434,267 @@ void main() {
       LineChartStepData.stepDirectionForward,
     );
   });
+
+  group('échelle Y — le capital investi n\'écrase pas la courbe de valeur', () {
+    // Cas mesuré à l'écran (30/07, périodes J/1M/3M) : la valeur varie de
+    // quelques centaines d'euros pendant que son écart au capital investi en
+    // fait plusieurs milliers. L'axe étant calculé sur l'union des deux séries,
+    // la courbe de valeur était confinée dans ~7 % de la hauteur : plate.
+    final dates = List<DateTime>.generate(20, (i) => DateTime(2026, 6, 1 + i, 18));
+    final squashedValues =
+        List<double>.generate(20, (i) => 61000.0 + (i.isEven ? 0 : 400));
+    final farContributions =
+        List<FlSpot>.generate(20, (i) => FlSpot(i.toDouble(), 50000));
+
+    test('règle pure : écart énorme → la ligne ne partage pas l\'échelle', () {
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: 61000,
+          valueMax: 61400,
+          contributionsMin: 50000,
+          contributionsMax: 50000,
+        ),
+        isFalse,
+      );
+    });
+
+    test('règle pure : écart modéré → la ligne reste tracée', () {
+      // Amplitude valeur 400 €, capital 200 € sous le bas : union 600 ≤ 1,5×400.
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: 61000,
+          valueMax: 61400,
+          contributionsMin: 60800,
+          contributionsMax: 60800,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'règle pure : courbe de valeur PLATE → la ligne est gardée (rien à '
+        'écraser, cas du compte cash)', () {
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: 61000,
+          valueMax: 61000,
+          contributionsMin: 50000,
+          contributionsMax: 50000,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'cas 1A : valeur ample, capital nettement plus bas → TRACÉE (l\'ancien '
+        'critère en proportion la masquait à quelques euros près)', () {
+      // Valeur 52 000 → 61 000 (amplitude 9 000), capital 47 000 → 50 000.
+      // Union 14 000 : la valeur garde 9/14 de la hauteur, soit ~128 px sur un
+      // graphe de 200 — parfaitement lisible. L'ancien seuil (union ≤ 1,5 ×
+      // amplitude, ici 14 000 > 13 500) l'écartait pourtant.
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: 52000,
+          valueMax: 61000,
+          contributionsMin: 47000,
+          contributionsMax: 50000,
+          plotHeightPx: 200,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'la MÊME géométrie se décide différemment selon la hauteur allouée '
+        '(le critère est en pixels, pas en proportion)', () {
+      // La valeur garde 1/5 de la hauteur : 40 px sur un graphe de 200 (limite
+      // atteinte, tracée), 24 px sur un graphe de 120 (illisible, écartée).
+      const geometry = (
+        valueMin: 60000.0,
+        valueMax: 61000.0,
+        contributionsMin: 56000.0,
+        contributionsMax: 56000.0,
+      );
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: geometry.valueMin,
+          valueMax: geometry.valueMax,
+          contributionsMin: geometry.contributionsMin,
+          contributionsMax: geometry.contributionsMax,
+          plotHeightPx: 200,
+        ),
+        isTrue,
+      );
+      expect(
+        ValuationLineChart.contributionsFitOnValueScale(
+          valueMin: geometry.valueMin,
+          valueMax: geometry.valueMax,
+          contributionsMin: geometry.contributionsMin,
+          contributionsMax: geometry.contributionsMax,
+          plotHeightPx: 120,
+        ),
+        isFalse,
+      );
+    });
+
+    testWidgets(
+        'écart énorme : une seule série tracée, bornes Y calées sur la valeur',
+        (tester) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: farContributions,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      final chart = tester.widget<LineChart>(find.byType(LineChart));
+      expect(chart.data.lineBarsData, hasLength(1),
+          reason: 'le capital investi ne doit pas être tracé ici');
+      // L'axe reste dans le voisinage de la valeur (marge de 10 %), très
+      // au-dessus du capital investi à 50 000 €.
+      expect(chart.data.minY, greaterThan(60000));
+      expect(chart.data.maxY, lessThan(62000));
+    });
+
+    testWidgets('écart énorme : le niveau du capital est donné en toutes lettres',
+        (tester) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: farContributions,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Capital investi'), findsOneWidget);
+      expect(find.textContaining('hors de l\'échelle'), findsOneWidget);
+    });
+
+    testWidgets(
+        'capital NON tracé mais ayant BOUGÉ : la note donne les deux bornes '
+        '(la marche n\'est plus visible)', (tester) async {
+      final moving = List<FlSpot>.generate(
+          20, (i) => FlSpot(i.toDouble(), i < 10 ? 47000 : 50000));
+
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: moving,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      final note = tester
+          .widgetList<Text>(find.byType(Text))
+          .map((t) => t.data ?? '')
+          .firstWhere((t) => t.contains('Capital investi'));
+      expect(note, contains('47'));
+      expect(note, contains('50'));
+    });
+
+    testWidgets('écart modéré : la ligne et sa légende restent affichées',
+        (tester) async {
+      final close =
+          List<FlSpot>.generate(20, (i) => FlSpot(i.toDouble(), 60800));
+
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: close,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      final chart = tester.widget<LineChart>(find.byType(LineChart));
+      expect(chart.data.lineBarsData, hasLength(2));
+      expect(find.textContaining('hors de l\'échelle'), findsNothing);
+    });
+  });
+
+  group('bascule manuelle du capital investi', () {
+    // Le seuil de la règle automatique est un ARBITRAGE, pas une mesure : la
+    // bascule donne le dernier mot à l'utilisateur, dans les deux sens.
+    final dates = List<DateTime>.generate(20, (i) => DateTime(2026, 6, 1 + i, 18));
+    final squashedValues =
+        List<double>.generate(20, (i) => 61000.0 + (i.isEven ? 0 : 400));
+    final farContributions =
+        List<FlSpot>.generate(20, (i) => FlSpot(i.toDouble(), 50000));
+    final closeContributions =
+        List<FlSpot>.generate(20, (i) => FlSpot(i.toDouble(), 60800));
+
+    testWidgets(
+        'un tap sur la note ramène la ligne écartée par la règle (et étire '
+        'l\'axe en conséquence)', (tester) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: farContributions,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<LineChart>(find.byType(LineChart)).data.lineBarsData,
+          hasLength(1));
+
+      await tester.tap(find.byIcon(Icons.visibility_off_outlined));
+      await tester.pumpAndSettle();
+
+      final chart = tester.widget<LineChart>(find.byType(LineChart));
+      expect(chart.data.lineBarsData, hasLength(2),
+          reason: 'le choix explicite doit primer sur la règle');
+      expect(chart.data.minY, lessThan(50000),
+          reason: 'l\'axe doit descendre jusqu\'au capital investi');
+    });
+
+    testWidgets(
+        'un tap sur la pastille masque une ligne pourtant à l\'échelle, et la '
+        'note dit « masqué » et non « hors de l\'échelle »', (tester) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: closeContributions,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<LineChart>(find.byType(LineChart)).data.lineBarsData,
+          hasLength(2));
+
+      await tester.tap(find.byIcon(Icons.visibility_outlined));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<LineChart>(find.byType(LineChart)).data.lineBarsData,
+          hasLength(1));
+      expect(find.textContaining('masqué'), findsOneWidget);
+      expect(find.textContaining('hors de l\'échelle'), findsNothing,
+          reason: 'ce serait faux : c\'est l\'utilisateur qui l\'a repliée');
+    });
+
+    testWidgets('la bascule est réversible', (tester) async {
+      await tester.pumpWidget(_host(ValuationLineChart(
+        dates: dates,
+        values: squashedValues,
+        contributionsSpots: farContributions,
+        selectedPeriod: ChartPeriod.month1,
+        periodChange: 400.0,
+      )));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.byIcon(Icons.visibility_off_outlined));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.visibility_outlined));
+      await tester.pumpAndSettle();
+
+      expect(tester.widget<LineChart>(find.byType(LineChart)).data.lineBarsData,
+          hasLength(1));
+      expect(find.textContaining('masqué'), findsOneWidget);
+    });
+  });
 }

@@ -36,7 +36,7 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 /// - [showSnapshotLegend]     : afficher la légende sous le graphique quand la
 ///                              série snapshot est visible (toujours true dans
 ///                              wallet_view, peut être false dans account_view).
-class ValuationLineChart extends StatelessWidget {
+class ValuationLineChart extends StatefulWidget {
   final List<DateTime> dates;
   final List<double> values;
   final List<FlSpot> snapshotSpots;
@@ -60,6 +60,20 @@ class ValuationLineChart extends StatelessWidget {
   // annuel (au-delà, on écrème : 1 mois/an sur n, à pas régulier).
   static const int _maxCalendarLabelCount = 6;
 
+  /// Amplitude MINIMALE, en pixels, que doit conserver la courbe de valeur pour
+  /// rester lisible une fois l'axe étiré au capital investi (cf.
+  /// [contributionsFitOnValueScale]). En dessous, une courbe se lit comme un
+  /// trait : ses variations ne sont plus distinguables de l'épaisseur du tracé.
+  static const double _minValueAmplitudePx = 40;
+
+  /// Hauteur de tracé supposée quand [height] est nul (graphe en hauteur
+  /// dynamique) — valeur par défaut du widget, cf. constructeur.
+  static const double _assumedPlotHeightPx = 200;
+
+  /// Espace vertical pris par la légende et l'axe des abscisses, à retrancher
+  /// de [height] pour obtenir la hauteur réellement dessinable.
+  static const double _chromeHeightPx = 44;
+
   const ValuationLineChart({
     super.key,
     required this.dates,
@@ -74,6 +88,63 @@ class ValuationLineChart extends StatelessWidget {
     this.barWidth = 3,
     this.showSnapshotLegend = true,
   });
+
+  /// La ligne « capital investi » peut-elle partager l'échelle de la courbe de
+  /// valeur sans l'aplatir ?
+  ///
+  /// Problème mesuré (retour d'écran du 30/07, périodes J/1M/3M) : l'axe Y était
+  /// calculé sur l'UNION des deux séries. Or sur une fenêtre courte la valeur ne
+  /// varie que de quelques centaines d'euros pendant que son écart au capital
+  /// investi en fait plusieurs milliers — la courbe de valeur se retrouvait
+  /// confinée dans 5 à 10 % de la hauteur, donc visuellement plate. La ligne
+  /// secondaire, qui n'est le plus souvent qu'un palier constant sur ces
+  /// fenêtres, effaçait ainsi l'information principale.
+  ///
+  /// Règle : l'axe est piloté par la VALEUR, et la ligne du capital investi n'y
+  /// est admise que si la courbe de valeur conserve au moins
+  /// [_minValueAmplitudePx] pixels d'amplitude une fois l'axe étiré. Sinon la
+  /// ligne n'est pas tracée et son niveau est donné en toutes lettres sous le
+  /// graphe (l'utilisateur pouvant toujours la rappeler d'un clic).
+  ///
+  /// **Critère en PIXELS, et non en proportion** (révision du 30/07 sur retour
+  /// d'écran : « sur 1A ça reste lisible malgré la sortie de l'échelle »). Un
+  /// simple ratio ignorait la taille du graphe et se trompait dans les deux
+  /// sens : trop strict sur 1A, où la valeur garde une amplitude confortable
+  /// bien que le capital soit loin en dessous ; trop permissif sur un graphe
+  /// court, où la même proportion ne fait plus que quelques pixels. Ce qui rend
+  /// une courbe lisible n'est pas la fraction de hauteur qu'elle occupe, mais
+  /// le nombre de pixels qu'il lui reste — la règle mesure donc exactement ça,
+  /// et s'adapte d'elle-même à la hauteur allouée ([plotHeightPx]).
+  ///
+  /// Le déclencheur reste GÉOMÉTRIQUE, jamais un seuil de période : la ligne
+  /// reste visible sur 1M si l'écart est faible, et disparaît sur 1A si l'écart
+  /// est énorme — c'est l'écrasement qui est en cause, pas la durée.
+  ///
+  /// Exception : une courbe de valeur PLATE (compte cash sans mouvement, point
+  /// unique) n'a rien à écraser. Son amplitude serait nulle quoi qu'on fasse,
+  /// alors que l'affichage des deux paliers reste parfaitement lisible — on
+  /// garde donc la ligne (comportement d'origine).
+  static bool contributionsFitOnValueScale({
+    required double valueMin,
+    required double valueMax,
+    required double contributionsMin,
+    required double contributionsMax,
+    double plotHeightPx = _assumedPlotHeightPx,
+  }) {
+    final valueSpan = valueMax - valueMin;
+    // Plate à 0,1 % près de son niveau : aucune variation à préserver.
+    if (valueSpan <= max(valueMax.abs(), valueMin.abs()) * 0.001) return true;
+
+    final unionSpan =
+        max(valueMax, contributionsMax) - min(valueMin, contributionsMin);
+    if (unionSpan <= 0) return true;
+
+    // Pixels restants à la courbe de valeur une fois l'axe étiré aux deux
+    // séries. La marge de 10 % ajoutée plus bas aux bornes réduit les deux
+    // termes du même facteur : elle n'entre pas dans le rapport.
+    final valueAmplitudePx = plotHeightPx * valueSpan / unionSpan;
+    return valueAmplitudePx >= _minValueAmplitudePx;
+  }
 
   /// Arrondit [rough] à l'intervalle « rond » le plus proche (1, 2 ou
   /// 5 × 10^n), pour des graduations lisibles quelle que soit l'amplitude.
@@ -289,7 +360,36 @@ class ValuationLineChart extends StatelessWidget {
   }
 
   @override
+  State<ValuationLineChart> createState() => _ValuationLineChartState();
+}
+
+class _ValuationLineChartState extends State<ValuationLineChart> {
+  /// Choix EXPLICITE de l'utilisateur sur la ligne « capital investi » —
+  /// `null` tant qu'il n'a rien décidé, auquel cas la règle automatique
+  /// ([ValuationLineChart.contributionsFitOnValueScale]) tranche.
+  ///
+  /// Le seuil de cette règle est un arbitrage, pas une mesure : cette bascule
+  /// donne le dernier mot à l'utilisateur dans les deux sens — forcer la ligne
+  /// malgré l'écrasement, ou la masquer alors qu'elle tiendrait, pour lire la
+  /// courbe de valeur en plein cadre. Volontairement de SESSION (aucune
+  /// persistance) : c'est un geste de lecture, pas un réglage.
+  bool? _userWantsContributions;
+
+  @override
   Widget build(BuildContext context) {
+    // Alias locaux : le corps ci-dessous est celui du widget avant son passage
+    // en StatefulWidget (bascule d'affichage du capital investi).
+    final dates = widget.dates;
+    final values = widget.values;
+    final snapshotSpots = widget.snapshotSpots;
+    final contributionsSpots = widget.contributionsSpots;
+    final periodChange = widget.periodChange;
+    final selectedPeriod = widget.selectedPeriod;
+    final height = widget.height;
+    final leftTitlesReservedSize = widget.leftTitlesReservedSize;
+    final barWidth = widget.barWidth;
+    final showSnapshotLegend = widget.showSnapshotLegend;
+
     final l10n = AppLocalizations.of(context)!;
     final locale = Localizations.localeOf(context).languageCode;
 
@@ -304,7 +404,7 @@ class ValuationLineChart extends StatelessWidget {
     // où il n'y avait qu'une absence de mesure — trompeur, et contraire à la
     // doc de ce widget (correctif du 29/07).
     final mainColor =
-        AppColors.gainLoss(context, periodChange == null || periodChange! >= 0);
+        AppColors.gainLoss(context, periodChange == null || periodChange >= 0);
 
     // Couleur série snapshots : accent tertiaire du thème (vestige de l'ancienne
     // charte mauve, désormais dérivé de la seed pour s'adapter au thème sombre).
@@ -328,10 +428,44 @@ class ValuationLineChart extends StatelessWidget {
       }
     }
 
+    // Capital investi : n'entre dans les bornes QUE s'il n'aplatit pas la
+    // courbe de valeur (cf. [contributionsFitOnValueScale]). Sinon la série est
+    // écartée du tracé et son niveau est restitué en texte sous le graphe.
+    var contributionsMin = 0.0;
+    var contributionsMax = 0.0;
+    var showContributionsSeries = false;
+    // Vrai seulement quand c'est la RÈGLE qui a écarté la ligne — pas
+    // l'utilisateur : les deux cas se disent différemment sous le graphe.
+    var contributionsHiddenByRule = false;
     if (contributionsSpots.isNotEmpty) {
+      contributionsMin = contributionsSpots.first.y;
+      contributionsMax = contributionsSpots.first.y;
       for (final s in contributionsSpots) {
-        if (s.y < minY) minY = s.y;
-        if (s.y > maxY) maxY = s.y;
+        if (s.y < contributionsMin) contributionsMin = s.y;
+        if (s.y > contributionsMax) contributionsMax = s.y;
+      }
+      final fits = ValuationLineChart.contributionsFitOnValueScale(
+        valueMin: minY,
+        valueMax: maxY,
+        contributionsMin: contributionsMin,
+        contributionsMax: contributionsMax,
+        // Hauteur réellement dessinable : la règle raisonne en pixels, elle a
+        // donc besoin de la place allouée à CE graphe (150 à 250 selon la vue).
+        plotHeightPx: height != null
+            ? max(
+                height - ValuationLineChart._chromeHeightPx,
+                ValuationLineChart._minValueAmplitudePx,
+              )
+            : ValuationLineChart._assumedPlotHeightPx,
+      );
+      // Le choix explicite de l'utilisateur prime sur la règle, dans les DEUX
+      // sens (forcer la ligne malgré l'écrasement, ou la masquer alors qu'elle
+      // tiendrait pour lire la valeur en plein cadre).
+      showContributionsSeries = _userWantsContributions ?? fits;
+      contributionsHiddenByRule = !fits && _userWantsContributions == null;
+      if (showContributionsSeries) {
+        if (contributionsMin < minY) minY = contributionsMin;
+        if (contributionsMax > maxY) maxY = contributionsMax;
       }
     }
 
@@ -352,12 +486,14 @@ class ValuationLineChart extends StatelessWidget {
     // (minIncluded/maxIncluded à false) car elles se superposaient aux
     // graduations rondes voisines.
     final yInterval =
-        _niceInterval((chartMaxY - chartMinY) / _targetYLabelCount);
+        ValuationLineChart._niceInterval(
+            (chartMaxY - chartMinY) / ValuationLineChart._targetYLabelCount);
     final yAxisMaxAbs = max(chartMinY.abs(), chartMaxY.abs());
 
     // Labels de l'axe temporel, sélectionnés par le TEMPS (voir
     // _computeTimeLabels) : indice de point → libellé.
-    final xLabelByIndex = _computeTimeLabels(dates, selectedPeriod, locale);
+    final xLabelByIndex =
+        ValuationLineChart._computeTimeLabels(dates, selectedPeriod, locale);
 
     // Couleur des labels d'axes, lisible en thème clair comme sombre.
     final axisLabelColor = Theme.of(context).colorScheme.onSurfaceVariant;
@@ -413,7 +549,7 @@ class ValuationLineChart extends StatelessWidget {
     // ses propres paliers par débordement de spline, et pouvait la faire
     // croiser la courbe de valeur là où l'écart réel ne changeait pas de
     // signe — donc un gain/perte visuellement faux (retour du 29/07).
-    if (contributionsSpots.isNotEmpty) {
+    if (showContributionsSeries) {
       contributionsBarIndex = allSeries.length;
       allSeries.add(LineChartBarData(
         spots: contributionsSpots,
@@ -473,7 +609,7 @@ class ValuationLineChart extends StatelessWidget {
               maxIncluded: false,
               getTitlesWidget: (value, meta) {
                 return Text(
-                  _formatAxisAmount(value, yInterval, yAxisMaxAbs),
+                  ValuationLineChart._formatAxisAmount(value, yInterval, yAxisMaxAbs),
                   style: TextStyle(fontSize: 9, color: axisLabelColor),
                 );
               },
@@ -560,9 +696,16 @@ class ValuationLineChart extends StatelessWidget {
     // gouverne que l'ancienne légende snapshots).
     final bool showSnapshotLegendNow =
         snapshotSpots.isNotEmpty && showSnapshotLegend;
-    final bool showContributionsLegend = contributionsSpots.isNotEmpty;
+    final bool showContributionsLegend = showContributionsSeries;
+    // Série fournie mais NON tracée (elle aplatirait la valeur) : son niveau
+    // est restitué en toutes lettres, faute de quoi elle disparaîtrait sans
+    // explication d'une période à l'autre.
+    final bool contributionsOffScale =
+        contributionsSpots.isNotEmpty && !showContributionsSeries;
 
-    if (!showSnapshotLegendNow && !showContributionsLegend) {
+    if (!showSnapshotLegendNow &&
+        !showContributionsLegend &&
+        !contributionsOffScale) {
       return sized;
     }
 
@@ -578,11 +721,19 @@ class ValuationLineChart extends StatelessWidget {
           size: 10,
           textColor: legendTextColor,
         ),
-        Indicator(
-          color: contributionsColor,
-          text: l10n.chartSeriesContributionsLegend,
-          size: 10,
-          textColor: legendTextColor,
+        // La pastille « Capital investi » est le BOUTON de masquage : elle
+        // désigne déjà la série, la rendre cliquable évite un réglage de plus
+        // sous un graphe déjà dense.
+        _contributionsToggle(
+          context,
+          tooltip: l10n.chartContributionsHideTooltip,
+          visible: true,
+          child: Indicator(
+            color: contributionsColor,
+            text: l10n.chartSeriesContributionsLegend,
+            size: 10,
+            textColor: legendTextColor,
+          ),
         ),
       ],
       if (showSnapshotLegendNow)
@@ -600,18 +751,122 @@ class ValuationLineChart extends StatelessWidget {
         // Quand height est fourni, on utilise Expanded pour que le graphique
         // remplisse le reste de l'espace laissé par la légende.
         height != null
-            ? SizedBox(height: height! - 22, child: chartWidget)
+            ? SizedBox(height: height - 22, child: chartWidget)
             : Expanded(child: chartWidget),
         const SizedBox(height: 6),
         Padding(
           padding: const EdgeInsets.only(left: 4),
-          child: Wrap(
-            spacing: 16,
-            runSpacing: 4,
-            children: legendChildren,
-          ),
+          child: legendChildren.isEmpty
+              ? _contributionsHiddenNote(
+                  context,
+                  l10n,
+                  contributionsMin,
+                  contributionsMax,
+                  byRule: contributionsHiddenByRule,
+                )
+              : Wrap(
+                  spacing: 16,
+                  runSpacing: 4,
+                  children: [
+                    ...legendChildren,
+                    if (contributionsOffScale)
+                      _contributionsHiddenNote(
+                        context,
+                        l10n,
+                        contributionsMin,
+                        contributionsMax,
+                        byRule: contributionsHiddenByRule,
+                      ),
+                  ],
+                ),
         ),
       ],
+    );
+  }
+
+  /// Niveau du capital investi quand sa ligne n'est pas tracée : montant seul
+  /// s'il est resté constant sur la fenêtre, bornes s'il a bougé (un apport
+  /// dans la période est une information que le texte doit porter puisque la
+  /// marche n'est plus visible).
+  ///
+  /// [byRule] distingue les deux raisons de ne pas la tracer, qui ne se disent
+  /// pas pareil : « hors de l'échelle » quand la règle automatique a tranché,
+  /// « masqué » quand l'utilisateur l'a lui-même replié — lui répondre qu'elle
+  /// est hors échelle alors qu'il vient de la masquer serait une contre-vérité.
+  Widget _contributionsHiddenNote(
+    BuildContext context,
+    AppLocalizations l10n,
+    double contributionsMin,
+    double contributionsMax, {
+    required bool byRule,
+  }) {
+    final moved = (contributionsMax - contributionsMin).abs() >= 0.005;
+    final String text;
+    if (moved) {
+      final from = Formatters.formatEur(contributionsMin);
+      final to = Formatters.formatEur(contributionsMax);
+      text = byRule
+          ? l10n.chartContributionsOffScaleRange(from, to)
+          : l10n.chartContributionsHiddenRange(from, to);
+    } else {
+      final amount = Formatters.formatEur(contributionsMax);
+      text = byRule
+          ? l10n.chartContributionsOffScale(amount)
+          : l10n.chartContributionsHidden(amount);
+    }
+
+    return _contributionsToggle(
+      context,
+      tooltip: l10n.chartContributionsShowTooltip,
+      visible: false,
+      child: Text(
+        text,
+        style: TextStyle(
+          fontSize: 11,
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  /// Enveloppe cliquable de la bascule « capital investi », commune à la
+  /// pastille de légende et à la note de repli.
+  ///
+  /// L'œil barré/ouvert est indispensable : sans lui, rien ne signalerait
+  /// qu'un texte de légende est un bouton — un contrôle invisible n'existe pas
+  /// (même constat que les filtres du journal hors écran, le 30/07).
+  Widget _contributionsToggle(
+    BuildContext context, {
+    required String tooltip,
+    required bool visible,
+    required Widget child,
+  }) {
+    final color = Theme.of(context).colorScheme.onSurfaceVariant;
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: () => setState(() => _userWantsContributions = !visible),
+        borderRadius: BorderRadius.circular(6),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Souple : la note de repli porte deux montants et dépassait la
+              // largeur d'un mobile (débordement mesuré en test). Elle passe à
+              // la ligne au lieu de déborder ; la pastille de légende, courte,
+              // n'est pas affectée.
+              Flexible(child: child),
+              const SizedBox(width: 4),
+              Icon(
+                visible ? Icons.visibility_outlined : Icons.visibility_off_outlined,
+                size: 12,
+                color: color,
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

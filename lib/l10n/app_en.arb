@@ -290,6 +290,62 @@
     "description": "Legend label for the cumulative external flows (cash deposits/withdrawals plus priced security entries/exits) series overlaid on the real-evolution chart"
   },
 
+  "chartContributionsOffScale": "Invested capital: {amount} (off scale)",
+  "@chartContributionsOffScale": {
+    "description": "Replaces the invested-capital line when drawing it would squash the value curve: on short windows the gap between the two series dwarfs the value's own variation, so the axis is driven by the value curve alone and the invested capital is stated in words instead. Constant-over-the-window case.",
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+
+  "chartContributionsHidden": "Invested capital: {amount} (hidden)",
+  "@chartContributionsHidden": {
+    "description": "Same note as chartContributionsOffScale, but the line was hidden by the user's own tap rather than by the automatic scaling rule — telling them it is 'off the scale' when they just folded it away would be untrue.",
+    "placeholders": {
+      "amount": {
+        "type": "String"
+      }
+    }
+  },
+
+  "chartContributionsHiddenRange": "Invested capital: {from} to {to} (hidden)",
+  "@chartContributionsHiddenRange": {
+    "description": "Hidden-by-user variant of chartContributionsOffScaleRange (invested capital moved during the window).",
+    "placeholders": {
+      "from": {
+        "type": "String"
+      },
+      "to": {
+        "type": "String"
+      }
+    }
+  },
+
+  "chartContributionsShowTooltip": "Show the invested capital line",
+  "@chartContributionsShowTooltip": {
+    "description": "Tooltip on the tappable note that brings the invested-capital line back, forcing the shared scale even if it flattens the value curve"
+  },
+
+  "chartContributionsHideTooltip": "Hide the invested capital line",
+  "@chartContributionsHideTooltip": {
+    "description": "Tooltip on the tappable legend chip that folds the invested-capital line away so the value curve gets the full scale"
+  },
+
+  "chartContributionsOffScaleRange": "Invested capital: {from} to {to} (off scale)",
+  "@chartContributionsOffScaleRange": {
+    "description": "Same as chartContributionsOffScale, but the invested capital MOVED during the window (a deposit or withdrawal): the step is no longer visible, so both ends must be stated.",
+    "placeholders": {
+      "from": {
+        "type": "String"
+      },
+      "to": {
+        "type": "String"
+      }
+    }
+  },
+
   "noHistoricalData": "No historical data",
   "@noHistoricalData": {
     "description": "Shown when there is no historical chart data"
