@@ -407,42 +407,6 @@ for acc_id, name, kind, currency, desc, created, cash_balance in ACCOUNTS:
     }
 
 # ---------------------------------------------------------------------------
-# Snapshots : hebdomadaires (lundis) juil. 2024 → juil. 2026
-# ---------------------------------------------------------------------------
-ANCHORS = [
-    (date(2024, 7, 8), 34500), (date(2024, 10, 7), 37800),
-    (date(2024, 12, 30), 41200), (date(2025, 3, 3), 42600),
-    (date(2025, 3, 31), 42100), (date(2025, 4, 7), 38200),   # correction
-    (date(2025, 4, 28), 39900), (date(2025, 7, 7), 44300),
-    (date(2025, 10, 6), 48700), (date(2025, 12, 29), 52600),
-    (date(2026, 2, 9), 51100),                                 # repli
-    (date(2026, 4, 6), 54200), (date(2026, 7, 6), 59600),
-]
-
-def interp(day):
-    for (d0, v0), (d1, v1) in zip(ANCHORS, ANCHORS[1:]):
-        if d0 <= day <= d1:
-            f = (day - d0).days / max(1, (d1 - d0).days)
-            return v0 + (v1 - v0) * f
-    return ANCHORS[-1][1]
-
-snapshots = []
-day = ANCHORS[0][0]
-while day <= ANCHORS[-1][0]:
-    base = interp(day)
-    # bruit déterministe ±1 % (aucun aléa : reproductible)
-    o = day.toordinal()
-    noise = 0.006 * math.sin(o / 4.1) + 0.004 * math.sin(o / 9.7 + 1.3)
-    value = round(base * (1 + noise), 2)
-    captured = int(datetime(day.year, day.month, day.day, 18, 0,
-                            tzinfo=timezone.utc).timestamp() * 1000)
-    snapshots.append({
-        'date': day.isoformat(), 'totalValue': value, 'currency': 'EUR',
-        'capturedAt': captured, 'accountCount': 6, 'schemaVersion': 1,
-    })
-    day += timedelta(days=7)
-
-# ---------------------------------------------------------------------------
 # Assemblage final
 # ---------------------------------------------------------------------------
 backup = {
@@ -462,7 +426,6 @@ backup = {
         ],
         'positions': positions,
         'transactions': transactions,
-        'snapshots': {'w-demo': snapshots},
         'allocationTargets': {
             'w-demo': {'targets': {
                 'etf': 40.0, 'stock': 8.0, 'bond': 4.0, 'realEstate': 3.0,
@@ -473,7 +436,7 @@ backup = {
 }
 
 # Sérialisation : structure indentée, entrées feuilles (position / transaction /
-# snapshot) sur UNE ligne — même style que le fichier historique.
+# sur UNE ligne — même style que le fichier historique.
 def dump_leaf(obj):
     return json.dumps(obj, ensure_ascii=False, separators=(', ', ': '))
 
@@ -514,5 +477,4 @@ for name, s in summary.items():
     print(f"{name:<16}{s['titres']:>12.2f}{s['especes']:>12.2f}{s['total']:>12.2f}")
     grand += s['total']
 print(f"{'TOTAL':<16}{'':>12}{'':>12}{grand:>12.2f}")
-print(f"Transactions: {sum(len(v) for v in transactions.values())}, "
-      f"snapshots: {len(snapshots)}")
+print(f"Transactions: {sum(len(v) for v in transactions.values())}")

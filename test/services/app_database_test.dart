@@ -33,9 +33,11 @@ void main() {
       'wallets',
       'accounts',
       'positions',
-      'snapshots',
       'allocation_targets',
     ]));
+    // `snapshots` (v1) est supprimée depuis la v8 : une base fraîche ne doit
+    // pas la ressusciter, sans quoi _onCreate et _onUpgrade divergeraient.
+    expect(tableNames, isNot(contains('snapshots')));
 
     await appDb.close();
   });

@@ -1723,10 +1723,7 @@ class _AccountViewState extends State<AccountView> {
       height: chartHeight,
       leftTitlesReservedSize: 50,
       barWidth: 2,
-      showSnapshotLegend: false,
-      // account_view n'a pas de série snapshot
-      snapshotSpots: const [],
-      // Ligne « Apports » en mode réel (B7 Lot 3b).
+      // Ligne « Capital investi » en mode réel.
       contributionsSpots: useRealCurve
           ? _buildContributionsSpots(_ctrl.realContributionsValues)
           : const [],

@@ -12,7 +12,6 @@ import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/allocation_target.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
-import 'package:portfolio_tracker/model/valuation_snapshot.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
 
@@ -22,38 +21,6 @@ import 'helpers/test_database.dart';
 // Helpers de niveau fichier
 // ---------------------------------------------------------------------------
 
-/// Snapshots valides (ValuationSnapshot.toJson()) pour le wallet 'w1'.
-final snapshotsW1 = [
-  ValuationSnapshot(
-    date: '2024-01-01',
-    totalValue: 1000.0,
-    currency: 'EUR',
-    capturedAt: 1704067200000,
-    accountCount: 2,
-    schemaVersion: 1,
-  ).toJson(),
-  ValuationSnapshot(
-    date: '2024-02-01',
-    totalValue: 1100.0,
-    currency: 'EUR',
-    capturedAt: 1706745600000,
-    accountCount: 2,
-    schemaVersion: 1,
-  ).toJson(),
-];
-
-/// Snapshots valides pour le wallet 'w2'.
-final snapshotsW2 = [
-  ValuationSnapshot(
-    date: '2024-01-15',
-    totalValue: 500.0,
-    currency: 'EUR',
-    capturedAt: 1705276800000,
-    accountCount: 1,
-    schemaVersion: 1,
-  ).toJson(),
-];
-
 /// Cibles d'allocation pour le wallet 'w1'.
 final allocationTargetsW1 =
     AllocationTarget(targets: {AssetType.etf.name: 60.0, AssetType.crypto.name: 20.0}).toJson();
@@ -61,35 +28,6 @@ final allocationTargetsW1 =
 /// Cibles d'allocation pour le wallet 'w2'.
 final allocationTargetsW2 =
     AllocationTarget(targets: {AssetType.stock.name: 40.0}).toJson();
-
-/// Insère un wallet puis ses snapshots directement dans la DB.
-Future<void> seedWalletWithSnapshots(
-  AppDatabase db,
-  String walletId,
-  List<Map<String, dynamic>> snapJsonList,
-) async {
-  final database = await db.database;
-  await database.insert(
-    'wallets',
-    {
-      'id': walletId,
-      'name': 'Wallet $walletId',
-      'created_at': '2024-01-01T00:00:00.000',
-    },
-    conflictAlgorithm: ConflictAlgorithm.replace,
-  );
-  for (final sJson in snapJsonList) {
-    final s = ValuationSnapshot.fromJson(sJson);
-    await database.rawInsert(
-      '''
-      INSERT OR REPLACE INTO snapshots
-        (wallet_id, date, total_value, currency, captured_at, account_count, schema_version)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ''',
-      [walletId, s.date, s.totalValue, s.currency, s.capturedAt, s.accountCount, s.schemaVersion],
-    );
-  }
-}
 
 /// Insère un wallet puis ses allocation_targets directement dans la DB.
 Future<void> seedWalletWithTargets(
@@ -192,36 +130,6 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // (a) Export inclut les clés snapshots regroupées par walletId
-  // ---------------------------------------------------------------------------
-
-  group('exportRawData – snapshots', () {
-    test('inclut les snapshots existants regroupés par walletId', () async {
-      await seedWalletWithSnapshots(db, 'w1', snapshotsW1);
-      await seedWalletWithSnapshots(db, 'w2', snapshotsW2);
-
-      final exported = await storage.exportRawData();
-
-      expect(exported.containsKey('snapshots'), isTrue);
-
-      final snapshots = exported['snapshots'] as Map<String, dynamic>;
-      expect(snapshots.containsKey('w1'), isTrue);
-      expect(snapshots.containsKey('w2'), isTrue);
-
-      // Les données exportées doivent correspondre aux originaux.
-      expect(snapshots['w1'], equals(snapshotsW1));
-      expect(snapshots['w2'], equals(snapshotsW2));
-    });
-
-    test("renvoie une map snapshots vide quand aucun snapshot n'existe", () async {
-      final exported = await storage.exportRawData();
-
-      expect(exported['snapshots'], isA<Map>());
-      expect((exported['snapshots'] as Map).isEmpty, isTrue);
-    });
-  });
-
-  // ---------------------------------------------------------------------------
   // (a-bis) Enveloppe fiscale : fidélité du round-trip + rétro-compat backup.
   // ---------------------------------------------------------------------------
 
@@ -280,32 +188,65 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // (b) Import d'une sauvegarde SANS clé 'snapshots' : pas d'exception,
-  //     snapshots préexistants purgés
+  // (b) Tolérance ascendante : une sauvegarde d'AVANT la v8 porte une clé
+  //     'snapshots' que le format ne connaît plus. Elle doit être traversée
+  //     sans bruit — la refuser rendrait irrécupérable toute sauvegarde
+  //     produite par la version publiée.
   // ---------------------------------------------------------------------------
 
   group('importRawData – tolérance ascendante', () {
-    test(
-        'sauvegarde sans clé snapshots importe sans erreur et purge les snapshots préexistants',
+    test('une clé snapshots héritée est ignorée, le reste est importé',
         () async {
-      // État initial : un snapshot existe déjà
-      await seedWalletWithSnapshots(db, 'w1', snapshotsW1);
+      final backupV3 = <String, dynamic>{
+        'wallets': [
+          {
+            'id': 'w1',
+            'name': 'Wallet',
+            'createdAt': '2024-01-01T00:00:00.000',
+          }
+        ],
+        'accounts': [
+          {
+            'id': 'acc1',
+            'walletId': 'w1',
+            'name': 'CTO',
+            'type': 'investment',
+            'currency': 'EUR',
+          }
+        ],
+        'positions': <String, dynamic>{},
+        // Charge utile d'un backup produit avant la v8.
+        'snapshots': {
+          'w1': [
+            {
+              'date': '2024-01-01',
+              'totalValue': 1000.0,
+              'currency': 'EUR',
+              'capturedAt': 1704067200000,
+              'accountCount': 2,
+              'schemaVersion': 1,
+            }
+          ],
+        },
+      };
 
-      // Sauvegarde ancienne sans la clé 'snapshots'
-      final ancienneBackup = <String, dynamic>{
+      await expectLater(storage.importRawData(backupV3), completes);
+
+      // Le reste de la sauvegarde est bien arrivé…
+      expect((await storage.getAllWallets()).map((w) => w.id), ['w1']);
+      expect((await storage.getAllAccounts()).map((a) => a.id), ['acc1']);
+      // …et la clé héritée ne ressort pas à l'export.
+      expect((await storage.exportRawData()).containsKey('snapshots'), isFalse);
+    });
+
+    test('une sauvegarde SANS clé snapshots importe sans erreur', () async {
+      final backupSansCle = <String, dynamic>{
         'wallets': [],
         'accounts': [],
         'positions': <String, dynamic>{},
-        // pas de clé 'snapshots' — volontairement absente
       };
 
-      // Ne doit pas lever d'exception
-      await expectLater(storage.importRawData(ancienneBackup), completes);
-
-      // Les snapshots préexistants doivent avoir été supprimés
-      final exported = await storage.exportRawData();
-      final snapshots = exported['snapshots'] as Map<String, dynamic>;
-      expect(snapshots.containsKey('w1'), isFalse);
+      await expectLater(storage.importRawData(backupSansCle), completes);
     });
   });
 
@@ -314,9 +255,9 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('round-trip export → import → export', () {
-    test('les données snapshots sont identiques après un cycle complet', () async {
-      // Seed : wallet w1 avec snapshots
-      await seedWalletWithSnapshots(db, 'w1', snapshotsW1);
+    test('les données sont identiques après un cycle complet', () async {
+      // Seed : wallet w1 avec ses cibles d'allocation.
+      await seedWalletWithTargets(db, 'w1', allocationTargetsW1);
 
       // Premier export
       final export1 = await storage.exportRawData();
@@ -328,32 +269,10 @@ void main() {
       final export2 = await storage.exportRawData();
 
       // Les deux exports doivent être identiques
-      expect(export2['snapshots'], equals(export1['snapshots']));
+      expect(export2['allocationTargets'], equals(export1['allocationTargets']));
       expect(export2['wallets'], equals(export1['wallets']));
       expect(export2['accounts'], equals(export1['accounts']));
       expect(export2['positions'], equals(export1['positions']));
-    });
-  });
-
-  // ---------------------------------------------------------------------------
-  // (d) deleteWallet supprime les snapshots du wallet (cascade FK)
-  // ---------------------------------------------------------------------------
-
-  group('deleteWallet – suppression en cascade des snapshots', () {
-    test('supprime les snapshots du wallet supprimé, laisse l\'autre intact', () async {
-      await seedWalletWithSnapshots(db, 'w1', snapshotsW1);
-      await seedWalletWithSnapshots(db, 'w2', snapshotsW2);
-
-      await storage.deleteWallet('w1');
-
-      final exported = await storage.exportRawData();
-      final snapshots = exported['snapshots'] as Map<String, dynamic>;
-
-      // La clé du wallet supprimé doit avoir disparu
-      expect(snapshots.containsKey('w1'), isFalse);
-
-      // La clé de l'autre wallet ne doit pas avoir été touchée
-      expect(snapshots.containsKey('w2'), isTrue);
     });
   });
 
@@ -509,7 +428,7 @@ void main() {
 
   group('deleteWallet – cascade complète de l\'arbre', () {
     test(
-        'supprimer w1 efface accounts, positions, snapshots, targets ; w2 est intact',
+        'supprimer w1 efface accounts, positions, targets ; w2 est intact',
         () async {
       // Seed : deux wallets complets
       final database = await db.database;
@@ -533,18 +452,6 @@ void main() {
              VALUES(?, ?, ?, ?)''',
           ['acc-$wid', 'SYM', '1', '{"symbol":"SYM","type":"other","currency":"EUR"}'],
         );
-        final s = ValuationSnapshot(
-          date: '2024-06-01',
-          totalValue: 1000.0,
-          currency: 'EUR',
-          capturedAt: 1717200000000,
-        );
-        await database.rawInsert(
-          '''INSERT INTO snapshots
-               (wallet_id, date, total_value, currency, captured_at, account_count, schema_version)
-             VALUES(?, ?, ?, ?, ?, ?, ?)''',
-          [wid, s.date, s.totalValue, s.currency, s.capturedAt, s.accountCount, s.schemaVersion],
-        );
         await database.rawInsert(
           'INSERT INTO allocation_targets(wallet_id, target_json) VALUES(?, ?)',
           [wid, jsonEncode(AllocationTarget(targets: {AssetType.etf.name: 50.0}).toJson())],
@@ -564,13 +471,11 @@ void main() {
       expect(positions, isEmpty);
 
       final exported = await storage.exportRawData();
-      expect((exported['snapshots'] as Map).containsKey('w1'), isFalse);
       expect((exported['allocationTargets'] as Map).containsKey('w1'), isFalse);
 
       // w2 est intact
       expect(wallets.any((w) => w.id == 'w2'), isTrue);
       expect(accounts.any((a) => a.walletId == 'w2'), isTrue);
-      expect((exported['snapshots'] as Map).containsKey('w2'), isTrue);
       expect((exported['allocationTargets'] as Map).containsKey('w2'), isTrue);
     });
   });

@@ -116,7 +116,6 @@ class SqliteMigration {
       'wallets',
       'accounts',
       'positions',
-      'snapshots',
       'allocation_targets',
     ]) {
       if (await _countRows(database, table) > 0) return true;
@@ -132,16 +131,18 @@ class SqliteMigration {
     final wallets = (legacy['wallets'] as List?) ?? const [];
     final accounts = (legacy['accounts'] as List?) ?? const [];
     final positions = (legacy['positions'] as Map?) ?? const {};
-    final snapshots = (legacy['snapshots'] as Map?) ?? const {};
     final targets = (legacy['allocationTargets'] as Map?) ?? const {};
 
     if (wallets.isNotEmpty) return false;
     if (accounts.isNotEmpty) return false;
-    // Une map de positions/snapshots/targets peut contenir des clés dont la
-    // valeur est une liste vide ; on considère « des données » dès qu'une
-    // liste non vide (ou une valeur target non nulle) existe.
+    // Une map de positions/targets peut contenir des clés dont la valeur est
+    // une liste vide ; on considère « des données » dès qu'une liste non vide
+    // (ou une valeur target non nulle) existe.
+    //
+    // Les snapshots legacy ne comptent PLUS (table supprimée en v8) : une
+    // installation d'avant SQLite n'ayant QUE des instantanés est désormais
+    // considérée comme vide, ce qui est exact — il n'y a plus rien à en tirer.
     if (_mapHasAnyEntryWithData(positions)) return false;
-    if (_mapHasAnyEntryWithData(snapshots)) return false;
     if (targets.isNotEmpty) return false;
 
     return true;
@@ -168,7 +169,9 @@ class SqliteMigration {
   ///   - account dont le walletId n'existe pas → retiré (+ ses positions) ;
   ///   - position dont l'accountId n'existe pas (parmi les accounts VALIDES)
   ///     → retirée ;
-  ///   - snapshot / allocationTarget dont le walletId n'existe pas → retiré.
+  ///   - allocationTarget dont le walletId n'existe pas → retiré.
+  ///
+  /// Les snapshots legacy sont ÉCARTÉS sans examen (table supprimée en v8).
   static Map<String, dynamic> _sanitize(Map<String, dynamic> legacy) {
     final wallets = ((legacy['wallets'] as List?) ?? const [])
         .whereType<Map>()
@@ -178,9 +181,6 @@ class SqliteMigration {
         .toList();
     final positions = Map<String, dynamic>.from(
       (legacy['positions'] as Map?) ?? const {},
-    );
-    final snapshots = Map<String, dynamic>.from(
-      (legacy['snapshots'] as Map?) ?? const {},
     );
     final targets = Map<String, dynamic>.from(
       (legacy['allocationTargets'] as Map?) ?? const {},
@@ -219,18 +219,7 @@ class SqliteMigration {
       }
     });
 
-    // 3. Snapshots orphelins (walletId inexistant).
-    final validSnapshots = <String, dynamic>{};
-    var orphanSnapshotGroups = 0;
-    snapshots.forEach((walletId, value) {
-      if (walletIds.contains(walletId)) {
-        validSnapshots[walletId] = value;
-      } else {
-        orphanSnapshotGroups++;
-      }
-    });
-
-    // 4. AllocationTargets orphelins (walletId inexistant).
+    // 3. AllocationTargets orphelins (walletId inexistant).
     final validTargets = <String, dynamic>{};
     var orphanTargets = 0;
     targets.forEach((walletId, value) {
@@ -241,15 +230,11 @@ class SqliteMigration {
       }
     });
 
-    if (orphanAccounts > 0 ||
-        orphanPositionGroups > 0 ||
-        orphanSnapshotGroups > 0 ||
-        orphanTargets > 0) {
+    if (orphanAccounts > 0 || orphanPositionGroups > 0 || orphanTargets > 0) {
       AppLogger.warning(
         'SqliteMigration — assainissement des orphelins : '
         'accounts=$orphanAccounts, '
         'groupes de positions=$orphanPositionGroups, '
-        'groupes de snapshots=$orphanSnapshotGroups, '
         'allocationTargets=$orphanTargets '
         '(entrées retirées avant import atomique).',
       );
@@ -259,7 +244,6 @@ class SqliteMigration {
       'wallets': wallets,
       'accounts': validAccounts,
       'positions': validPositions,
-      'snapshots': validSnapshots,
       'allocationTargets': validTargets,
     };
   }
@@ -280,16 +264,12 @@ class SqliteMigration {
     final expectedPositions = _countNestedListItems(
       (sanitized['positions'] as Map?) ?? const {},
     );
-    final expectedSnapshots = _countNestedListItems(
-      (sanitized['snapshots'] as Map?) ?? const {},
-    );
     final expectedTargets =
         ((sanitized['allocationTargets'] as Map?) ?? const {}).length;
 
     final actualWallets = await _countRows(database, 'wallets');
     final actualAccounts = await _countRows(database, 'accounts');
     final actualPositions = await _countRows(database, 'positions');
-    final actualSnapshots = await _countRows(database, 'snapshots');
     final actualTargets = await _countRows(database, 'allocation_targets');
 
     final mismatches = <String>[];
@@ -302,7 +282,6 @@ class SqliteMigration {
     check('wallets', expectedWallets, actualWallets);
     check('accounts', expectedAccounts, actualAccounts);
     check('positions', expectedPositions, actualPositions);
-    check('snapshots', expectedSnapshots, actualSnapshots);
     check('allocationTargets', expectedTargets, actualTargets);
 
     if (mismatches.isNotEmpty) {

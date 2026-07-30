@@ -69,7 +69,7 @@ In all honesty, here is what this does **not** guarantee: quotes go through thir
 
   You enter the fine weight (in grams) and the premium; the app values each unit automatically from the reference quote.
 - **Interactive charts** (via `fl_chart`):
-  - Value over time (whole portfolio and per account) across several periods (1D, 1M, 3M, 1Y, 5Y, Max), with real **valuation snapshots** captured during use overlaid as a dotted series.
+  - Value over time (whole portfolio, per account and per position) across several periods (1D, 1M, 3M, 1Y, 5Y, Max). Two readings to choose from: **actual evolution**, rebuilt from your journal and historical quotes — what you really held on each date, with the **invested capital** line alongside — or **your current positions** reprojected onto past quotes.
   - Allocation by asset class (pie chart), cash included.
 - **Allocation targets**: set a target percentage per asset class (and for cash) and track the **gaps** between actual and target allocation.
 - **Graceful degradation**: if the network or the quote API is down, the app serves the **last known price** (persisted locally) while flagging how old the data is.
@@ -185,8 +185,7 @@ A per-folder overview (rather than a file-by-file tree, which would drift):
     ├── main.dart          # Entry point, theming, license registry
     ├── app_info.dart      # Displayed version & license notice
     ├── model/             # Models: Wallet, Account, Position, Asset,
-    │                      #   AssetTransaction (journal), ValuationSnapshot,
-    │                      #   AllocationTarget
+    │                      #   AssetTransaction (journal), AllocationTarget
     ├── services/          # SQLite persistence (schema & storages), network
     │                      #   (Yahoo quotes behind MarketDataProvider,
     │                      #   exchange rates, "last known price" cache),
@@ -194,7 +193,7 @@ A per-folder overview (rather than a file-by-file tree, which would drift):
     │                      #   (atomic journal → position & cash projection)
     ├── logic/             # Pure functions, testable without UI or I/O:
     │                      #   position projection, allocation & gaps,
-    │                      #   history aggregation, snapshots, valuation
+    │                      #   history aggregation, valuation
     ├── controllers/       # App state (ChangeNotifier): active portfolio,
     │                      #   account, theme
     ├── widgets/           # Screens & components: portfolio view, account view,

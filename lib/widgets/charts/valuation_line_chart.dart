@@ -13,15 +13,10 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 ///
 /// Paramètres communs aux deux vues :
 /// - [dates] / [values]       : séries de données de l'axe temporel.
-/// - [snapshotSpots]          : série secondaire de snapshots réels (pointillés
-///                              violets) ; liste vide = série absente.
-/// - [contributionsSpots]     : série « Apports » (mode réel, B7 Lot 3b) —
-///                              ligne SOLIDE des versements−retraits cumulés,
-///                              sous la courbe de valeur (l'écart visualise le
-///                              gain) ; liste vide = série absente. REMPLACE
-///                              [snapshotSpots] en mode réel (jamais les deux
-///                              en même temps côté appelant), mais le widget
-///                              reste correct si les deux sont fournies.
+/// - [contributionsSpots]     : série « Capital investi » (mode réel) — ligne
+///                              SOLIDE des versements−retraits cumulés, sous la
+///                              courbe de valeur (l'écart visualise le gain) ;
+///                              liste vide = série absente.
 /// - [periodChange]           : variation de période (nul = couleur verte par
 ///                              défaut, valeur < 0 = rouge).
 /// - [selectedPeriod]         : période active (format axe / tooltip).
@@ -33,13 +28,9 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 ///                              account_view : 50).
 /// - [barWidth]               : épaisseur de la courbe principale (wallet : 3,
 ///                              account : 2).
-/// - [showSnapshotLegend]     : afficher la légende sous le graphique quand la
-///                              série snapshot est visible (toujours true dans
-///                              wallet_view, peut être false dans account_view).
 class ValuationLineChart extends StatefulWidget {
   final List<DateTime> dates;
   final List<double> values;
-  final List<FlSpot> snapshotSpots;
   final List<FlSpot> contributionsSpots;
   final double? periodChange;
   final ChartPeriod selectedPeriod;
@@ -48,7 +39,6 @@ class ValuationLineChart extends StatefulWidget {
   final double? height;
   final double leftTitlesReservedSize;
   final double barWidth;
-  final bool showSnapshotLegend;
 
   // Nombre cible de graduations par axe (l'axe Y peut en produire une de
   // plus ou de moins selon l'arrondi « nice », l'axe X une de moins après
@@ -79,14 +69,12 @@ class ValuationLineChart extends StatefulWidget {
     required this.dates,
     required this.values,
     required this.selectedPeriod,
-    this.snapshotSpots = const [],
     this.contributionsSpots = const [],
     this.periodChange,
     // Défauts wallet_view
     this.height = 200,
     this.leftTitlesReservedSize = 40,
     this.barWidth = 3,
-    this.showSnapshotLegend = true,
   });
 
   /// La ligne « capital investi » peut-elle partager l'échelle de la courbe de
@@ -381,14 +369,12 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
     // en StatefulWidget (bascule d'affichage du capital investi).
     final dates = widget.dates;
     final values = widget.values;
-    final snapshotSpots = widget.snapshotSpots;
     final contributionsSpots = widget.contributionsSpots;
     final periodChange = widget.periodChange;
     final selectedPeriod = widget.selectedPeriod;
     final height = widget.height;
     final leftTitlesReservedSize = widget.leftTitlesReservedSize;
     final barWidth = widget.barWidth;
-    final showSnapshotLegend = widget.showSnapshotLegend;
 
     final l10n = AppLocalizations.of(context)!;
     final locale = Localizations.localeOf(context).languageCode;
@@ -406,27 +392,14 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
     final mainColor =
         AppColors.gainLoss(context, periodChange == null || periodChange >= 0);
 
-    // Couleur série snapshots : accent tertiaire du thème (vestige de l'ancienne
-    // charte mauve, désormais dérivé de la seed pour s'adapter au thème sombre).
-    final snapshotColor = Theme.of(context).colorScheme.tertiary;
-
-    // Couleur série apports (mode réel, B7 Lot 3b) : même accent tertiaire —
-    // sans conflit visuel avec [snapshotColor], les deux séries ne sont
-    // jamais affichées simultanément côté appelant (la ligne apports
-    // REMPLACE les snapshots en mode réel).
+    // Couleur série capital investi : accent tertiaire du thème (dérivé de la
+    // seed pour s'adapter au thème sombre).
     final contributionsColor = Theme.of(context).colorScheme.tertiary;
 
-    // Bornes Y : étendues aux snapshots/apports pour éviter qu'une série
-    // secondaire soit rognée hors de la zone de tracé (correctif vague 2).
+    // Bornes Y : calculées sur la seule courbe de VALEUR — la série secondaire
+    // ne les élargit que si elle tient sur cette échelle (cf. plus bas).
     double minY = values.reduce((a, b) => a < b ? a : b);
     double maxY = values.reduce((a, b) => a > b ? a : b);
-
-    if (snapshotSpots.isNotEmpty) {
-      for (final s in snapshotSpots) {
-        if (s.y < minY) minY = s.y;
-        if (s.y > maxY) maxY = s.y;
-      }
-    }
 
     // Capital investi : n'entre dans les bornes QUE s'il n'aplatit pas la
     // courbe de valeur (cf. [contributionsFitOnValueScale]). Sinon la série est
@@ -517,26 +490,9 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
 
     final List<LineChartBarData> allSeries = [mainSeries];
 
-    // Indices de barre des séries secondaires (pour le tooltip ci-dessous) —
-    // dépendent de l'ORDRE d'ajout, jamais supposés fixes : les deux séries
-    // ne co-existent normalement pas (snapshots XOR apports côté appelant),
-    // mais le calcul reste correct si elles le faisaient.
-    int? snapshotBarIndex;
+    // Indice de barre de la série secondaire (pour le tooltip ci-dessous) —
+    // dépend de l'ORDRE d'ajout, jamais supposé fixe.
     int? contributionsBarIndex;
-
-    // Série secondaire : snapshots réels (pointillés, visible si ≥ 2 points)
-    if (snapshotSpots.isNotEmpty) {
-      snapshotBarIndex = allSeries.length;
-      allSeries.add(LineChartBarData(
-        spots: snapshotSpots,
-        isCurved: false,
-        color: snapshotColor,
-        barWidth: 2,
-        dashArray: [6, 4], // 6 px tracé, 4 px espace
-        dotData: const FlDotData(show: false),
-        belowBarData: BarAreaData(show: false),
-      ));
-    }
 
     // Série secondaire : capital investi cumulé (mode réel, B7 Lot 3b) — ligne
     // SOLIDE sous la courbe de valeur, sans remplissage (l'écart vertical
@@ -631,42 +587,24 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
           touchTooltipData: LineTouchTooltipData(
             getTooltipItems: (touchedSpots) {
               return touchedSpots.map((touchedSpot) {
-                final isSnapshotSeries =
-                    snapshotBarIndex != null &&
-                        touchedSpot.barIndex == snapshotBarIndex;
                 final isContributionsSeries =
                     contributionsBarIndex != null &&
                         touchedSpot.barIndex == contributionsBarIndex;
                 final spotIndex = touchedSpot.spotIndex;
 
-                // Pour la série principale, l'index X == indice dans dates.
-                // Pour la série snapshots, FlSpot.x est aussi un indice dans
-                // dates (même référentiel) — mais SPARSE (moins de points que
-                // dates), d'où la lecture explicite de x plutôt que de
-                // spotIndex. La série apports a, elle, un point par date
-                // (comme la série principale) : spotIndex suffit.
-                final xIndex = isSnapshotSeries
-                    ? touchedSpot.x.toInt().clamp(0, dates.length - 1)
-                    : spotIndex;
-                final date = dates[xIndex];
+                // Série principale comme série « capital investi » : un point
+                // par date, l'indice du point EST l'indice dans dates.
+                final date = dates[spotIndex];
                 final totalValue = touchedSpot.y;
 
                 final dateLabel = Formatters.formatTooltipDate(
                     date, selectedPeriod, locale);
 
-                // Série snapshot : distingué visuellement (point ●)
-                final label = isSnapshotSeries
-                    ? '$dateLabel\n${Formatters.formatEur(totalValue)} ●'
-                    : '$dateLabel\n${Formatters.formatEur(totalValue)}';
+                final label =
+                    '$dateLabel\n${Formatters.formatEur(totalValue)}';
 
-                final Color labelColor;
-                if (isSnapshotSeries) {
-                  labelColor = snapshotColor;
-                } else if (isContributionsSeries) {
-                  labelColor = contributionsColor;
-                } else {
-                  labelColor = Colors.white;
-                }
+                final labelColor =
+                    isContributionsSeries ? contributionsColor : Colors.white;
 
                 return LineTooltipItem(
                   label,
@@ -690,12 +628,8 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
         ? SizedBox(height: height, child: chartWidget)
         : chartWidget;
 
-    // Légende discrète sous le graphique : snapshots (si visibles et
-    // showSnapshotLegend activé) et/ou apports (si la série est présente —
-    // toujours affichée, indépendamment de showSnapshotLegend, qui ne
-    // gouverne que l'ancienne légende snapshots).
-    final bool showSnapshotLegendNow =
-        snapshotSpots.isNotEmpty && showSnapshotLegend;
+    // Légende discrète sous le graphique : présente dès que la série
+    // « capital investi » est tracée.
     final bool showContributionsLegend = showContributionsSeries;
     // Série fournie mais NON tracée (elle aplatirait la valeur) : son niveau
     // est restitué en toutes lettres, faute de quoi elle disparaîtrait sans
@@ -703,9 +637,7 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
     final bool contributionsOffScale =
         contributionsSpots.isNotEmpty && !showContributionsSeries;
 
-    if (!showSnapshotLegendNow &&
-        !showContributionsLegend &&
-        !contributionsOffScale) {
+    if (!showContributionsLegend && !contributionsOffScale) {
       return sized;
     }
 
@@ -736,13 +668,6 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
           ),
         ),
       ],
-      if (showSnapshotLegendNow)
-        Indicator(
-          color: snapshotColor,
-          text: l10n.realValueSeriesLabel,
-          size: 10,
-          textColor: legendTextColor,
-        ),
     ];
 
     return Column(

@@ -90,11 +90,13 @@ Future<void> _createSchemaV1(Database db) async {
   ''');
 }
 
+/// Tables de la v1 qui doivent SURVIVRE à toute migration. `snapshots` en est
+/// volontairement absente : c'est la seule table jamais supprimée (palier
+/// v7→v8), et sa disparition fait l'objet d'assertions dédiées ci-dessous.
 const _v1Tables = <String>[
   'wallets',
   'accounts',
   'positions',
-  'snapshots',
   'allocation_targets',
 ];
 
@@ -126,11 +128,13 @@ void main() {
       final db = await appDb.database;
 
       // La version effective de la base est bien la version courante (5).
-      expect(await db.getVersion(), equals(7));
+      expect(await db.getVersion(), equals(8));
 
       final tables = await _tableNames(db);
       expect(tables, containsAll(_v1Tables),
-          reason: 'onCreate en v2 doit créer aussi les 5 tables v1');
+          reason: 'onCreate en v2 doit créer aussi les tables v1 survivantes');
+      expect(tables, isNot(contains('snapshots')),
+          reason: 'une base FRAÎCHE ne doit plus créer la table snapshots');
       expect(tables, contains('transactions'),
           reason: 'onCreate en v2 doit créer la table transactions');
 
@@ -302,7 +306,7 @@ void main() {
 
       // La réouverture applique TOUS les paliers cumulatifs jusqu'à la
       // version courante (4), pas seulement le palier v2→v3 testé ici.
-      expect(await upgraded.getVersion(), equals(7));
+      expect(await upgraded.getVersion(), equals(8));
 
       final accCols = await upgraded.rawQuery('PRAGMA table_info(accounts)');
       expect(accCols.map((c) => c['name'] as String).toSet(),
@@ -403,7 +407,7 @@ void main() {
       final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final upgraded = await appDb.database;
 
-      expect(await upgraded.getVersion(), equals(7));
+      expect(await upgraded.getVersion(), equals(8));
 
       final tables = await _tableNames(upgraded);
       expect(tables, contains('last_known_quotes'),
@@ -544,7 +548,7 @@ void main() {
       final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final upgraded = await appDb.database;
 
-      expect(await upgraded.getVersion(), equals(7));
+      expect(await upgraded.getVersion(), equals(8));
 
       final posCols = await upgraded.rawQuery('PRAGMA table_info(positions)');
       expect(posCols.map((c) => c['name'] as String).toSet(),
@@ -669,7 +673,7 @@ void main() {
       final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final upgraded = await appDb.database;
 
-      expect(await upgraded.getVersion(), equals(7));
+      expect(await upgraded.getVersion(), equals(8));
 
       final accCols = await upgraded.rawQuery('PRAGMA table_info(accounts)');
       expect(accCols.map((c) => c['name'] as String).toSet(),
@@ -802,7 +806,7 @@ void main() {
       final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final upgraded = await appDb.database;
 
-      expect(await upgraded.getVersion(), equals(7));
+      expect(await upgraded.getVersion(), equals(8));
 
       final txCols = await upgraded.rawQuery('PRAGMA table_info(transactions)');
       expect(txCols.map((c) => c['name'] as String).toSet(),
@@ -821,6 +825,168 @@ void main() {
       expect(tx['fee'], equals('1.99'));
 
       await appDb.close();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // (2quater) UPGRADE v7 → v8 : la table `snapshots` DISPARAÎT — premier
+  //           palier destructif du schéma. Ce que le test doit prouver n'est
+  //           pas le DROP (trivial) mais qu'il est CIRCONSCRIT : la valorisation
+  //           historique est désormais reconstruite du journal, mais le journal
+  //           lui-même, les comptes et les positions ne doivent pas bouger d'un
+  //           octet au passage.
+  // ---------------------------------------------------------------------------
+  group('Upgrade v7 → v8 (suppression de snapshots)', () {
+    late Directory tmpDir;
+    late String dbPath;
+
+    setUp(() async {
+      tmpDir = await Directory.systemTemp.createTemp('pt_upgrade_v8_test_');
+      dbPath = '${tmpDir.path}/portfolio_v7.db';
+    });
+
+    tearDown(() async {
+      if (await tmpDir.exists()) {
+        await tmpDir.delete(recursive: true);
+      }
+    });
+
+    test('snapshots dropée, journal et comptes intacts', () async {
+      // --- Étape 1 : base d'époque v7 (schéma complet AVEC snapshots peuplés).
+      final legacyDb = await databaseFactoryFfi.openDatabase(
+        dbPath,
+        options: OpenDatabaseOptions(
+          version: 7,
+          onConfigure: (db) => db.execute('PRAGMA foreign_keys = ON'),
+          onCreate: (db, version) async {
+            await _createSchemaV1(db);
+            await db.execute(
+                'ALTER TABLE accounts ADD COLUMN kind TEXT NOT NULL DEFAULT \'autre\'');
+            await db.execute('''
+              CREATE TABLE transactions (
+                id                  TEXT PRIMARY KEY,
+                account_id          TEXT NOT NULL,
+                symbol              TEXT,
+                kind                TEXT NOT NULL,
+                quantity            TEXT,
+                unit_price          TEXT,
+                amount              TEXT,
+                currency            TEXT NOT NULL,
+                date                TEXT NOT NULL,
+                fee                 TEXT,
+                note                TEXT,
+                meta_json           TEXT,
+                settlement_currency TEXT,
+                FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+              )
+            ''');
+            await db.execute('''
+              CREATE TABLE last_known_quotes (
+                symbol TEXT PRIMARY KEY, name TEXT, price TEXT, change TEXT,
+                change_percent TEXT, previous_close TEXT, currency TEXT,
+                exchange TEXT, cached_at INTEGER NOT NULL
+              )
+            ''');
+            await db.execute(
+                'ALTER TABLE positions ADD COLUMN derived_at INTEGER');
+            await db.execute(
+                'ALTER TABLE accounts ADD COLUMN derived_cash TEXT');
+            await db.execute(
+                'ALTER TABLE accounts ADD COLUMN derived_cash_at INTEGER');
+          },
+        ),
+      );
+      expect(await legacyDb.getVersion(), equals(7));
+      expect(await _tableNames(legacyDb), contains('snapshots'),
+          reason: 'une base v7 possède encore la table snapshots');
+
+      await legacyDb.insert('wallets', {
+        'id': 'w1',
+        'name': 'Wallet v7',
+        'created_at': '2024-01-01T00:00:00.000',
+      });
+      await legacyDb.insert('accounts', {
+        'id': 'a-cto',
+        'wallet_id': 'w1',
+        'name': 'CTO',
+        'type': 'investment',
+        'currency': 'EUR',
+        'kind': 'autre',
+        'derived_cash': '1250.00',
+      });
+      await legacyDb.insert('positions', {
+        'account_id': 'a-cto',
+        'symbol': 'CW8',
+        'quantity': '12',
+        'average_buy_price': 420.5,
+        'asset_json': '{"symbol":"CW8","currency":"EUR"}',
+      });
+      await legacyDb.insert('transactions', {
+        'id': 't-buy',
+        'account_id': 'a-cto',
+        'symbol': 'CW8',
+        'kind': 'buy',
+        'quantity': '12',
+        'unit_price': '420.50',
+        'amount': '-5046.00',
+        'currency': 'EUR',
+        'date': '2024-03-15T10:30:00.000',
+      });
+      await legacyDb.insert('snapshots', {
+        'wallet_id': 'w1',
+        'date': '2024-06-01',
+        'total_value': 6296.0,
+        'currency': 'EUR',
+        'captured_at': 1717200000000,
+        'account_count': 1,
+        'schema_version': 1,
+      });
+      await legacyDb.close();
+
+      // --- Étape 2 : rouvrir via AppDatabase (version courante 8).
+      final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
+      final upgraded = await appDb.database;
+
+      expect(await upgraded.getVersion(), equals(8));
+      expect(await _tableNames(upgraded), isNot(contains('snapshots')),
+          reason: 'onUpgrade v7→v8 doit droper la table snapshots');
+      expect(await _indexNames(upgraded),
+          isNot(contains('idx_snapshots_wallet_date')),
+          reason: 'DROP TABLE emporte l\'index de la table');
+
+      // Tout le reste survit : c'est la seule chose que ce palier promet.
+      final tx = (await upgraded
+              .query('transactions', where: 'id = ?', whereArgs: ['t-buy']))
+          .first;
+      expect(tx['amount'], equals('-5046.00'));
+      expect(tx['quantity'], equals('12'));
+      final pos = (await upgraded
+              .query('positions', where: 'symbol = ?', whereArgs: ['CW8']))
+          .first;
+      expect(pos['quantity'], equals('12'));
+      final acc = (await upgraded
+              .query('accounts', where: 'id = ?', whereArgs: ['a-cto']))
+          .first;
+      expect(acc['derived_cash'], equals('1250.00'));
+      expect(await upgraded.query('wallets'), hasLength(1));
+
+      await appDb.close();
+    });
+
+    test('rejouer le palier sur une base SANS snapshots ne lève pas', () async {
+      // Idempotence : une base déjà en v8 (ou une v7 dont la table aurait
+      // disparu autrement) doit franchir le DROP sans erreur — d'où le
+      // `IF EXISTS`. Sans lui, une migration interrompue laisserait une base
+      // définitivement impossible à rouvrir.
+      final appDb = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
+      await appDb.database;
+      await appDb.close();
+
+      final reopened = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
+      final db = await reopened.database;
+      expect(await db.getVersion(), equals(8));
+      expect(await _tableNames(db), isNot(contains('snapshots')));
+      await reopened.close();
     });
   });
 
@@ -873,12 +1039,14 @@ void main() {
       );
       final upgraded = await appDb.database;
 
-      expect(await upgraded.getVersion(), equals(7),
+      expect(await upgraded.getVersion(), equals(8),
           reason: 'la base doit être migrée en version courante (5)');
 
       final tables = await _tableNames(upgraded);
       expect(tables, containsAll(_v1Tables),
-          reason: 'aucune table v1 ne doit être perdue à l\'upgrade');
+          reason: 'aucune table v1 survivante ne doit être perdue à l\'upgrade');
+      expect(tables, isNot(contains('snapshots')),
+          reason: 'la chaîne complète v1→v8 doit finir par droper snapshots');
       expect(tables, contains('transactions'),
           reason: 'onUpgrade doit créer la table transactions');
 
@@ -1010,7 +1178,7 @@ void main() {
       // Premier open : crée le schéma v2 complet (onCreate).
       final appDb1 = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final db1 = await appDb1.database;
-      expect(await db1.getVersion(), equals(7));
+      expect(await db1.getVersion(), equals(8));
       expect(await _tableNames(db1), contains('transactions'));
       await appDb1.close();
 
@@ -1019,7 +1187,7 @@ void main() {
       // schéma reste cohérent.
       final appDb2 = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final db2 = await appDb2.database;
-      expect(await db2.getVersion(), equals(7));
+      expect(await db2.getVersion(), equals(8));
       expect(await _tableNames(db2), contains('transactions'));
       await appDb2.close();
     });
@@ -1039,7 +1207,7 @@ void main() {
       // Premier upgrade v1 → v2.
       final appDb1 = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final db1 = await appDb1.database;
-      expect(await db1.getVersion(), equals(7));
+      expect(await db1.getVersion(), equals(8));
       expect(await _tableNames(db1), contains('transactions'));
       await appDb1.close();
 
@@ -1048,7 +1216,7 @@ void main() {
       // hypothétique re-passage dans _createTransactionsTable serait sans effet.
       final appDb2 = AppDatabase(factory: databaseFactoryFfi, path: dbPath);
       final db2 = await appDb2.database;
-      expect(await db2.getVersion(), equals(7));
+      expect(await db2.getVersion(), equals(8));
       expect(await _tableNames(db2), contains('transactions'));
       await appDb2.close();
     });

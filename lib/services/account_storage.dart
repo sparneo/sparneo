@@ -6,15 +6,14 @@ import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
-import 'package:portfolio_tracker/model/valuation_snapshot.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 
 /// Persistance de la hiérarchie wallet → account → position via SQLite.
 ///
-/// Les snapshots et les allocation_targets sont gérés par leurs propres
-/// services (SnapshotStorage, AllocationTargetStorage). [AccountStorage]
+/// Les allocation_targets sont gérées par leur propre service
+/// (AllocationTargetStorage). [AccountStorage]
 /// les inclut dans [exportRawData] / [importRawData] pour garantir la
 /// fidélité du backup (invariant I2) et maintenir l'API publique inchangée.
 ///
@@ -84,19 +83,6 @@ class AccountStorage {
     return Position.fromJson(posJson, fallbackAccountId: row['account_id'] as String);
   }
 
-  /// Reconstruit un [ValuationSnapshot] depuis une row SQLite `snapshots`.
-  /// Reprend le même mapping que [SnapshotStorage._rowToSnapshot].
-  static ValuationSnapshot _rowToSnapshot(Map<String, dynamic> row) {
-    return ValuationSnapshot(
-      date: row['date'] as String,
-      totalValue: (row['total_value'] as num).toDouble(),
-      currency: row['currency'] as String,
-      capturedAt: (row['captured_at'] as num).toInt(),
-      accountCount: (row['account_count'] as num?)?.toInt() ?? 0,
-      schemaVersion: (row['schema_version'] as num?)?.toInt() ?? 1,
-    );
-  }
-
   /// Reconstruit un [AssetTransaction] depuis une row SQLite `transactions`.
   ///
   /// Réplique EXACTEMENT le mapping colonnes→modèle de
@@ -159,7 +145,7 @@ class AccountStorage {
   ///
   /// CRITIQUE — NE PAS remplacer par `INSERT OR REPLACE` : SQLite implémente
   /// REPLACE en DELETE-puis-INSERT, ce qui déclenche les `ON DELETE CASCADE`
-  /// des enfants (accounts → positions → transactions → snapshots → cibles).
+  /// des enfants (accounts → positions → transactions → cibles).
   /// Éditer un wallet existant effacerait donc tout son arbre. On fait un
   /// UPDATE ciblé, et un INSERT seulement si la ligne n'existe pas — aucun
   /// DELETE, donc aucune cascade. Robuste sur toutes les versions de SQLite
@@ -184,7 +170,7 @@ class AccountStorage {
   }
 
   /// Supprime le wallet et tout son arbre en cascade (accounts → positions →
-  /// snapshots → allocation_targets) grâce aux FK ON DELETE CASCADE.
+  /// allocation_targets) grâce aux FK ON DELETE CASCADE.
   Future<void> deleteWallet(String walletId) async {
     final db = await _db.database;
     await db.delete(
@@ -494,7 +480,6 @@ class AccountStorage {
   ///   'accounts': [Account.toJson(), ...],
   ///   'positions': {accountId: [Position.toJson(), ...], ...},
   ///   'transactions': {accountId: [AssetTransaction.toJson(), ...], ...},
-  ///   'snapshots': {walletId: [ValuationSnapshot.toJson(), ...], ...},
   ///   'allocationTargets': {walletId: <target_json décodé>, ...},
   /// }
   /// ```
@@ -540,15 +525,6 @@ class AccountStorage {
       (transactions[accountId] as List).add(_rowToTransaction(row).toJson());
     }
 
-    // --- snapshots groupés par wallet_id (triés par date) ---
-    final snapshotRows = await db.query('snapshots', orderBy: 'wallet_id ASC, date ASC');
-    final snapshots = <String, dynamic>{};
-    for (final row in snapshotRows) {
-      final walletId = row['wallet_id'] as String;
-      snapshots.putIfAbsent(walletId, () => <dynamic>[]);
-      (snapshots[walletId] as List).add(_rowToSnapshot(row).toJson());
-    }
-
     // --- allocationTargets par wallet_id ---
     // On décode directement le TEXT stocké pour fidélité parfaite (pas de
     // reconstruction via AllocationTarget.fromJson/toJson qui pourrait perdre
@@ -565,7 +541,6 @@ class AccountStorage {
       'accounts': accounts,
       'positions': positions,
       'transactions': transactions,
-      'snapshots': snapshots,
       'allocationTargets': allocationTargets,
     };
   }
@@ -574,9 +549,10 @@ class AccountStorage {
   /// transaction (tout-ou-rien).
   ///
   /// Ordre FK strict : DELETE all → INSERT wallets → accounts → positions →
-  /// transactions → snapshots → allocation_targets.
+  /// transactions → allocation_targets.
   ///
   /// Tolérance ascendante : les clés 'positions', 'transactions', 'snapshots'
+  /// (cette dernière RETIRÉE en v8, désormais lue puis ignorée)
   /// et 'allocationTargets' peuvent être absentes (vieille sauvegarde) — elles
   /// sont traitées comme des maps vides (les préexistants sont purgés).
   /// Les clés 'wallets' et 'accounts' absentes sont traitées comme des listes
@@ -597,7 +573,6 @@ class AccountStorage {
       //    En pratique, avec ON DELETE CASCADE, supprimer les wallets suffit ;
       //    mais on purge explicitement toutes les tables pour robustesse.
       await txn.delete('allocation_targets');
-      await txn.delete('snapshots');
       await txn.delete('transactions');
       await txn.delete('positions');
       await txn.delete('accounts');
@@ -736,32 +711,10 @@ class AccountStorage {
         }
       }
 
-      // 6. Snapshots (absent des vieilles sauvegardes → toléré)
-      final snapshotsMap = (data['snapshots'] as Map?) ?? {};
-      for (final entry in snapshotsMap.entries) {
-        final walletId = entry.key as String;
-        final snapList = (entry.value as List?) ?? [];
-        for (final sJson in snapList) {
-          final s = ValuationSnapshot.fromJson(Map<String, dynamic>.from(sJson as Map));
-          await txn.rawInsert(
-            '''
-            INSERT OR REPLACE INTO snapshots
-              (wallet_id, date, total_value, currency, captured_at,
-               account_count, schema_version)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ''',
-            [
-              walletId,
-              s.date,
-              s.totalValue,
-              s.currency,
-              s.capturedAt,
-              s.accountCount,
-              s.schemaVersion,
-            ],
-          );
-        }
-      }
+      // (Étape 6 « snapshots » RETIRÉE en v8 : la clé d'une sauvegarde
+      //  antérieure est simplement IGNORÉE — la restauration reste valide et
+      //  complète, elle perd seulement des instantanés désormais sans usage ni
+      //  table où les écrire.)
 
       // 7. AllocationTargets (absent des vieilles sauvegardes → toléré)
       final targetsMap = (data['allocationTargets'] as Map?) ?? {};

@@ -7,7 +7,7 @@ import 'package:portfolio_tracker/services/app_database.dart';
 /// Persistance des cibles d'allocation par wallet via SQLite.
 /// Table : `allocation_targets(wallet_id PK, target_json TEXT)`.
 ///
-/// Pattern identique à [SnapshotStorage] : injection [AppDatabase] optionnelle,
+/// Injection [AppDatabase] optionnelle,
 /// fallback `AppDatabase()` par défaut (singleton runtime effectif).
 class AllocationTargetStorage {
   final AppDatabase? _database;

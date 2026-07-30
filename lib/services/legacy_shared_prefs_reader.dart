@@ -11,7 +11,6 @@
 //   - clé 'wallets'                      → JSON encodé d'une liste de Wallet.toJson()
 //   - clé 'accounts'                     → JSON encodé d'une liste de Account.toJson()
 //   - préfixe 'positions_<accountId>'    → JSON encodé d'une liste de Position.toJson()
-//   - préfixe 'snapshots_<walletId>'     → JSON encodé d'une liste de Snapshot.toJson()
 //   - préfixe 'allocation_targets_<wid>' → JSON encodé d'un AllocationTarget.toJson()
 //
 // La map produite a exactement la forme attendue par
@@ -20,7 +19,6 @@
 //     'wallets': [ {...}, ... ],
 //     'accounts': [ {...}, ... ],
 //     'positions': { accountId: [ {...}, ... ], ... },
-//     'snapshots': { walletId: [ {...}, ... ], ... },
 //     'allocationTargets': { walletId: {...}, ... },
 //   }
 //
@@ -32,11 +30,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 class LegacySharedPrefsReader {
   // Clés / préfixes de l'ancien schéma SharedPreferences (référence :
-  // git HEAD~2:lib/services/account_storage.dart et snapshot/allocation storages).
+  // git HEAD~2:lib/services/account_storage.dart et allocation storage).
   static const String _walletsKey = 'wallets';
   static const String _accountsKey = 'accounts';
   static const String _positionsPrefix = 'positions_';
-  static const String _snapshotsPrefix = 'snapshots_';
   static const String _allocationTargetsPrefix = 'allocation_targets_';
 
   const LegacySharedPrefsReader();
@@ -68,15 +65,9 @@ class LegacySharedPrefsReader {
       }
     }
 
-    // --- snapshots groupés par walletId ---
-    final snapshots = <String, dynamic>{};
-    for (final key in keys) {
-      if (key.startsWith(_snapshotsPrefix)) {
-        final walletId = key.substring(_snapshotsPrefix.length);
-        final decoded = _tryDecode(prefs.getString(key));
-        if (decoded != null) snapshots[walletId] = decoded;
-      }
-    }
+    // (Les clés 'snapshots_<walletId>' d'une installation d'avant SQLite ne
+    //  sont PLUS lues : la table a disparu en v8. Elles restent en place dans
+    //  SharedPreferences, simplement ignorées.)
 
     // --- allocationTargets par walletId ---
     final allocationTargets = <String, dynamic>{};
@@ -92,7 +83,6 @@ class LegacySharedPrefsReader {
       'wallets': wallets,
       'accounts': accounts,
       'positions': positions,
-      'snapshots': snapshots,
       'allocationTargets': allocationTargets,
     };
   }

@@ -28,8 +28,10 @@ void main() {
     expect(map['wallets'], isEmpty);
     expect(map['accounts'], isEmpty);
     expect(map['positions'], isEmpty);
-    expect(map['snapshots'], isEmpty);
     expect(map['allocationTargets'], isEmpty);
+    // Clé disparue avec le sous-système snapshots (schéma v8) : le lecteur
+    // legacy ne doit plus la produire, même à vide.
+    expect(map.containsKey('snapshots'), isFalse);
   });
 
   test('SP peuplé → map reproduit exactement la forme legacy', () async {
@@ -46,21 +48,16 @@ void main() {
         'quantity': '10',
       },
     ];
-    final snapshots = [
-      {
-        'date': '2024-01-01',
-        'totalValue': 1000.0,
-        'currency': 'EUR',
-        'capturedAt': 1000,
-      },
-    ];
     final target = {'moving': {}, 'byClass': {}};
 
     final prefs = await prefsWith({
       'wallets': jsonEncode(wallets),
       'accounts': jsonEncode(accounts),
       'positions_a1': jsonEncode(positions),
-      'snapshots_w1': jsonEncode(snapshots),
+      // Clés d'une installation d'avant SQLite : plus lues du tout.
+      'snapshots_w1': jsonEncode([
+        {'date': '2024-01-01', 'totalValue': 1000.0, 'currency': 'EUR'},
+      ]),
       'allocation_targets_w1': jsonEncode(target),
     });
 
@@ -69,8 +66,9 @@ void main() {
     expect(map['wallets'], wallets);
     expect(map['accounts'], accounts);
     expect(map['positions'], {'a1': positions});
-    expect(map['snapshots'], {'w1': snapshots});
     expect(map['allocationTargets'], {'w1': target});
+    expect(map.containsKey('snapshots'), isFalse,
+        reason: 'une clé snapshots_* legacy est désormais ignorée en silence');
   });
 
   test('préfixes multiples groupés par id', () async {
@@ -81,13 +79,10 @@ void main() {
       'positions_a2': jsonEncode([
         {'accountId': 'a2', 'asset': {'symbol': 'Y'}, 'quantity': '2'},
       ]),
-      'snapshots_w1': jsonEncode([]),
-      'snapshots_w2': jsonEncode([]),
     });
 
     final map = reader.read(prefs);
     expect((map['positions'] as Map).keys.toSet(), {'a1', 'a2'});
-    expect((map['snapshots'] as Map).keys.toSet(), {'w1', 'w2'});
   });
 
   test('valeur JSON corrompue → entrée ignorée, pas d\'exception', () async {
@@ -113,7 +108,7 @@ void main() {
     expect(map['wallets'], isEmpty);
   });
 
-  test('rétrocompat : sans clé snapshots/allocation_targets', () async {
+  test('rétrocompat : sans clé allocation_targets', () async {
     final prefs = await prefsWith({
       'wallets': jsonEncode([
         {'id': 'w1', 'name': 'W', 'createdAt': '2024-01-01T00:00:00.000'},
@@ -123,7 +118,6 @@ void main() {
 
     final map = reader.read(prefs);
     expect(map['wallets'], isNotEmpty);
-    expect(map['snapshots'], isEmpty);
     expect(map['allocationTargets'], isEmpty);
   });
 }

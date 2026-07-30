@@ -69,7 +69,7 @@ Honnêteté oblige, ce que cela ne garantit **pas** : les cotations transitent p
 
   Vous saisissez le poids fin (en grammes) et la prime, l'app valorise chaque unité automatiquement à partir du cours de référence.
 - **Graphiques interactifs** (via `fl_chart`) :
-  - Évolution de la valeur (patrimoine global et par compte) sur plusieurs périodes (J, 1M, 3M, 1A, 5A, Max), avec superposition en pointillés des **instantanés de valorisation réels** capturés au fil de l'utilisation.
+  - Évolution de la valeur (patrimoine global, par compte et par position) sur plusieurs périodes (J, 1M, 3M, 1A, 5A, Max). Deux lectures au choix : l'**évolution réelle**, reconstruite depuis votre journal et les cours historiques — ce que vous déteniez vraiment à chaque date, avec la ligne du **capital investi** en regard — ou **vos positions actuelles** reprojetées sur les cours passés.
   - Répartition par classe d'actifs (camembert), liquidités incluses.
 - **Cibles d'allocation** : définissez un pourcentage cible par classe d'actifs (et pour les liquidités) et suivez les **écarts** entre allocation réelle et cible.
 - **Mode dégradé assumé** : en cas de panne réseau ou d'API indisponible, l'app ressert le **dernier cours connu** (persisté localement) en signalant l'ancienneté de la donnée.
@@ -185,8 +185,7 @@ Vue d'ensemble par dossier (plutôt qu'une arborescence fichier par fichier, qui
     ├── main.dart          # Point d'entrée, thème, registre de licences
     ├── app_info.dart      # Version affichée & notice de licence
     ├── model/             # Modèles : Wallet, Account, Position, Asset,
-    │                      #   AssetTransaction (journal), ValuationSnapshot,
-    │                      #   AllocationTarget
+    │                      #   AssetTransaction (journal), AllocationTarget
     ├── services/          # Persistance SQLite (schéma & storages), réseau
     │                      #   (cotations Yahoo derrière MarketDataProvider,
     │                      #   taux de change, cache « dernier cours connu »),
@@ -194,7 +193,7 @@ Vue d'ensemble par dossier (plutôt qu'une arborescence fichier par fichier, qui
     │                      #   (projection atomique journal → position & espèces)
     ├── logic/             # Fonctions pures, testables sans UI ni I/O :
     │                      #   projection de position, allocation & écarts,
-    │                      #   agrégation d'historique, snapshots, valorisation
+    │                      #   agrégation d'historique, valorisation
     ├── controllers/       # État applicatif (ChangeNotifier) : patrimoine
     │                      #   actif, compte, thème
     ├── widgets/           # Écrans & composants : vue patrimoine, vue compte,

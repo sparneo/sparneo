@@ -15,7 +15,6 @@ import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
-import 'package:portfolio_tracker/model/valuation_snapshot.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart'
     show journalHasCashAnchor;
@@ -24,7 +23,6 @@ import 'package:portfolio_tracker/services/allocation_target_storage.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
-import 'package:portfolio_tracker/services/snapshot_storage.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
@@ -74,29 +72,6 @@ class _FakeMarketDataService extends MarketDataService {
       historicalBySymbol[asset.symbol];
 }
 
-/// Fake du service de snapshots : stocke les snapshots en mémoire.
-class _FakeSnapshotStorage extends SnapshotStorage {
-  _FakeSnapshotStorage() : super.forTesting();
-
-  final Map<String, List<ValuationSnapshot>> _store = {};
-
-  @override
-  Future<List<ValuationSnapshot>> getSnapshots(String walletId) async =>
-      List.unmodifiable(_store[walletId] ?? []);
-
-  @override
-  Future<void> upsertSnapshot(
-      String walletId, ValuationSnapshot snapshot) async {
-    _store.putIfAbsent(walletId, () => []);
-    // Idempotence : on écrase l'éventuel snapshot du même jour
-    _store[walletId]!.removeWhere((s) => s.date == snapshot.date);
-    _store[walletId]!.add(snapshot);
-  }
-
-  bool hasSnapshotFor(String walletId) =>
-      (_store[walletId]?.isNotEmpty) ?? false;
-}
-
 /// Fake du service de marché dont la réponse historique est retardée via un
 /// [Completer] — permet de simuler une continuation post-dispose (correctif B1)
 /// et un changement de wallet pendant l'attente (correctif I2).
@@ -127,11 +102,10 @@ class _DelayedMarketDataService extends MarketDataService {
 // Helpers de construction de données de test
 // ---------------------------------------------------------------------------
 
-/// Crée un [WalletController] en injectant les deux storages sur la même [db].
+/// Crée un [WalletController] en injectant les storages sur la même [db].
 WalletController _makeController({
   required AppDatabase db,
   MarketDataService? marketService,
-  SnapshotStorage? snapshotStorage,
   String defaultWalletName = 'Mon Patrimoine',
 }) =>
     WalletController(
@@ -139,7 +113,6 @@ WalletController _makeController({
       allocationTargetStorage: AllocationTargetStorage(database: db),
       marketService: marketService ?? _FakeMarketDataService(),
       exchangeService: _FakeExchangeRateService(),
-      snapshotStorage: snapshotStorage ?? _FakeSnapshotStorage(),
       // Isolation stricte sur la db de test (sinon lecture par défaut sur le
       // singleton de production — cf. lot cash-ledger, dérivation du cash).
       transactionStorage: TransactionStorage(database: db),
@@ -304,208 +277,6 @@ void main() {
 
       expect(controller.wallets.length, 1);
       expect(controller.activeWallet?.name, 'Mon Patrimoine');
-    });
-  });
-
-  // =========================================================================
-  // Complétude des données de marché et snapshot
-  // =========================================================================
-
-  group('WalletController – marketDataComplete & snapshot', () {
-    test('quote null → marketDataComplete false → snapshot non capturé', () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithInvestment(
-        db: db,
-        walletId: 'w2',
-        walletName: 'Test',
-        accountId: 'acc2',
-        accountName: 'PEA',
-        symbol: 'FAIL',
-        quantity: '10',
-      );
-
-      final fakeMarket = _FakeMarketDataService(
-        quotesBySymbol: {'FAIL': null},
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      expect(fakeSnap.hasSnapshotFor('w2'), false);
-    });
-
-    test('quote.price null → marketDataComplete false → pas de snapshot', () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithInvestment(
-        db: db,
-        walletId: 'w3',
-        walletName: 'Test',
-        accountId: 'acc3',
-        accountName: 'PEA',
-        symbol: 'BAD',
-        quantity: '10',
-      );
-
-      final fakeMarket = _FakeMarketDataService(
-        quotesBySymbol: {
-          'BAD': AssetQuoteData(symbol: 'BAD', price: null),
-        },
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      expect(fakeSnap.hasSnapshotFor('w3'), false);
-    });
-
-    test('toutes les cotations valides → marketDataComplete true → snapshot capturé',
-        () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithInvestment(
-        db: db,
-        walletId: 'w4',
-        walletName: 'Test',
-        accountId: 'acc4',
-        accountName: 'PEA',
-        symbol: 'SYM',
-        quantity: '5',
-      );
-
-      final fakeMarket = _FakeMarketDataService(
-        quotesBySymbol: {
-          'SYM': AssetQuoteData(symbol: 'SYM', price: 100.0, currency: 'EUR'),
-        },
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      // Total = 100 × 5 = 500 > 0 → snapshot capturé
-      expect(fakeSnap.hasSnapshotFor('w4'), true);
-    });
-
-    test('wallet 100% cash → marketDataComplete reste true → snapshot capturé',
-        () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithCash(
-        db: db,
-        walletId: 'w-cash2',
-        accountId: 'acc-cash2',
-        cashBalance: 1000.0,
-      );
-
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      // Les comptes cash sautent la boucle de vérification des cotations →
-      // marketDataComplete reste true → snapshot capturé.
-      expect(fakeSnap.hasSnapshotFor('w-cash2'), true);
-    });
-
-    test(
-        'quote.asOf non-null (prix issu du cache LOT 2) → marketDataComplete false → pas de snapshot',
-        () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithInvestment(
-        db: db,
-        walletId: 'w5',
-        walletName: 'Test',
-        accountId: 'acc5',
-        accountName: 'PEA',
-        symbol: 'STALE',
-        quantity: '10',
-      );
-
-      // Prix valide (price non-null) mais servi depuis le cache « dernier
-      // cours connu » (asOf non-null) : le patrimoine affiché utilise quand
-      // même ce prix, mais le garde-fou snapshot doit interdire la capture
-      // (on ne veut pas persister un total fondé sur des prix périmés).
-      final fakeMarket = _FakeMarketDataService(
-        quotesBySymbol: {
-          'STALE': AssetQuoteData(
-            symbol: 'STALE',
-            price: 100.0,
-            currency: 'EUR',
-            asOf: DateTime(2026, 1, 1),
-          ),
-        },
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      expect(fakeSnap.hasSnapshotFor('w5'), false);
-    });
-
-    test(
-        'quote.asOf null (prix live) → marketDataComplete reste true → snapshot capturé',
-        () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      await setupSingleWalletWithInvestment(
-        db: db,
-        walletId: 'w6',
-        walletName: 'Test',
-        accountId: 'acc6',
-        accountName: 'PEA',
-        symbol: 'FRESH',
-        quantity: '10',
-      );
-
-      // Même prix que le test précédent, mais asOf == null (cotation live,
-      // pas servie depuis le cache) : preuve symétrique que c'est bien asOf
-      // qui pilote la garde, pas la seule présence d'un prix.
-      final fakeMarket = _FakeMarketDataService(
-        quotesBySymbol: {
-          'FRESH': AssetQuoteData(symbol: 'FRESH', price: 100.0, currency: 'EUR'),
-        },
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      await controller.loadAllData();
-
-      expect(fakeSnap.hasSnapshotFor('w6'), true);
     });
   });
 
@@ -1374,92 +1145,6 @@ void main() {
       // Annuler ne doit pas non plus toucher l'actif.
       controller.restoreWallet(hidden);
       expect(controller.activeWallet?.id, 'w-m1n-a');
-    });
-  });
-
-  // =========================================================================
-  // Correctif I2 — snapshot sous le mauvais wallet
-  // =========================================================================
-
-  group('WalletController – snapshot sous bon wallet (I2)', () {
-    test(
-        'changement de wallet pendant _loadHistory : snapshot non écrit sous le nouveau wallet',
-        () async {
-      final db = await openTestDatabase();
-      addTearDown(db.close);
-
-      final storage = AccountStorage(database: db);
-
-      final wallet1 = Wallet(id: 'w-i2-a', name: 'Wallet I2-A');
-      final wallet2 = Wallet(id: 'w-i2-b', name: 'Wallet I2-B');
-      await storage.saveWallet(wallet1);
-      await storage.saveWallet(wallet2);
-
-      final account1 = Account(
-        id: 'acc-i2-a', walletId: 'w-i2-a', name: 'PEA A', kind: AccountKind.autre,
-      );
-      final account2 = Account(
-        id: 'acc-i2-b', walletId: 'w-i2-b', name: 'PEA B', kind: AccountKind.autre,
-      );
-      await storage.saveAccount(account1);
-      await storage.saveAccount(account2);
-
-      final asset1 = Asset(symbol: 'I2SYM', currency: 'EUR');
-      final pos1 = Position(accountId: 'acc-i2-a', asset: asset1, quantity: '3');
-      final asset2 = Asset(symbol: 'I2SYM2', currency: 'EUR');
-      final pos2 = Position(accountId: 'acc-i2-b', asset: asset2, quantity: '1');
-      await storage.savePosition('acc-i2-a', pos1);
-      await storage.savePosition('acc-i2-b', pos2);
-
-      // Completer qui bloque sur l'historique du wallet1.
-      final histCompleter = Completer<AssetHistoricalData?>();
-
-      final fakeMarket = _DelayedMarketDataService(
-        historyCompleter: histCompleter,
-        quotesBySymbol: {
-          'I2SYM': AssetQuoteData(symbol: 'I2SYM', price: 100.0, currency: 'EUR'),
-          'I2SYM2': AssetQuoteData(symbol: 'I2SYM2', price: 200.0, currency: 'EUR'),
-        },
-      );
-      final fakeSnap = _FakeSnapshotStorage();
-
-      final controller = _makeController(
-        db: db,
-        marketService: fakeMarket,
-        snapshotStorage: fakeSnap,
-      );
-
-      // Chargement initial (wallet1 actif) — restera bloqué sur _loadHistory.
-      final loadFuture = controller.loadAllData();
-
-      // Pendant le délai, l'utilisateur bascule sur wallet2.
-      // selectWallet appelle loadAllData() en interne, qui sera bloqué aussi.
-      final selectFuture = controller.selectWallet(wallet2);
-
-      // Débloque les deux loadAllData() en attente.
-      histCompleter.complete(null);
-
-      await Future.wait([loadFuture, selectFuture]);
-
-      expect(controller.activeWallet?.id, 'w-i2-b');
-
-      // Vérification principale : aucun snapshot du wallet1 ne doit être
-      // écrit sous l'id wallet2.
-      final snapsW2 = fakeSnap._store['w-i2-b'] ?? [];
-      final snapsW1 = fakeSnap._store['w-i2-a'] ?? [];
-      // S'il y a un snapshot sous w-i2-b, il ne doit pas avoir été produit
-      // par le chargement du wallet1 (valeur = 3×100 = 300 EUR).
-      for (final snap in snapsW2) {
-        expect(snap.totalValue, isNot(closeTo(300.0, 1e-6)),
-            reason:
-                'Le total du wallet1 (300 EUR) ne doit pas être persisté sous wallet2');
-      }
-      // Et aucun snapshot du wallet2 ne doit être stocké sous wallet1.
-      for (final snap in snapsW1) {
-        expect(snap.totalValue, isNot(closeTo(200.0, 1e-6)),
-            reason:
-                'Le total du wallet2 (200 EUR) ne doit pas être persisté sous wallet1');
-      }
     });
   });
 

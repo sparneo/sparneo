@@ -6,7 +6,7 @@
 //   - utilisateur neuf → flag posé, DB vide ;
 //   - DB déjà peuplée sans flag (récup crash) → flag posé, pas de doublon ;
 //   - assainissement d'orphelins → migration OK, orphelin absent, flag posé ;
-//   - rétrocompat (sans clés snapshots/allocationTargets) ;
+//   - rétrocompat (sans clé allocationTargets) ;
 //   - mismatch de counts simulé → exception, flag NON posé, SP intacte.
 
 import 'dart:convert';
@@ -63,6 +63,8 @@ void main() {
             'averageBuyPrice': 150.0,
           },
         ]),
+        // Clé d'une installation d'avant SQLite : la migration ne la lit plus
+        // (table supprimée en v8), mais ne doit pas non plus l'effacer.
         'snapshots_w1': jsonEncode([
           {
             'date': '2024-01-01',
@@ -164,7 +166,8 @@ void main() {
       () async {
     final values = coherentSpValues();
     // Ajoute une position orpheline (accountId inexistant) + un compte orphelin
-    // (walletId inexistant) + un snapshot orphelin (wallet inexistant).
+    // (walletId inexistant) + une clé snapshots orpheline (wallet inexistant,
+    // écartée sans examen puisque la table n'existe plus).
     values['positions_ORPHAN'] = jsonEncode([
       {
         'accountId': 'ORPHAN',
@@ -222,7 +225,7 @@ void main() {
     expect(prefs.getString('snapshots_wGhost'), values['snapshots_wGhost']);
   });
 
-  test('rétrocompat : sans clés snapshots/allocationTargets', () async {
+  test('rétrocompat : sans clé allocationTargets', () async {
     final prefs = await prefsWith({
       'wallets': jsonEncode([
         {'id': 'w1', 'name': 'W', 'createdAt': '2024-01-01T00:00:00.000'},

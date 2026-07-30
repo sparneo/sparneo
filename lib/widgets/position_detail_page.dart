@@ -1885,7 +1885,6 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       height: chartHeight,
       leftTitlesReservedSize: 50,
       barWidth: 2,
-      showSnapshotLegend: false,
       contributionsSpots:
           useReal ? _buildContributionsSpots(_realContributions) : const [],
     );

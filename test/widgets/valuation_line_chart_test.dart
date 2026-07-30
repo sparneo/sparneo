@@ -8,7 +8,7 @@ import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 
 // ValuationLineChart utilise AppLocalizations (noHistoricalData,
-// realValueSeriesLabel) : on configure les delegates pour éviter le
+// libellés de légende) : on configure les delegates pour éviter le
 // null-check en test.
 Widget _host(Widget child) => MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -129,31 +129,6 @@ void main() {
     expect(tester.takeException(), isNull);
     expect(find.byType(LineChart), findsOneWidget);
     expect(_textsMatching(tester, RegExp(r'€$')), isNotEmpty);
-  });
-
-  testWidgets('série snapshots : seconde série + légende préservées',
-      (tester) async {
-    final dates =
-        List<DateTime>.generate(20, (i) => DateTime(2026, 6, 1 + i, 18));
-    final values =
-        List<double>.generate(dates.length, (i) => 150000.0 + i * 100);
-    final snapshots = [
-      const FlSpot(2, 150500),
-      const FlSpot(15, 151800),
-    ];
-
-    await tester.pumpWidget(_host(ValuationLineChart(
-      dates: dates,
-      values: values,
-      snapshotSpots: snapshots,
-      selectedPeriod: ChartPeriod.month1,
-      periodChange: 100.0,
-    )));
-    await tester.pumpAndSettle();
-
-    final chart = tester.widget<LineChart>(find.byType(LineChart));
-    expect(chart.data.lineBarsData, hasLength(2));
-    expect(chart.data.lineBarsData[1].dashArray, isNotNull);
   });
 
   testWidgets(

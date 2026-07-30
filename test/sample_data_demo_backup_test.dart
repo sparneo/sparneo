@@ -12,7 +12,7 @@
 //      compris les variantes espèces d'openingBalance/adjustment), la devise de
 //      règlement découplée (settlementCurrency), les frais, les overrides de
 //      type verrouillés (typeLocked), le pricing métal (refSymbol/poids/prime),
-//      les cibles d'allocation et les snapshots.
+//      les cibles d'allocation.
 //
 // Ce test est la SPEC du jeu de démo : si le format de backup évolue (bump de
 // version) ou si une fonctionnalité vitrine disparaît du fichier, il casse.
@@ -319,23 +319,5 @@ void main() {
     expect(declaredCount, greaterThan(0),
         reason: 'précondition : le jeu de démo doit déclarer au moins une settlementCurrency');
     expect(persistedCount, declaredCount);
-  });
-
-  test('snapshots : série strictement croissante en dates, valeurs > 0', () {
-    final snaps = ((data['snapshots'] as Map)['w-demo'] as List)
-        .map((s) => Map<String, dynamic>.from(s as Map))
-        .toList();
-    expect(snaps.length, greaterThanOrEqualTo(52),
-        reason: 'au moins un an de snapshots hebdomadaires');
-    String? prev;
-    for (final s in snaps) {
-      final date = s['date'] as String;
-      if (prev != null) {
-        expect(date.compareTo(prev), greaterThan(0),
-            reason: 'dates de snapshots non croissantes');
-      }
-      prev = date;
-      expect((s['totalValue'] as num).toDouble(), greaterThan(0));
-    }
   });
 }

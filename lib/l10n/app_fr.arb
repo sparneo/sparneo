@@ -238,7 +238,6 @@
   "fiscalExportDone": "Export fiscal généré",
   "fiscalExportError": "Erreur lors de l'export fiscal : {error}",
 
-  "realValueSeriesLabel": "Valeur enregistrée",
 
   "allocationTargetTitle": "Allocation cible",
   "allocationTargetEditTooltip": "Modifier les cibles d'allocation",

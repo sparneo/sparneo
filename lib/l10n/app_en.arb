@@ -1373,11 +1373,6 @@
     }
   },
 
-  "realValueSeriesLabel": "Recorded value",
-  "@realValueSeriesLabel": {
-    "description": "Legend label for the snapshot-based real historical value series on the evolution chart"
-  },
-
   "allocationTargetTitle": "Target allocation",
   "@allocationTargetTitle": {
     "description": "Section title for the target allocation feature"

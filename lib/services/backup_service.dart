@@ -63,6 +63,17 @@ class BackupService {
   /// écrivant la version N a été DISTRIBUÉE, toute extension du contenu
   /// possible du fichier exige le bump N+1 — on ne redéfinit un format en
   /// place qu'avant sa première diffusion.
+  /// v3 (retrait des snapshots, 2026-07-30) : l'export ne produit PLUS la clé
+  /// `snapshots` (sous-système supprimé, schéma SQLite v8). PAS de bump, et
+  /// c'est la RÈGLE ci-dessus appliquée à l'endroit : elle n'exige le bump que
+  /// pour une EXTENSION du contenu possible — ce qui précède une donnée qu'une
+  /// vieille app coercerait faussement. Ici le contenu se RESTREINT : v0.1.0,
+  /// la seule build distribuée, tolère déjà l'absence de cette clé
+  /// (`(data['snapshots'] as Map?) ?? {}`) et relit donc parfaitement un
+  /// fichier produit par cette version. Passer à 4 la ferait au contraire
+  /// REJETER au contrôle `version > _version` — on casserait la restauration
+  /// vers la version publiée pour étiqueter une soustraction.
+  ///
   /// Les caches dérivés (derived_at, derived_cash*) ne sont PAS transportés,
   /// quelle que soit la version : l'import les reconstruit par VÉRIFICATION
   /// (cf. AccountStorage.importRawData, étape 8) — transporter un statut

@@ -295,8 +295,8 @@ class HistoryAggregator {
     }
 
     // Borne gauche « Max » (cf. applyGridFrom) : appliquée AVANT le calcul des
-    // valeurs, pour que TOUT le reste (séries mode 1 et 2, flux, snapshots
-    // reprojetés, variation de période) naisse déjà sur la grille restreinte —
+    // valeurs, pour que TOUT le reste (séries mode 1 et 2, flux, variation de
+    // période) naisse déjà sur la grille restreinte —
     // aucun réindexage a posteriori.
     final sortedDates = applyGridFrom(allDates.toList()..sort(), gridFrom);
     final dateValues = <DateTime, double>{};

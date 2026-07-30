@@ -1,10 +1,8 @@
 // lib/controllers/wallet_controller.dart
 import 'package:decimal/decimal.dart';
-import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/foundation.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart';
-import 'package:portfolio_tracker/logic/snapshot_capture.dart';
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
@@ -20,7 +18,6 @@ import 'package:portfolio_tracker/services/allocation_target_storage.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
-import 'package:portfolio_tracker/services/snapshot_storage.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/utils/bounded_concurrency.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
@@ -36,7 +33,6 @@ class WalletController extends ChangeNotifier {
   final AccountStorage _storage;
   final MarketDataService _marketService;
   final ExchangeRateService _exchangeService;
-  final SnapshotStorage _snapshotStorage;
   final AllocationTargetStorage _allocationTargetStorage;
   /// Lecture du journal (lot cash-ledger, élargi par B8/doc 19) : sert
   /// UNIQUEMENT à décider le RÉGIME de chaque compte (cf.
@@ -72,7 +68,6 @@ class WalletController extends ChangeNotifier {
     AccountStorage? storage,
     MarketDataService? marketService,
     ExchangeRateService? exchangeService,
-    SnapshotStorage? snapshotStorage,
     AllocationTargetStorage? allocationTargetStorage,
     TransactionStorage? transactionStorage,
     LedgerService? ledgerService,
@@ -80,7 +75,6 @@ class WalletController extends ChangeNotifier {
   }) : _storage = storage ?? AccountStorage(),
        _marketService = marketService ?? MarketDataService.shared,
        _exchangeService = exchangeService ?? ExchangeRateService(),
-       _snapshotStorage = snapshotStorage ?? SnapshotStorage(),
        _allocationTargetStorage =
            allocationTargetStorage ?? AllocationTargetStorage(),
        _txStorage = transactionStorage ?? TransactionStorage(),
@@ -259,10 +253,6 @@ class WalletController extends ChangeNotifier {
   Map<String, double> _accountPeriodChanges = {};
   Map<String, double> _accountPeriodChangePercents = {};
 
-  // Série secondaire : snapshots de valorisation réels
-  // Liste vide = série absente (< 2 points dans la période)
-  List<FlSpot> _snapshotSpots = [];
-
   // Cibles d'allocation et écarts calculés pour le wallet actif
   AllocationTarget _allocationTarget = const AllocationTarget.empty();
   List<AllocationGap> _allocationGaps = [];
@@ -360,8 +350,6 @@ class WalletController extends ChangeNotifier {
   Map<String, double> get accountPeriodChangePercents =>
       _accountPeriodChangePercents;
 
-  List<FlSpot> get snapshotSpots => _snapshotSpots;
-
   AllocationTarget get allocationTarget => _allocationTarget;
   List<AllocationGap> get allocationGaps => _allocationGaps;
 
@@ -445,7 +433,7 @@ class WalletController extends ChangeNotifier {
       // Écarte les comptes masqués (suppression différée en attente) À LA SOURCE,
       // comme le motif positions (_fetchAllPrices filtre _hiddenPositions). Ainsi
       // TOUS les agrégats en aval (valeurs par compte, total, camembert,
-      // historique, cibles d'allocation, snapshot) les excluent de façon
+      // historique, cibles d'allocation) les excluent de façon
       // cohérente, et un reload pendant la fenêtre d'annulation ne les ressuscite
       // pas (défauts 1 & 2). L'invariant devient :
       //   _accounts == (comptes du stockage du wallet actif) − _hiddenAccountIds
@@ -593,10 +581,6 @@ class WalletController extends ChangeNotifier {
 
       // ⭐ Étape C : construire les valeurs des comptes/positions en lisant la
       // map de cotations (plus aucun await dans ces boucles de calcul).
-      // Flag de complétude : passe à false dès qu'une cotation est manquante.
-      // Les comptes cash n'ont aucune cotation — un wallet 100 % cash reste
-      // marketDataComplete = true.
-      bool marketDataComplete = true;
       for (var account in accounts) {
         if (account.type == AccountType.cash) {
           // Valeur du compte = son solde d'espèces, DANS LES DEUX RÉGIMES
@@ -613,10 +597,7 @@ class WalletController extends ChangeNotifier {
         List<PositionWithMarketData> accountPosList = [];
 
         for (var pos in positions) {
-          // Actif NON COTÉ : valorisé 0 (position soldée = 0 par construction),
-          // SANS dégrader marketDataComplete — un actif délibérément non coté
-          // n'est pas une donnée « manquante » et ne doit pas empêcher la
-          // persistance d'un snapshot journalier. Pas de badge « cours du … ».
+          // Actif NON COTÉ : valorisé 0 (position soldée = 0 par construction).
           if (!pos.asset.quotable) {
             final posWithData =
                 PositionWithMarketData(position: pos, currentPrice: 0);
@@ -625,14 +606,6 @@ class WalletController extends ChangeNotifier {
             continue;
           }
           final quote = quotesBySymbol[pos.symbol];
-          // Données de marché incomplètes : prix manquant → valeur sous-évaluée.
-          if (quote == null || quote.price == null) marketDataComplete = false;
-          // Garde-fou snapshot (LOT 2) : un prix servi depuis le cache
-          // « dernier cours connu » (asOf non-null) est affiché à l'écran
-          // (dégradation douce) mais ne doit PAS fonder un snapshot journalier
-          // — on préserve l'intégrité de l'historique en ne persistant que
-          // des prix réellement à jour.
-          if (quote != null && quote.asOf != null) marketDataComplete = false;
           double price = quote?.price?.toDouble() ?? 0;
           double qty = double.tryParse(pos.quantity) ?? 0;
           double value = price * qty;
@@ -682,11 +655,6 @@ class WalletController extends ChangeNotifier {
 
       _safeNotify();
 
-      // Capturer l'id du wallet AVANT l'await suivant (correctif I2) :
-      // si l'utilisateur change de wallet pendant _loadHistory, on ne persistera
-      // pas le total du wallet précédent sous l'id du nouveau.
-      final capturingWalletId = _activeWallet?.id;
-
       // Rafraîchissement MANUEL explicite : loadAllData est le point d'entrée
       // unique du pull-to-refresh (wallet_view.dart, RefreshIndicator.
       // onRefresh) — on vide le cache mémoire des séries historiques AVANT de
@@ -706,18 +674,6 @@ class WalletController extends ChangeNotifier {
       // Charger l'historique UNE SEULE FOIS : alimente le graphique global
       // ET les variations par compte via une map partagée.
       await _loadHistory(accountPositions);
-
-      // Capturer le snapshot du jour (best-effort, non bloquant).
-      // On vérifie que le wallet actif n'a pas changé depuis la capture de
-      // capturingWalletId ; sinon on abandonne silencieusement (correctif I2).
-      // Pas de await : l'échec éventuel ne doit jamais bloquer l'affichage.
-      if (_activeWallet?.id == capturingWalletId) {
-        _maybeCaptureSnapshot(
-          accountValues,
-          marketDataComplete,
-          capturingWalletId,
-        );
-      }
     } catch (e) {
       _error = e.toString();
       _isLoading = false;
@@ -764,8 +720,8 @@ class WalletController extends ChangeNotifier {
   /// Renomme un wallet. Patch EN MÉMOIRE de [_wallets]/[_activeWallet]
   /// (réassignation, pas de mutation en place — même style que
   /// [hideAccount]/[restoreAccount]) : un renommage ne change aucune
-  /// valorisation, donc pas de [loadAllData] (coûteux : cotations, historique,
-  /// snapshot) pour une simple étiquette.
+  /// valorisation, donc pas de [loadAllData] (coûteux : cotations, historique)
+  /// pour une simple étiquette.
   Future<void> renameWallet(Wallet wallet, String newName) async {
     final renamed = Wallet(
       id: wallet.id,
@@ -953,7 +909,7 @@ class WalletController extends ChangeNotifier {
   // TOTAL et du CAMEMBERT, c'est qu'ils sont DÉRIVÉS de _accounts (cf.
   // totalPatrimoine et _buildAllocationChart), donc un compte retiré de _accounts
   // en sort aussitôt. Les agrégats plus lourds (historique global, cibles
-  // d'allocation, snapshot) ne se réalignent qu'au reload suivant, qui filtre les
+  // d'allocation) ne se réalignent qu'au reload suivant, qui filtre les
   // comptes masqués À LA SOURCE (loadAllData) — un reload pendant la fenêtre ne
   // ressuscite donc plus le compte. La vue trie la liste par valeur : la position
   // d'insertion à la restauration est sans effet, d'où un simple ajout en fin.
@@ -1062,7 +1018,6 @@ class WalletController extends ChangeNotifier {
     if (_allPositionsData.isEmpty && _cashBalances.isEmpty) {
       _chartValues = [];
       _chartDates = [];
-      _snapshotSpots = [];
       // Mode 2 == mode 1 sur un patrimoine vide (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
@@ -1105,7 +1060,6 @@ class WalletController extends ChangeNotifier {
 
       _chartDates = dates;
       _chartValues = values;
-      _snapshotSpots = [];
       _periodChange = 0;
       _periodChangePercent = 0;
       // Mode 2 == mode 1 sur du cash plat (design §9 Lot 2 pt.5).
@@ -1170,9 +1124,6 @@ class WalletController extends ChangeNotifier {
         _realContributionsValues = [];
         _resetRealGains();
       }
-
-      // Superposer la série réelle des snapshots (best-effort, non bloquant)
-      await _loadSnapshotSeries();
       _isLoadingHistory = false;
       _safeNotify();
     } catch (e) {
@@ -1260,7 +1211,6 @@ class WalletController extends ChangeNotifier {
 
       _chartDates = gridDates;
       _chartValues = [for (var i = 0; i < gridDates.length; i++) totalCash];
-      _snapshotSpots = [];
       _periodChange = 0;
       _periodChangePercent = 0;
 
@@ -1563,42 +1513,11 @@ class WalletController extends ChangeNotifier {
   }
 
   // ---------------------------------------------------------------------------
-  // Snapshots (privé)
-  // ---------------------------------------------------------------------------
-
-  /// Charge les snapshots du wallet actif et les projette sur l'axe X du
-  /// graphique (indices entiers dans [_chartDates]). Ne conserve que les
-  /// snapshots dont la date tombe dans la fenêtre temporelle affichée.
-  /// Stocke le résultat dans [_snapshotSpots] ; liste vide si < 2 points.
-  Future<void> _loadSnapshotSeries() async {
-    if (_activeWallet == null || _chartDates.isEmpty) {
-      _snapshotSpots = [];
-      return;
-    }
-
-    try {
-      final snapshots = await _snapshotStorage.getSnapshots(_activeWallet!.id);
-
-      _snapshotSpots = SnapshotCapture.projectSnapshotsToChart(
-        snapshots,
-        _chartDates,
-      );
-    } catch (e) {
-      // Erreur non bloquante : on masque simplement la série
-      AppLogger.warning(
-        'Impossible de charger les snapshots pour le graphique',
-        e,
-      );
-      _snapshotSpots = [];
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // Cibles d'allocation (privé + public)
   // ---------------------------------------------------------------------------
 
   /// Charge les cibles du wallet actif, calcule l'allocation réelle et les
-  /// écarts. Silencieux en cas d'erreur (best-effort comme les snapshots).
+  /// écarts. Silencieux en cas d'erreur (best-effort).
   Future<void> _loadAllocationTarget(
     Map<String, double> accountValues,
     List<PositionWithMarketData> positions,
@@ -1663,37 +1582,5 @@ class WalletController extends ChangeNotifier {
     _allocationTarget = const AllocationTarget.empty();
     _allocationGaps = [];
     _safeNotify();
-  }
-
-  /// Capture best-effort du snapshot journalier de valorisation.
-  /// Invariant fort : on ne persiste JAMAIS un total issu de données de marché
-  /// incomplètes (quote null → prix compté 0 → total silencieusement sous-évalué).
-  /// L'appel est fire-and-forget : toute exception est absorbée ici pour ne
-  /// jamais perturber le chargement de la page.
-  ///
-  /// [capturingWalletId] est l'id capturé AVANT l'await de _loadHistory
-  /// (correctif I2) : on le passe explicitement plutôt que de relire
-  /// _activeWallet?.id, qui peut avoir été modifié par selectWallet entre-temps.
-  Future<void> _maybeCaptureSnapshot(
-    Map<String, double> accountValues,
-    bool marketDataComplete,
-    String? capturingWalletId,
-  ) async {
-    final snapshot = SnapshotCapture.buildIfEligible(
-      accountValues: accountValues,
-      marketDataComplete: marketDataComplete,
-      accounts: _accounts,
-      walletId: capturingWalletId,
-      now: DateTime.now(),
-    );
-
-    if (snapshot == null) return;
-
-    try {
-      await _snapshotStorage.upsertSnapshot(capturingWalletId!, snapshot);
-    } catch (e, st) {
-      // Capture best-effort : l'échec ne remonte jamais à l'appelant.
-      AppLogger.warning('Échec capture snapshot valorisation', e, st);
-    }
   }
 }

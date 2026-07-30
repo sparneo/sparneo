@@ -28,7 +28,8 @@ class AppDatabase {
   /// Version courante du schéma. Incrémentée à chaque migration.
   ///
   /// v1 : 5 tables initiales (wallets, accounts, positions, snapshots,
-  ///      allocation_targets).
+  ///      allocation_targets). `snapshots` a depuis été supprimée (v8) : une
+  ///      base fraîche n'en crée que 4.
   /// v2 : ajout de la table `transactions` (journal d'opérations — vague 4).
   ///      Migration purement additive (nouvelle table, aucune table v1 touchée).
   /// v3 : ajout de la colonne `accounts.kind` (nature du compte — axe unique
@@ -64,7 +65,23 @@ class AppDatabase {
   ///      découplage cotation/règlement (design cash-ledger §8, option A) sans
   ///      aucune conversion de change (le taux est un fait figé dans `amount`).
   ///      Zéro perte de données.
-  static const int _schemaVersion = 7;
+  /// v8 : SUPPRESSION de la table `snapshots` — PREMIER palier DESTRUCTIF du
+  ///      schéma, et le seul à ce jour. Les snapshots étaient une valorisation
+  ///      TOTALE capturée une fois par jour, à l'ouverture de l'app : un
+  ///      historique dont la densité mesurait l'assiduité de l'utilisateur, pas
+  ///      celle du marché, et qui restait muet sur tout ce qui précédait
+  ///      l'installation. Le mode « évolution réelle » (reconstruction de la
+  ///      valorisation depuis le journal et les cours historiques) couvre
+  ///      désormais le même besoin partout — patrimoine, compte, position — en
+  ///      remontant aussi loin que le journal, sans dépendre d'une capture. La
+  ///      table n'avait donc plus de lecteur.
+  ///      Ce qui est perdu à la migration : les totaux capturés, irrécupérables.
+  ///      C'est assumé — ils ne sont pas une SOURCE (aucune saisie utilisateur
+  ///      n'y vit, tout y était dérivé de positions et de cotations) et la
+  ///      courbe qu'ils dessinaient est reconstruite, en mieux, par le journal.
+  ///      Le DROP est fait `IF EXISTS` : une migration interrompue ne doit pas
+  ///      laisser une base impossible à rouvrir.
+  static const int _schemaVersion = 8;
 
   /// Définition de la colonne `accounts.kind`, partagée mot pour mot entre le
   /// CREATE TABLE (base fraîche, [_onCreate]) et l'ALTER TABLE ADD COLUMN
@@ -308,25 +325,8 @@ class AppDatabase {
       )
     ''');
 
-    // snapshots : PK composite (wallet_id, date).
-    // date est 'YYYY-MM-DD' (String) ; captured_at est epoch ms (INTEGER).
-    await db.execute('''
-      CREATE TABLE snapshots (
-        wallet_id      TEXT NOT NULL,
-        date           TEXT NOT NULL,
-        total_value    REAL NOT NULL,
-        currency       TEXT NOT NULL,
-        captured_at    INTEGER NOT NULL,
-        account_count  INTEGER NOT NULL DEFAULT 0,
-        schema_version INTEGER NOT NULL DEFAULT 1,
-        PRIMARY KEY (wallet_id, date),
-        FOREIGN KEY (wallet_id) REFERENCES wallets(id) ON DELETE CASCADE
-      )
-    ''');
-
-    await db.execute(
-      'CREATE INDEX idx_snapshots_wallet_date ON snapshots(wallet_id, date)',
-    );
+    // (v1 créait ici la table `snapshots`, supprimée en v8 — voir le palier
+    // correspondant de [_onUpgrade]. Une base FRAÎCHE ne la crée donc jamais.)
 
     // allocation_targets : UNE ligne par wallet.
     // target_json contient AllocationTarget.toJson() complet (risque R5 :
@@ -421,7 +421,16 @@ class AppDatabase {
       // l'étiquetage cotation/règlement (design cash-ledger §8) sans conversion.
       await _addTransactionsSettlementCurrencyColumn(db);
     }
-    // Futurs paliers : if (oldVersion < 8) { ... }
+    if (oldVersion < 8) {
+      // v7 → v8 : SUPPRESSION de la table `snapshots`. Seul palier destructif
+      // du schéma à ce jour — justification complète sur [_schemaVersion].
+      //
+      // `IF EXISTS` : une base fraîche créée par une version RÉCENTE de
+      // [_onCreate] n'a jamais eu cette table, et rien ne garantit qu'aucune
+      // base n'ait déjà été ouverte dans cet état. L'index tombe avec la table.
+      await db.execute('DROP TABLE IF EXISTS snapshots');
+    }
+    // Futurs paliers : if (oldVersion < 9) { ... }
   }
 
   /// DDL de la table `transactions` (v2) + ses deux index.

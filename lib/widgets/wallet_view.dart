@@ -751,12 +751,8 @@ class _WalletViewState extends State<WalletView> {
                                         values: useRealCurve
                                             ? _controller.realChartValues
                                             : _controller.chartValues,
-                                        // En mode réel, la ligne « Apports »
-                                        // REMPLACE les snapshots (B7 Lot 3b) —
-                                        // jamais les deux séries à la fois.
-                                        snapshotSpots: useRealCurve
-                                            ? const []
-                                            : _controller.snapshotSpots,
+                                        // Ligne « Capital investi » : mode réel
+                                        // uniquement.
                                         contributionsSpots: useRealCurve
                                             ? _buildContributionsSpots(
                                                 _controller
@@ -771,7 +767,6 @@ class _WalletViewState extends State<WalletView> {
                                             null, // géré par le SizedBox parent
                                         leftTitlesReservedSize: 40,
                                         barWidth: 3,
-                                        showSnapshotLegend: true,
                                       ),
                               ),
                               // Performance sur la PÉRIODE affichée + notes
