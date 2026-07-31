@@ -49,6 +49,13 @@ class WalletView extends StatefulWidget {
 class _WalletViewState extends State<WalletView> {
   late final WalletController _controller;
 
+  /// Hauteur totale du bloc graphe, chrome compris (bandeau de légende + axe
+  /// des abscisses). Était 200 ; portée à 224 le 31/07 pour rendre au TRACÉ les
+  /// 24 dp que la cible tactile de la bascule « capital investi » a pris à la
+  /// légende — sans quoi agrandir le bouton rétrécissait la courbe, et
+  /// déclenchait son repli automatique plus tôt qu'avant.
+  static const double _chartBoxHeight = 224;
+
   // Mode d'affichage du graphe global (B7 Lot 3a, design doc 18 §7.2/§11.6).
   // Purement local à la vue : les DEUX séries (performance / évolution
   // réelle) sont déjà calculées par le contrôleur (Lots 1+2) — basculer ne
@@ -667,38 +674,54 @@ class _WalletViewState extends State<WalletView> {
                                   child: Row(
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
-                                      SegmentedButton<bool>(
-                                        // « Évolution réelle » EN PREMIER :
-                                        // mode par défaut et vue de ce qui
-                                        // s'est vraiment passé ; « Vos
-                                        // positions » est la vue théorique,
-                                        // secondaire.
-                                        segments: [
-                                          ButtonSegment(
-                                            value: true,
-                                            label: Text(
-                                              l10n.chartModeRealEvolution,
+                                      // Deux libellés français dans un bouton
+                                      // segmenté ne tiennent plus sur 411 dp
+                                      // dès que la police système est agrandie
+                                      // (débordement de 46 px mesuré à 2,0 sur
+                                      // Pixel 7a le 31/07). Il défile donc,
+                                      // comme le sélecteur de période au-dessus
+                                      // : `Flexible` lui laisse sa largeur
+                                      // naturelle tant qu'elle tient, et le
+                                      // borne à la place restante au-delà —
+                                      // l'aide reste collée à sa droite dans
+                                      // les deux cas.
+                                      Flexible(
+                                        child: SingleChildScrollView(
+                                          scrollDirection: Axis.horizontal,
+                                          child: SegmentedButton<bool>(
+                                            // « Évolution réelle » EN PREMIER :
+                                            // mode par défaut et vue de ce qui
+                                            // s'est vraiment passé ; « Vos
+                                            // positions » est la vue théorique,
+                                            // secondaire.
+                                            segments: [
+                                              ButtonSegment(
+                                                value: true,
+                                                label: Text(
+                                                  l10n.chartModeRealEvolution,
+                                                ),
+                                              ),
+                                              ButtonSegment(
+                                                value: false,
+                                                label: Text(
+                                                  l10n.chartModePerformance,
+                                                ),
+                                              ),
+                                            ],
+                                            selected: {_showRealCurve},
+                                            showSelectedIcon: false,
+                                            style: const ButtonStyle(
+                                              visualDensity:
+                                                  VisualDensity.compact,
                                             ),
+                                            onSelectionChanged: (selection) {
+                                              setState(
+                                                () => _showRealCurve =
+                                                    selection.first,
+                                              );
+                                            },
                                           ),
-                                          ButtonSegment(
-                                            value: false,
-                                            label: Text(
-                                              l10n.chartModePerformance,
-                                            ),
-                                          ),
-                                        ],
-                                        selected: {_showRealCurve},
-                                        showSelectedIcon: false,
-                                        style: const ButtonStyle(
-                                          visualDensity:
-                                              VisualDensity.compact,
                                         ),
-                                        onSelectionChanged: (selection) {
-                                          setState(
-                                            () => _showRealCurve =
-                                                selection.first,
-                                          );
-                                        },
                                       ),
                                       // Épuration UI (29/07) : explique les
                                       // DEUX modes d'un coup (méthode de
@@ -730,7 +753,7 @@ class _WalletViewState extends State<WalletView> {
                               ],
                               const SizedBox(height: 12),
                               SizedBox(
-                                height: 200,
+                                height: _chartBoxHeight,
                                 child: _controller.isLoadingHistory
                                     ? const Center(
                                         child: CircularProgressIndicator(),
@@ -762,9 +785,18 @@ class _WalletViewState extends State<WalletView> {
                                         periodChange: periodChange,
                                         selectedPeriod:
                                             _controller.selectedPeriod,
-                                        // Paramètres wallet_view (tous par défaut)
-                                        height:
-                                            null, // géré par le SizedBox parent
+                                        // Hauteur passée EXPLICITEMENT, et non
+                                        // laissée à null : sans elle, la règle
+                                        // d'écrasement du capital investi se
+                                        // rabat sur une hauteur de tracé
+                                        // SUPPOSÉE de 200 px, alors que le
+                                        // bandeau de légende et l'axe des
+                                        // abscisses en retranchent 68. Elle
+                                        // décidait donc sur une place qui
+                                        // n'existe pas. Même valeur que le
+                                        // SizedBox parent : rendu identique,
+                                        // règle enfin exacte.
+                                        height: _chartBoxHeight,
                                         leftTitlesReservedSize: 40,
                                         barWidth: 3,
                                       ),

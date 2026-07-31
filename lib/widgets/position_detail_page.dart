@@ -1335,26 +1335,35 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          SegmentedButton<bool>(
-            // « Évolution réelle » en premier : c'est le mode par défaut et
-            // celui qui dit ce qui s'est vraiment passé (même ordre que les
-            // écrans compte et patrimoine).
-            segments: [
-              ButtonSegment(
-                value: true,
-                label: Text(l10n.chartModeRealEvolution),
+          // Défile quand la police système est agrandie : deux libellés
+          // français dans un bouton segmenté ne tiennent plus sur la largeur
+          // d'un mobile (débordement mesuré à 2,0 sur Pixel 7a le 31/07, cf.
+          // wallet_view).
+          Flexible(
+            child: SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: SegmentedButton<bool>(
+                // « Évolution réelle » en premier : c'est le mode par défaut et
+                // celui qui dit ce qui s'est vraiment passé (même ordre que les
+                // écrans compte et patrimoine).
+                segments: [
+                  ButtonSegment(
+                    value: true,
+                    label: Text(l10n.chartModeRealEvolution),
+                  ),
+                  ButtonSegment(
+                    value: false,
+                    label: Text(l10n.chartModePerformance),
+                  ),
+                ],
+                selected: {_showRealCurve},
+                showSelectedIcon: false,
+                style: const ButtonStyle(visualDensity: VisualDensity.compact),
+                onSelectionChanged: (selection) {
+                  setState(() => _showRealCurve = selection.first);
+                },
               ),
-              ButtonSegment(
-                value: false,
-                label: Text(l10n.chartModePerformance),
-              ),
-            ],
-            selected: {_showRealCurve},
-            showSelectedIcon: false,
-            style: const ButtonStyle(visualDensity: VisualDensity.compact),
-            onSelectionChanged: (selection) {
-              setState(() => _showRealCurve = selection.first);
-            },
+            ),
           ),
           Tooltip(
             message: l10n.chartHelpTooltip,
@@ -1737,51 +1746,63 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                         // la ligne détail éditable), uniquement si permis.
                         // Sinon inerte, aspect inchangé (InkWell avec onTap
                         // null ne réagit pas au tap).
-                        InkWell(
-                          onTap: canEditPruTap ? _openEditPru : null,
-                          borderRadius: BorderRadius.circular(4),
-                          child: Text(
-                            l10n.averageBuyPriceShort(
-                              _formatPriceDisplay(pru, isUsd),
-                            ),
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: canEditPruTap
-                                  ? Theme.of(context).colorScheme.primary
-                                  : Theme.of(
-                                      context,
-                                    ).colorScheme.onSurfaceVariant,
+                        // Les deux colonnes cèdent au lieu de déborder : à
+                        // l'échelle de police 2,0 leurs largeurs naturelles
+                        // additionnées dépassaient la carte de 20 px (mesuré sur
+                        // Pixel 7a le 31/07). Le PRU s'abrège en premier — c'est
+                        // la donnée secondaire, le gain reste entier.
+                        Flexible(
+                          child: InkWell(
+                            onTap: canEditPruTap ? _openEditPru : null,
+                            borderRadius: BorderRadius.circular(4),
+                            child: Text(
+                              l10n.averageBuyPriceShort(
+                                _formatPriceDisplay(pru, isUsd),
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: canEditPruTap
+                                    ? Theme.of(context).colorScheme.primary
+                                    : Theme.of(
+                                        context,
+                                      ).colorScheme.onSurfaceVariant,
+                              ),
                             ),
                           ),
                         ),
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.end,
-                          children: [
-                            Text(
-                              unrealizedGainEur != null
-                                  ? Formatters.formatEurSigned(
-                                      unrealizedGainEur,
-                                    )
-                                  : l10n.notAvailable,
-                              style: TextStyle(
-                                color: gainColor,
-                                fontSize: 16,
-                                fontWeight: FontWeight.bold,
+                        const SizedBox(width: 8),
+                        Flexible(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                unrealizedGainEur != null
+                                    ? Formatters.formatEurSigned(
+                                        unrealizedGainEur,
+                                      )
+                                    : l10n.notAvailable,
+                                style: TextStyle(
+                                  color: gainColor,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                            ),
-                            Text(
-                              unrealizedGainPercent != null
-                                  ? Formatters.formatPercentFr(
-                                      unrealizedGainPercent,
-                                    )
-                                  : l10n.notAvailable,
-                              style: TextStyle(
-                                color: gainColor,
-                                fontSize: 14,
-                                fontWeight: FontWeight.w500,
+                              Text(
+                                unrealizedGainPercent != null
+                                    ? Formatters.formatPercentFr(
+                                        unrealizedGainPercent,
+                                      )
+                                    : l10n.notAvailable,
+                                style: TextStyle(
+                                  color: gainColor,
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w500,
+                                ),
                               ),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
                       ],
                     ),
@@ -1860,9 +1881,12 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       return convertedPrice * quantity;
     }).toList();
 
+    // Hauteurs TOTALES, chrome compris, décalées de 24 dp le 31/07 : la cible
+    // tactile de la bascule « capital investi » a agrandi le bandeau de légende
+    // d'autant (même correctif que les écrans compte et patrimoine).
     final chartHeight = data.prices.length > 200
-        ? 350.0
-        : (data.prices.length > 100 ? 300.0 : 250.0);
+        ? 374.0
+        : (data.prices.length > 100 ? 324.0 : 274.0);
 
     // Mode réel : quantité RÉELLEMENT détenue à chaque date, reconstruite
     // depuis le journal, plus la ligne du capital investi (l'écart aux deux

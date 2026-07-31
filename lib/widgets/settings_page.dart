@@ -345,25 +345,34 @@ class _ThemeModeSelector extends StatelessWidget {
 
     return ListenableBuilder(
       listenable: controller,
-      builder: (context, _) => SegmentedButton<ThemeMode>(
-        segments: [
-          ButtonSegment(
-            value: ThemeMode.system,
-            label: Text(l10n.settingsThemeSystem),
-          ),
-          ButtonSegment(
-            value: ThemeMode.light,
-            label: Text(l10n.settingsThemeLight),
-          ),
-          ButtonSegment(
-            value: ThemeMode.dark,
-            label: Text(l10n.settingsThemeDark),
-          ),
-        ],
-        selected: {controller.themeMode},
-        onSelectionChanged: (selection) {
-          controller.setThemeMode(selection.first);
-        },
+      // Défilement horizontal : les trois segments sont dimensionnés sur le plus
+      // large et se partagent la place à parts égales. À l'échelle de police 2,0
+      // leur total dépasse la largeur d'un mobile, et « Système » se repliait en
+      // « Systèm / e » (mesuré sur Pixel 7a le 31/07). Le sélecteur garde donc sa
+      // largeur intrinsèque et défile — même remède que les sélecteurs de mode
+      // des trois écrans de graphe. À l'échelle 1 le total tient : rendu inchangé.
+      builder: (context, _) => SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SegmentedButton<ThemeMode>(
+          segments: [
+            ButtonSegment(
+              value: ThemeMode.system,
+              label: Text(l10n.settingsThemeSystem),
+            ),
+            ButtonSegment(
+              value: ThemeMode.light,
+              label: Text(l10n.settingsThemeLight),
+            ),
+            ButtonSegment(
+              value: ThemeMode.dark,
+              label: Text(l10n.settingsThemeDark),
+            ),
+          ],
+          selected: {controller.themeMode},
+          onSelectionChanged: (selection) {
+            controller.setThemeMode(selection.first);
+          },
+        ),
       ),
     );
   }

@@ -43,12 +43,37 @@ class ValuationLineChart extends StatefulWidget {
   // Nombre cible de graduations par axe (l'axe Y peut en produire une de
   // plus ou de moins selon l'arrondi « nice », l'axe X une de moins après
   // déduplication des libellés identiques).
+  //
+  // CIBLE, pas plafond : le nombre effectivement retenu est en outre borné par
+  // la place disponible (cf. [maxLabelsForExtent]). Ces deux nombres étaient
+  // seuls à décider jusqu'au 31/07, sans égard pour la taille du graphe ni pour
+  // l'échelle de police : à 2,0 les étiquettes de l'axe Y se chevauchaient sur
+  // le graphe court de l'écran compte, et les dates se collaient les unes aux
+  // autres sur les écrans compte et position.
   static const int _targetYLabelCount = 4;
   static const int _targetXLabelCount = 5;
+
+  /// Hauteur d'une ligne de texte rapportée à sa taille de police.
+  static const double _labelLineHeightFactor = 1.3;
+
+  /// Largeur moyenne d'un caractère rapportée à la taille de police — majorant
+  /// pour les chiffres et séparateurs qui composent les libellés d'axes.
+  static const double _labelCharWidthFactor = 0.62;
+
+  /// Blanc minimal entre deux étiquettes voisines, en pixels. En dessous elles
+  /// se lisent comme un seul bloc même sans se chevaucher.
+  static const double _minLabelGapPx = 6;
 
   // Plafond de labels pour les périodes au format calendaire — mensuel ou
   // annuel (au-delà, on écrème : 1 mois/an sur n, à pas régulier).
   static const int _maxCalendarLabelCount = 6;
+
+  /// Taille de police des étiquettes d'axes (gauche et bas).
+  static const double _axisFontSize = 9;
+
+  /// Espace réservé à l'axe des abscisses, à l'échelle de police 1. Reprend le
+  /// défaut de fl_chart, désormais explicite parce qu'il est mis à l'échelle.
+  static const double _bottomTitlesReservedSize = 22;
 
   /// Amplitude MINIMALE, en pixels, que doit conserver la courbe de valeur pour
   /// rester lisible une fois l'axe étiré au capital investi (cf.
@@ -60,9 +85,25 @@ class ValuationLineChart extends StatefulWidget {
   /// dynamique) — valeur par défaut du widget, cf. constructeur.
   static const double _assumedPlotHeightPx = 200;
 
+  /// Largeur de tracé supposée quand le parent n'en impose pas (contraintes
+  /// horizontales non bornées) — ordre de grandeur d'un mobile.
+  static const double _assumedPlotWidthPx = 300;
+
+  /// Espace vertical du bandeau de légende : 6 dp d'écart au graphe, plus la
+  /// ligne de la bascule — 17 dp de texte encadrés par le rembourrage qui lui
+  /// tient lieu de cible tactile (41 dp mesurés sur Pixel 7a, cf.
+  /// [_contributionsToggle]).
+  ///
+  /// ESTIMATION, et seulement pour la règle d'écrasement via [_chromeHeightPx] :
+  /// la mise en page, elle, n'en dépend plus (le tracé prend ce que la légende
+  /// laisse). Un écart de quelques pixels décale donc marginalement un seuil, il
+  /// ne casse plus rien.
+  static const double _legendBandHeightPx = 6 + 41;
+
   /// Espace vertical pris par la légende et l'axe des abscisses, à retrancher
   /// de [height] pour obtenir la hauteur réellement dessinable.
-  static const double _chromeHeightPx = 44;
+  static const double _chromeHeightPx =
+      _legendBandHeightPx + _bottomTitlesReservedSize;
 
   const ValuationLineChart({
     super.key,
@@ -132,6 +173,38 @@ class ValuationLineChart extends StatefulWidget {
     // termes du même facteur : elle n'entre pas dans le rapport.
     final valueAmplitudePx = plotHeightPx * valueSpan / unionSpan;
     return valueAmplitudePx >= _minValueAmplitudePx;
+  }
+
+  /// Combien d'étiquettes un axe long de [extentPx] peut porter sans que deux
+  /// voisines se touchent, chacune occupant [labelExtentPx] dans cette
+  /// direction (sa hauteur de ligne sur l'axe Y, sa largeur sur l'axe X).
+  ///
+  /// C'est la contrainte que les nombres cibles ignoraient : ils fixaient un
+  /// nombre de graduations sans regarder ni la taille du graphe, ni l'échelle
+  /// de police du système — deux grandeurs qui varient d'un facteur 2 entre le
+  /// grand graphe de l'écran position à l'échelle 1 et le graphe court de
+  /// l'écran compte à l'échelle 2,0.
+  ///
+  /// Plancher à 2 : un axe porte au moins ses deux extrémités, et un intervalle
+  /// calculé sur une cible de 1 ou 0 n'aurait pas de sens.
+  static int maxLabelsForExtent(double extentPx, double labelExtentPx) {
+    if (labelExtentPx <= 0) return _targetXLabelCount;
+    return max(2, (extentPx / (labelExtentPx + _minLabelGapPx)).floor());
+  }
+
+  /// Écrème [labels] à au plus [maxCount] entrées, à pas régulier (1 sur n),
+  /// en conservant l'ordre des abscisses.
+  ///
+  /// Même parti pris que l'écrémage calendaire de [_calendarStartTargets] : une
+  /// séquence régulière plutôt qu'un choix « intelligent » qui laisserait des
+  /// trous isolés et ferait croire à une irrégularité des données.
+  static Map<int, String> thinLabels(Map<int, String> labels, int maxCount) {
+    if (labels.length <= maxCount) return labels;
+    final keys = labels.keys.toList()..sort();
+    final step = (keys.length / maxCount).ceil();
+    return {
+      for (var i = 0; i < keys.length; i += step) keys[i]: labels[keys[i]]!,
+    };
   }
 
   /// Arrondit [rough] à l'intervalle « rond » le plus proche (1, 2 ou
@@ -422,8 +495,12 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
         valueMax: maxY,
         contributionsMin: contributionsMin,
         contributionsMax: contributionsMax,
-        // Hauteur réellement dessinable : la règle raisonne en pixels, elle a
+        // Hauteur dessinable ESTIMÉE : la règle raisonne en pixels, elle a
         // donc besoin de la place allouée à CE graphe (150 à 250 selon la vue).
+        // Volontairement pas la hauteur mesurée du LayoutBuilder plus bas : sa
+        // décision détermine le contenu de la légende, dont la hauteur détermine
+        // celle du tracé — la mesurer ici fermerait le cycle. Les graduations,
+        // elles, ne rétroagissent sur rien : elles peuvent se mesurer.
         plotHeightPx: height != null
             ? max(
                 height - ValuationLineChart._chromeHeightPx,
@@ -454,22 +531,32 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
       chartMaxY += margin;
     }
 
-    // Intervalle « rond » de l'axe Y (~4 graduations). Seuls les multiples de
-    // cet intervalle sont étiquetés : les bornes brutes min/max sont exclues
-    // (minIncluded/maxIncluded à false) car elles se superposaient aux
-    // graduations rondes voisines.
-    final yInterval =
-        ValuationLineChart._niceInterval(
-            (chartMaxY - chartMinY) / ValuationLineChart._targetYLabelCount);
     final yAxisMaxAbs = max(chartMinY.abs(), chartMaxY.abs());
 
     // Labels de l'axe temporel, sélectionnés par le TEMPS (voir
-    // _computeTimeLabels) : indice de point → libellé.
-    final xLabelByIndex =
+    // _computeTimeLabels) : indice de point → libellé. Écrémés plus bas selon
+    // la largeur réellement disponible.
+    final rawXLabels =
         ValuationLineChart._computeTimeLabels(dates, selectedPeriod, locale);
+    final longestXLabelChars =
+        rawXLabels.values.fold<int>(0, (longest, s) => max(longest, s.length));
 
     // Couleur des labels d'axes, lisible en thème clair comme sombre.
     final axisLabelColor = Theme.of(context).colorScheme.onSurfaceVariant;
+
+    // L'espace réservé aux axes est un dp FIXE alors que leurs étiquettes
+    // suivent l'échelle de police du système. Mesuré sur Pixel 7a le 31/07 : à
+    // 1,5, « 160 k€ » ne tient plus dans les 40 dp de l'axe gauche, se replie
+    // sur deux lignes, et son « k€ » vient se superposer aux chiffres du palier
+    // voisin — quatre étiquettes sur six illisibles, les six à 2,0 ; en bas,
+    // les dates sont tranchées en deux. Les gouttières suivent donc l'échelle.
+    const axisFontSize = ValuationLineChart._axisFontSize;
+    final axisTextScale =
+        MediaQuery.textScalerOf(context).scale(axisFontSize) / axisFontSize;
+    final scaledLeftTitlesReservedSize = leftTitlesReservedSize * axisTextScale;
+    final scaledBottomTitlesReservedSize =
+        ValuationLineChart._bottomTitlesReservedSize * axisTextScale;
+    final scaledAxisFontSize = axisFontSize * axisTextScale;
 
     // Série principale (reconstruction historique)
     final mainSeries = LineChartBarData(
@@ -525,103 +612,160 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
       ));
     }
 
-    final chartWidget = LineChart(
-      LineChartData(
-        gridData: const FlGridData(show: false),
-        titlesData: FlTitlesData(
-          show: true,
-          bottomTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              // Un « tick » par point de données : la sélection réelle des
-              // labels est faite en amont (xLabelByIndex). Sans intervalle
-              // explicite, fl_chart génère des ticks fractionnaires qui,
-              // tronqués en indices, dupliquaient les libellés.
-              interval: 1,
-              getTitlesWidget: (value, meta) {
-                final label = xLabelByIndex[value.round()];
-                if (label == null) return const SizedBox.shrink();
-                return SideTitleWidget(
-                  meta: meta,
-                  // Rabat les labels des extrémités vers l'intérieur de la
-                  // zone de tracé pour éviter qu'ils soient rognés.
-                  fitInside: SideTitleFitInsideData.fromTitleMeta(meta),
-                  child: Text(
+    final chartWidget = LayoutBuilder(builder: (context, constraints) {
+      // Place réellement laissée au TRACÉ, gouttières d'axes déduites. Elle ne
+      // peut se déduire d'aucune constante : la hauteur dépend de ce que la
+      // légende a laissé (donc de la police), la largeur du parent. Contraintes
+      // non bornées (hauteur dynamique) : repli sur les tailles supposées.
+      final plotHeightPx = constraints.maxHeight.isFinite
+          ? max(constraints.maxHeight - scaledBottomTitlesReservedSize, 1.0)
+          : ValuationLineChart._assumedPlotHeightPx;
+      final plotWidthPx = constraints.maxWidth.isFinite
+          ? max(constraints.maxWidth - scaledLeftTitlesReservedSize, 1.0)
+          : ValuationLineChart._assumedPlotWidthPx;
+
+      // Axe Y : intervalle « rond » sur le nombre de graduations que la HAUTEUR
+      // peut porter, sans dépasser la cible. Seuls les multiples de cet
+      // intervalle sont étiquetés : les bornes brutes min/max sont exclues
+      // (minIncluded/maxIncluded à false) car elles se superposaient aux
+      // graduations rondes voisines.
+      final yLabelCount = min(
+        ValuationLineChart._targetYLabelCount,
+        ValuationLineChart.maxLabelsForExtent(
+          plotHeightPx,
+          scaledAxisFontSize * ValuationLineChart._labelLineHeightFactor,
+        ),
+      );
+      final yInterval = ValuationLineChart._niceInterval(
+          (chartMaxY - chartMinY) / yLabelCount);
+
+      // Axe X : écrémage des libellés déjà sélectionnés, au nombre que la
+      // LARGEUR peut porter côte à côte. Le libellé le plus long fait la
+      // mesure — ils sont de longueur homogène sur une même période (« 01/26 »,
+      // « janv. », « 2024 »).
+      final xLabelByIndex = ValuationLineChart.thinLabels(
+        rawXLabels,
+        ValuationLineChart.maxLabelsForExtent(
+          plotWidthPx,
+          longestXLabelChars *
+              scaledAxisFontSize *
+              ValuationLineChart._labelCharWidthFactor,
+        ),
+      );
+
+      return LineChart(
+        LineChartData(
+          gridData: const FlGridData(show: false),
+          titlesData: FlTitlesData(
+            show: true,
+            bottomTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                // Un « tick » par point de données : la sélection réelle des
+                // labels est faite en amont (xLabelByIndex). Sans intervalle
+                // explicite, fl_chart génère des ticks fractionnaires qui,
+                // tronqués en indices, dupliquaient les libellés.
+                interval: 1,
+                reservedSize: scaledBottomTitlesReservedSize,
+                getTitlesWidget: (value, meta) {
+                  final label = xLabelByIndex[value.round()];
+                  if (label == null) return const SizedBox.shrink();
+                  return SideTitleWidget(
+                    meta: meta,
+                    // Rabat les labels des extrémités vers l'intérieur de la
+                    // zone de tracé pour éviter qu'ils soient rognés.
+                    fitInside: SideTitleFitInsideData.fromTitleMeta(meta),
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      softWrap: false,
+                      style: TextStyle(
+                        fontSize: axisFontSize,
+                        color: axisLabelColor,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            leftTitles: AxisTitles(
+              sideTitles: SideTitles(
+                showTitles: true,
+                reservedSize: scaledLeftTitlesReservedSize,
+                interval: yInterval,
+                // Ne pas étiqueter les bornes brutes min/max : elles se
+                // superposent aux graduations rondes voisines.
+                minIncluded: false,
+                maxIncluded: false,
+                getTitlesWidget: (value, meta) {
+                  return Text(
+                    ValuationLineChart._formatAxisAmount(value, yInterval, yAxisMaxAbs),
+                    // Une seule ligne, sans repli : si l'étiquette dépasse encore
+                    // la gouttière, mieux vaut qu'elle rogne que qu'elle se replie
+                    // sur la graduation voisine (c'est le repli qui produisait la
+                    // superposition, pas le dépassement).
+                    maxLines: 1,
+                    softWrap: false,
+                    style: TextStyle(
+                      fontSize: axisFontSize,
+                      color: axisLabelColor,
+                    ),
+                  );
+                },
+              ),
+            ),
+            topTitles:
+                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+            rightTitles:
+                const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+          ),
+          borderData: FlBorderData(show: false),
+          minX: 0,
+          maxX: dates.length.toDouble() - 1,
+          minY: chartMinY,
+          maxY: chartMaxY,
+          lineBarsData: allSeries,
+          lineTouchData: LineTouchData(
+            handleBuiltInTouches: true,
+            touchTooltipData: LineTouchTooltipData(
+              getTooltipItems: (touchedSpots) {
+                return touchedSpots.map((touchedSpot) {
+                  final isContributionsSeries =
+                      contributionsBarIndex != null &&
+                          touchedSpot.barIndex == contributionsBarIndex;
+                  final spotIndex = touchedSpot.spotIndex;
+
+                  // Série principale comme série « capital investi » : un point
+                  // par date, l'indice du point EST l'indice dans dates.
+                  final date = dates[spotIndex];
+                  final totalValue = touchedSpot.y;
+
+                  final dateLabel = Formatters.formatTooltipDate(
+                      date, selectedPeriod, locale);
+
+                  final label =
+                      '$dateLabel\n${Formatters.formatEur(totalValue)}';
+
+                  final labelColor =
+                      isContributionsSeries ? contributionsColor : Colors.white;
+
+                  return LineTooltipItem(
                     label,
-                    style: TextStyle(fontSize: 9, color: axisLabelColor),
-                  ),
-                );
+                    TextStyle(
+                      color: labelColor,
+                      fontSize: 11,
+                    ),
+                    textAlign: TextAlign.center,
+                  );
+                }).toList();
               },
+              tooltipPadding: const EdgeInsets.all(8),
+              tooltipMargin: 8,
             ),
           ),
-          leftTitles: AxisTitles(
-            sideTitles: SideTitles(
-              showTitles: true,
-              reservedSize: leftTitlesReservedSize,
-              interval: yInterval,
-              // Ne pas étiqueter les bornes brutes min/max : elles se
-              // superposent aux graduations rondes voisines.
-              minIncluded: false,
-              maxIncluded: false,
-              getTitlesWidget: (value, meta) {
-                return Text(
-                  ValuationLineChart._formatAxisAmount(value, yInterval, yAxisMaxAbs),
-                  style: TextStyle(fontSize: 9, color: axisLabelColor),
-                );
-              },
-            ),
-          ),
-          topTitles:
-              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-          rightTitles:
-              const AxisTitles(sideTitles: SideTitles(showTitles: false)),
         ),
-        borderData: FlBorderData(show: false),
-        minX: 0,
-        maxX: dates.length.toDouble() - 1,
-        minY: chartMinY,
-        maxY: chartMaxY,
-        lineBarsData: allSeries,
-        lineTouchData: LineTouchData(
-          handleBuiltInTouches: true,
-          touchTooltipData: LineTouchTooltipData(
-            getTooltipItems: (touchedSpots) {
-              return touchedSpots.map((touchedSpot) {
-                final isContributionsSeries =
-                    contributionsBarIndex != null &&
-                        touchedSpot.barIndex == contributionsBarIndex;
-                final spotIndex = touchedSpot.spotIndex;
-
-                // Série principale comme série « capital investi » : un point
-                // par date, l'indice du point EST l'indice dans dates.
-                final date = dates[spotIndex];
-                final totalValue = touchedSpot.y;
-
-                final dateLabel = Formatters.formatTooltipDate(
-                    date, selectedPeriod, locale);
-
-                final label =
-                    '$dateLabel\n${Formatters.formatEur(totalValue)}';
-
-                final labelColor =
-                    isContributionsSeries ? contributionsColor : Colors.white;
-
-                return LineTooltipItem(
-                  label,
-                  TextStyle(
-                    color: labelColor,
-                    fontSize: 11,
-                  ),
-                  textAlign: TextAlign.center,
-                );
-              }).toList();
-            },
-            tooltipPadding: const EdgeInsets.all(8),
-            tooltipMargin: 8,
-          ),
-        ),
-      ),
-    );
+      );
+    });
 
     // Le widget final : hauteur fixe ou dynamique selon le paramètre
     Widget sized = height != null
@@ -670,14 +814,15 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
       ],
     ];
 
-    return Column(
+    final withLegend = Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Quand height est fourni, on utilise Expanded pour que le graphique
-        // remplisse le reste de l'espace laissé par la légende.
-        height != null
-            ? SizedBox(height: height - 22, child: chartWidget)
-            : Expanded(child: chartWidget),
+        // Le tracé prend ce que la légende laisse, il ne se voit PAS allouer un
+        // budget calculé. Retrancher une hauteur de bandeau supposée revenait à
+        // parier sur les métriques du texte : le pari s'est perdu d'un pixel dès
+        // la première mesure sur appareil (bandeau réel 41 dp, budget 40), et il
+        // se serait reperdu à chaque changement de police ou de langue.
+        Expanded(child: chartWidget),
         const SizedBox(height: 6),
         Padding(
           padding: const EdgeInsets.only(left: 4),
@@ -692,6 +837,11 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
               : Wrap(
                   spacing: 16,
                   runSpacing: 4,
+                  // La bascule est deux fois plus haute que la pastille nue
+                  // « Valeur » (son rembourrage lui sert de cible tactile) :
+                  // sans centrage, l'alignement par le haut du Wrap décalait
+                  // les deux libellés de 12 dp l'un sous l'autre.
+                  crossAxisAlignment: WrapCrossAlignment.center,
                   children: [
                     ...legendChildren,
                     if (contributionsOffScale)
@@ -707,6 +857,13 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
         ),
       ],
     );
+
+    // `Expanded` ci-dessus exige une hauteur bornée. Quand le parent n'en donne
+    // pas, [height] la fournit ; sinon c'est au parent de contraindre (contrat
+    // inchangé du cas height == null).
+    return height != null
+        ? SizedBox(height: height, child: withLegend)
+        : withLegend;
   }
 
   /// Niveau du capital investi quand sa ligne n'est pas tracée : montant seul
@@ -773,7 +930,13 @@ class _ValuationLineChartState extends State<ValuationLineChart> {
         onTap: () => setState(() => _userWantsContributions = !visible),
         borderRadius: BorderRadius.circular(6),
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+          // Le rembourrage vertical EST la cible tactile : la ligne de texte ne
+          // fait que 16 dp, et mesurée au doigt sur Pixel 7a le 31/07 la boîte
+          // n'en faisait que 20 — 41 % du minimum Material de 48. Porté à 12, il
+          // la met à 40 dp. Pas 48 : chaque dp se paie ici en hauteur de tracé
+          // (cf. [_legendBandHeightPx]), et 40 prend l'essentiel du gain pour un
+          // tiers du coût.
+          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 12),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [

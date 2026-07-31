@@ -29,23 +29,26 @@ Widget _host({
   VoidCallback? onTap,
   Future<bool?> Function(DismissDirection)? confirmDismiss,
   void Function(DismissDirection)? onDismissed,
+  double textScale = 1.0,
 }) =>
     MaterialApp(
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
       locale: const Locale('fr'),
       home: Scaffold(
-        body: SizedBox(
-          width: 400,
-          child: AccountListTile(
-            account: account,
-            value: value,
-            periodChange: change,
-            periodChangePercent: changePercent,
-            onTap: onTap ?? () {},
-            confirmDismiss:
-                confirmDismiss ?? ((_) async => false),
-            onDismissed: onDismissed ?? ((_) {}),
+        body: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(textScale)),
+          child: SizedBox(
+            width: 400,
+            child: AccountListTile(
+              account: account,
+              value: value,
+              periodChange: change,
+              periodChangePercent: changePercent,
+              onTap: onTap ?? () {},
+              confirmDismiss: confirmDismiss ?? ((_) async => false),
+              onDismissed: onDismissed ?? ((_) {}),
+            ),
           ),
         ),
       ),
@@ -139,7 +142,10 @@ void main() {
     ));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.byType(ListTile));
+    // La tuile n'est plus un [ListTile] (il ignorait la hauteur de son
+    // `trailing` et débordait à grande échelle de police) : on tape le nom du
+    // compte, couvert par l'InkWell qui porte onTap.
+    await tester.tap(find.text('Compte test'));
     expect(tapped, isTrue);
   });
 
@@ -152,5 +158,67 @@ void main() {
     ));
     await tester.pumpAndSettle();
     expect(tester.takeException(), isNull);
+  });
+
+  group('police système agrandie', () {
+    // Sur appareil (Pixel 7a, 31/07), à l'échelle 2,0 la variation réclamait à
+    // elle seule plus de la moitié de la largeur et le nom du compte était
+    // émietté verticalement — « Bour / se / Direc / t » — pendant que la tuile
+    // débordait de 14 px par le bas. Les deux symptômes venaient de la même
+    // cause : nom et montants se disputaient une largeur qui ne grandit pas
+    // avec la police.
+    testWidgets('à l\'échelle 1 : montants à DROITE du nom (rendu inchangé)',
+        (tester) async {
+      await tester.pumpWidget(_host(
+        account: _makeAccount(name: 'Bourse Direct'),
+        value: 12345.67,
+      ));
+      await tester.pumpAndSettle();
+
+      final name = tester.getRect(find.text('Bourse Direct'));
+      final amount =
+          tester.getRect(find.textContaining(RegExp(r'12\s345,67\s€')));
+      expect(amount.left, greaterThan(name.right),
+          reason: 'côte à côte tant que la place le permet');
+    });
+
+    testWidgets('à l\'échelle 2 : montants SOUS le nom', (tester) async {
+      await tester.pumpWidget(_host(
+        account: _makeAccount(name: 'Bourse Direct'),
+        value: 12345.67,
+        textScale: 2.0,
+      ));
+      await tester.pumpAndSettle();
+
+      final name = tester.getRect(find.text('Bourse Direct'));
+      final amount =
+          tester.getRect(find.textContaining(RegExp(r'12\s345,67\s€')));
+      expect(amount.top, greaterThanOrEqualTo(name.bottom),
+          reason: 'empilés : le nom récupère toute la largeur');
+    });
+
+    testWidgets('à l\'échelle 2 : ni débordement, ni nom émietté',
+        (tester) async {
+      Future<double> nameHeightAt(double scale) async {
+        await tester.pumpWidget(_host(
+          account: _makeAccount(name: 'Bourse Direct'),
+          value: 123456.78,
+          change: -9876.54,
+          changePercent: -7.4,
+          textScale: scale,
+        ));
+        await tester.pumpAndSettle();
+        expect(tester.takeException(), isNull);
+        return tester.getSize(find.text('Bourse Direct')).height;
+      }
+
+      final oneLine = await nameHeightAt(1.0);
+      final atDoubleScale = await nameHeightAt(2.0);
+
+      // Le nom doit rester sur une ligne : sa hauteur ne fait que suivre la
+      // police (×2). Émietté en quatre morceaux, elle aurait quadruplé.
+      expect(atDoubleScale, lessThan(oneLine * 3),
+          reason: 'le nom ne doit plus être découpé verticalement');
+    });
   });
 }

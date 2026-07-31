@@ -1561,28 +1561,37 @@ class _AccountViewState extends State<AccountView> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    SegmentedButton<bool>(
-                      // « Évolution réelle » EN PREMIER : c'est le mode par
-                      // défaut et celui qui dit ce qui s'est vraiment passé ;
-                      // « Vos positions » est la vue théorique, secondaire.
-                      segments: [
-                        ButtonSegment(
-                          value: true,
-                          label: Text(l10n.chartModeRealEvolution),
+                    // Défile quand la police système est agrandie : deux
+                    // libellés français dans un bouton segmenté ne tiennent
+                    // plus sur la largeur d'un mobile (débordement mesuré à
+                    // 2,0 sur Pixel 7a le 31/07, cf. wallet_view).
+                    Flexible(
+                      child: SingleChildScrollView(
+                        scrollDirection: Axis.horizontal,
+                        child: SegmentedButton<bool>(
+                          // « Évolution réelle » EN PREMIER : c'est le mode par
+                          // défaut et celui qui dit ce qui s'est vraiment passé ;
+                          // « Vos positions » est la vue théorique, secondaire.
+                          segments: [
+                            ButtonSegment(
+                              value: true,
+                              label: Text(l10n.chartModeRealEvolution),
+                            ),
+                            ButtonSegment(
+                              value: false,
+                              label: Text(l10n.chartModePerformance),
+                            ),
+                          ],
+                          selected: {_showRealCurve},
+                          showSelectedIcon: false,
+                          style: const ButtonStyle(
+                            visualDensity: VisualDensity.compact,
+                          ),
+                          onSelectionChanged: (selection) {
+                            setState(() => _showRealCurve = selection.first);
+                          },
                         ),
-                        ButtonSegment(
-                          value: false,
-                          label: Text(l10n.chartModePerformance),
-                        ),
-                      ],
-                      selected: {_showRealCurve},
-                      showSelectedIcon: false,
-                      style: const ButtonStyle(
-                        visualDensity: VisualDensity.compact,
                       ),
-                      onSelectionChanged: (selection) {
-                        setState(() => _showRealCurve = selection.first);
-                      },
                     ),
                     // Épuration UI (29/07) : explique les DEUX modes d'un
                     // coup (méthode de calcul complète) — l'exposé détaillé a
@@ -1705,10 +1714,14 @@ class _AccountViewState extends State<AccountView> {
   Widget _buildAccountChart(bool useRealCurve) {
     if (_ctrl.chartValues.isEmpty) return const SizedBox.shrink();
 
-    // Formule de hauteur identique à l'originale
+    // Formule de hauteur identique à l'originale, décalée de 24 dp le 31/07 :
+    // ces valeurs sont des hauteurs TOTALES, chrome compris, et la cible
+    // tactile de la bascule « capital investi » a agrandi le bandeau de
+    // légende d'autant. Sans ce décalage, le tracé rétrécissait et son repli
+    // automatique se déclenchait plus tôt qu'avant.
     final chartHeight = _ctrl.chartValues.length > 200
-        ? 250.0
-        : (_ctrl.chartValues.length > 100 ? 200.0 : 150.0);
+        ? 274.0
+        : (_ctrl.chartValues.length > 100 ? 224.0 : 174.0);
 
     return ValuationLineChart(
       dates: _ctrl.chartDates,

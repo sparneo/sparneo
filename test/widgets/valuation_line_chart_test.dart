@@ -42,7 +42,110 @@ List<DateTime> _yahooLikeDates() {
   return dates;
 }
 
+/// Même hôte, mais à une échelle de police système donnée et sur une boîte de
+/// dimensions imposées : la densité des graduations dépend des deux.
+Widget _hostScaled(Widget child,
+        {required double scale, double width = 360}) =>
+    MaterialApp(
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
+      locale: const Locale('fr'),
+      home: Scaffold(
+        body: MediaQuery(
+          data: MediaQueryData(textScaler: TextScaler.linear(scale)),
+          child: SizedBox(width: width, child: child),
+        ),
+      ),
+    );
+
 void main() {
+  group('densité des graduations bornée par la place disponible', () {
+    test('maxLabelsForExtent : plancher à 2, décroît avec la taille du label',
+        () {
+      // 100 px, étiquettes de 12 px + 6 px de blanc = 5 étiquettes.
+      expect(ValuationLineChart.maxLabelsForExtent(100, 12), 5);
+      // Mêmes 100 px, étiquettes deux fois plus hautes : moitié moins.
+      expect(ValuationLineChart.maxLabelsForExtent(100, 24), 3);
+      // Axe minuscule : jamais moins de deux extrémités.
+      expect(ValuationLineChart.maxLabelsForExtent(10, 40), 2);
+    });
+
+    test('thinLabels : écrémage à pas régulier, ordre préservé', () {
+      final labels = {0: 'a', 3: 'b', 6: 'c', 9: 'd', 12: 'e'};
+      // En dessous du plafond : rendu tel quel, sans copie inutile.
+      expect(ValuationLineChart.thinLabels(labels, 5), same(labels));
+      // Pas de 3 (ceil(5/2)) : on garde 1 sur 3, sans trou isolé.
+      expect(ValuationLineChart.thinLabels(labels, 2), {0: 'a', 9: 'd'});
+      expect(ValuationLineChart.thinLabels(labels, 3), {0: 'a', 6: 'c', 12: 'e'});
+    });
+
+    testWidgets(
+        'axe Y : moins de graduations à police agrandie sur un graphe court',
+        (tester) async {
+      // Mêmes bornes que le cas réel plus bas (147035 → 154665).
+      const minVal = 147035.0;
+      const maxVal = 154665.0;
+      final dates =
+          List<DateTime>.generate(31, (i) => DateTime(2026, 6, 1 + i, 18));
+      final values = List<double>.generate(
+          dates.length, (i) => minVal + (maxVal - minVal) * i / 30);
+
+      Future<int> yLabelCountAt(double scale) async {
+        await tester.pumpWidget(_hostScaled(
+          ValuationLineChart(
+            dates: dates,
+            values: values,
+            selectedPeriod: ChartPeriod.month1,
+            periodChange: 100.0,
+            // Graphe court : celui de l'écran compte, où le télescopage a été
+            // observé sur appareil le 31/07.
+            height: 150,
+          ),
+          scale: scale,
+        ));
+        await tester.pumpAndSettle();
+        return _textsMatching(tester, RegExp(r'k€$')).length;
+      }
+
+      final atNormalScale = await yLabelCountAt(1.0);
+      final atDoubleScale = await yLabelCountAt(2.0);
+
+      expect(atNormalScale, 4, reason: 'rendu inchangé à l\'échelle 1');
+      expect(atDoubleScale, lessThan(atNormalScale),
+          reason: 'à 2,0 les étiquettes font le double de haut : le même '
+              'nombre se chevaucherait');
+    });
+
+    testWidgets('axe X : moins de dates à police agrandie sur un graphe étroit',
+        (tester) async {
+      final dates = _yahooLikeDates();
+      final values =
+          List<double>.generate(dates.length, (i) => 150000.0 + i * 100);
+
+      Future<int> dateLabelCountAt(double scale) async {
+        await tester.pumpWidget(_hostScaled(
+          ValuationLineChart(
+            dates: dates,
+            values: values,
+            selectedPeriod: ChartPeriod.month1,
+            periodChange: 100.0,
+          ),
+          scale: scale,
+          width: 260,
+        ));
+        await tester.pumpAndSettle();
+        return _textsMatching(tester, RegExp(r'^\d{2}/\d{2}$')).length;
+      }
+
+      final atNormalScale = await dateLabelCountAt(1.0);
+      final atDoubleScale = await dateLabelCountAt(2.0);
+
+      expect(atDoubleScale, lessThan(atNormalScale));
+      // Deux extrémités au minimum : l'axe ne se vide jamais.
+      expect(atDoubleScale, greaterThanOrEqualTo(2));
+    });
+  });
+
   testWidgets(
       'axe temporel : labels dédupliqués et en nombre raisonnable '
       'malgré un échantillonnage non uniforme', (tester) async {

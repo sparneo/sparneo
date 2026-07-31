@@ -106,7 +106,14 @@ class TotalValueCard extends StatelessWidget {
                       Flexible(
                         child: Text(
                           text,
-                          maxLines: 2,
+                          // Trois lignes, pas deux : à l'échelle de police 2,0
+                          // la deuxième se terminait en « +… », escamotant le
+                          // POURCENTAGE (mesuré sur Pixel 7a le 31/07). Tronquer
+                          // reste le garde-fou contre une carte qui s'étire sans
+                          // fin, mais pas au prix de la moitié de l'information.
+                          // À l'échelle 1 la ligne en occupe deux, sous le
+                          // plafond : le rendu courant est inchangé.
+                          maxLines: 3,
                           overflow: TextOverflow.ellipsis,
                           style: Theme.of(context).textTheme.titleMedium
                               ?.copyWith(

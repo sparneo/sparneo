@@ -134,8 +134,14 @@ class AllocationPieChart extends StatelessWidget {
             ? s
             : '${s.substring(0, maxLabelChars - 1).trimRight()}…';
 
-        return SizedBox(
-          height: height,
+        // Hauteur PLANCHER, pas hauteur fixe : [height] réserve la place du
+        // camembert, mais la légende doit pouvoir la dépasser. À l'échelle de
+        // police 2,0, ses lignes débordaient de 58 px et venaient chevaucher le
+        // titre de la section suivante (mesuré sur Pixel 7a le 31/07) — le
+        // commentaire ci-dessous pariait qu'elles « tiennent dans height », ce
+        // qui n'est vrai qu'à l'échelle 1.
+        return ConstrainedBox(
+          constraints: BoxConstraints(minHeight: height),
           child: Center(
             child: Row(
               mainAxisSize: MainAxisSize.min,
@@ -145,8 +151,9 @@ class AllocationPieChart extends StatelessWidget {
                 const SizedBox(width: gap),
                 // La légende prend la taille de son contenu (≤ legendMaxWidth) :
                 // le groupe reste donc compact et réellement centré. Le
-                // regroupement « Autres » garantit au plus [maxSlices] lignes,
-                // qui tiennent dans [height] sans défilement.
+                // regroupement « Autres » garantit au plus [maxSlices] lignes ;
+                // elles tiennent dans [height] à l'échelle de police 1, et
+                // l'étirent au-delà.
                 ConstrainedBox(
                   constraints: BoxConstraints(maxWidth: legendMaxWidth),
                   child: Column(
