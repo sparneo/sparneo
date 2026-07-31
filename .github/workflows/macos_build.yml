@@ -19,6 +19,11 @@ on:
 jobs:
   build-macos:
     runs-on: macos-latest
+    # Nécessaire pour attacher le DMG à la release : sans ça, l'API répond
+    # « Resource not accessible by integration », le GITHUB_TOKEN étant en
+    # lecture seule par défaut sur ce dépôt.
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -27,63 +32,58 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
-          channel: 'stable'
-          flutter-version: '3.x'
+          channel: stable
+          cache: true
 
       - name: Install Dependencies
         run: flutter pub get
 
       - name: Enable macOS platform
         run: flutter config --enable-macos-desktop
-      
-      - name: Build macOS Release
-        run: flutter build macos --release --dart-define=FLAVOR=production
 
+      - name: Build macOS Release
+        run: flutter build macos --release
+
+      # Deux sorties : `version` sans préfixe (0.2.0) pour nommer les fichiers,
+      # `tag` avec (v0.2.0) pour viser la release. Sur un push de tag, GITHUB_REF
+      # porte DÉJÀ le « v » — l'ancien `v${{ ... }}` en aval produisait « vv0.2.0 ».
       - name: Determine Version
         id: version
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ -n "${{ github.event.inputs.version }}" ]; then
-              echo "tag=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-            else
-              echo "tag=$(date +%Y%m%d%H%M%S)" >> $GITHUB_OUTPUT
-            fi
+            raw='${{ github.event.inputs.version }}'
+            [ -n "$raw" ] || raw="$(date +%Y%m%d%H%M%S)"
           else
-            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+            raw="${GITHUB_REF#refs/tags/}"
           fi
+          version="${raw#v}"
+          echo "version=$version" >> $GITHUB_OUTPUT
+          echo "tag=v$version" >> $GITHUB_OUTPUT
 
       - name: Package macOS App
         run: |
           mkdir -p build/dmg
           cp -R build/macos/Build/Products/Release/*.app build/dmg/
-          hdiutil create -volname "Sparneo" -srcfolder build/dmg -ov -format UDZO build/sparneo.dmg
+          hdiutil create -volname "Sparneo" -srcfolder build/dmg -ov -format UDZO \
+            "build/sparneo-${{ steps.version.outputs.version }}-macos.dmg"
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: macos-release-${{ steps.version.outputs.tag }}
-          path: build/sparneo.dmg
+          path: build/sparneo-*-macos.dmg
           retention-days: 7
 
-      - name: Create Release
+      # `softprops/action-gh-release` crée OU met à jour la release du tag, comme
+      # dans release-apk.yml. Les actions `actions/create-release@v1` et
+      # `actions/upload-release-asset@v1` employées auparavant sont archivées
+      # depuis 2021 et, surtout, échouaient dès que la release existait déjà —
+      # ce qui est systématique ici, deux workflows tournant sur le même tag.
+      - name: Publish GitHub Release
         if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') }}
-        id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: build/sparneo-*-macos.dmg
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: v${{ steps.version.outputs.tag }}
-          release_name: Release v${{ steps.version.outputs.tag }}
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Asset
-        if: ${{ github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.event.inputs.create_release == 'true') }}
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: build/sparneo.dmg
-          asset_name: sparneo-v${{ steps.version.outputs.tag }}.dmg
-          asset_content_type: application/x-apple-diskimage

@@ -1,4 +1,13 @@
-name: Release APK
+name: Build APK
+
+# ⚠️ Ce workflow ne PUBLIE rien. Les APK qu'il produit sont signés avec la clé de
+# DÉBOGAGE d'Android (aucun keystore n'est configuré côté CI, et le keystore de
+# release n'a délibérément pas été confié à GitHub Actions). Un tel APK est
+# signé par une clé publiquement connue et n'est pas interchangeable avec celui
+# de la release : Android refuse la mise à jour entre les deux.
+#
+# Il sert donc uniquement à vérifier que le build Android passe. L'APK publié
+# est construit et signé en local, puis attaché à la main.
 
 on:
   push:
@@ -12,9 +21,9 @@ jobs:
   build-apk:
     name: Build Android APK
     runs-on: ubuntu-latest
-    # Autorise l'écriture pour créer/mettre à jour la GitHub Release
+    # Lecture seule : ce workflow n'écrit dans aucune release.
     permissions:
-      contents: write
+      contents: read
 
     steps:
       - name: Checkout code
@@ -45,8 +54,8 @@ jobs:
         run: flutter build apk --release
 
       # Note : les APK sont signés avec la clé debug (aucun keystore configuré).
-      # Ils restent installables. Une signature release pourra être ajoutée
-      # plus tard via des secrets (keystore + key.properties).
+      # Ils restent installables pour un test, mais NE DOIVENT PAS être publiés
+      # — cf. l'avertissement en tête de fichier.
 
       # Regroupe les APK produits dans un dossier dédié
       - name: Collect APKs
@@ -58,19 +67,12 @@ jobs:
           cp build/app/outputs/flutter-apk/app-release.apk release-apks/
           ls -lh release-apks/
 
-      # Uploade les APK comme artifacts (utile notamment pour workflow_dispatch)
+      # Les APK restent des artifacts de CI, téléchargeables depuis l'onglet
+      # Actions. Ils ne sont jamais attachés à une release : ils sont signés
+      # avec la clé de débogage (cf. avertissement en tête de fichier).
       - name: Upload APK artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release-apks
+          name: debug-signed-apks
           path: release-apks/*.apk
-
-      # Crée/met à jour la GitHub Release et y attache les APK,
-      # uniquement lorsque le déclencheur est un tag
-      - name: Publish GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: release-apks/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          retention-days: 14
