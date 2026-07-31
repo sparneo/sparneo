@@ -20,6 +20,9 @@ LIVE = {
     'WPEA.PA': 6.884, 'ESE.PA': 33.29, 'PAEEM.PA': 36.065, 'CW8.PA': 682.28,
     'TTE.PA': 68.67, 'MC.PA': 491.05, 'AAPL': 311.43, '4GLD.DE': 115.92,
     'EUNA.DE': 4.9098, 'LI.PA': 35.78, 'BTC-EUR': 54968.72, 'ETH-EUR': 1521.76,
+    # Ligne SOLDÉE (cf. journal CTO) : le cours ne sert plus qu'au calibrage,
+    # la position vaut 0 aujourd'hui.
+    'SAN.PA': 97.40,
 }
 USD_EUR = 0.8716
 GOLD_EUR_PER_G = 4136.4 / 31.1034768 * USD_EUR  # ~115.9 €/g
@@ -151,6 +154,13 @@ _cto.append(tx('2023-09-04', 'deposit', amount=3000, note='Versement initial'))
 _cto.append(tx('2023-09-15', 'buy', symbol='AAPL', qty=5, price=178.50,
                amount=buy_amount(5, 178.50, 4.5, rate=0.935), currency='USD',
                settlement='EUR', fee=4.5))
+# Ligne DÉTENUE PUIS INTÉGRALEMENT CÉDÉE (2023-10 → 2025-09). Elle ne figure
+# plus dans les positions d'aujourd'hui, mais elle a bel et bien fait partie du
+# patrimoine pendant deux ans : c'est ce qui rend VISIBLE l'écart entre les deux
+# lectures du graphe (« évolution réelle » la connaît, « vos positions
+# actuelles » l'ignore). Elle porte aussi la plus-value RÉALISÉE du jeu.
+_cto.append(tx('2023-10-03', 'buy', symbol='SAN.PA', qty=18, price=88.20,
+               amount=buy_amount(18, 88.20, 3), fee=3))
 _cto.append(tx('2024-04-08', 'deposit', amount=2000))
 _cto.append(tx('2024-04-10', 'buy', symbol='MC.PA', qty=2, price=692.00,
                amount=buy_amount(2, 692.00, 5), fee=5))
@@ -158,7 +168,7 @@ _cto.append(tx('2024-04-12', 'buy', symbol='4GLD.DE', qty=10, price=72.40,
                amount=buy_amount(10, 72.40, 4), fee=4))
 _cto.append(tx('2024-05-16', 'dividend', symbol='AAPL', qty=5, price=0.25,
                amount=round(5 * 0.25 * 0.92, 2), currency='USD', settlement='EUR'))
-_cto.append(tx('2024-11-17', 'deposit', amount=1500))
+_cto.append(tx('2024-11-17', 'deposit', amount=1800))
 _cto.append(tx('2024-11-20', 'buy', symbol='LI.PA', qty=40, price=24.80,
                amount=buy_amount(40, 24.80, 3), fee=3))
 _cto.append(tx('2024-12-05', 'buy', symbol='AAPL', qty=3, price=225.00,
@@ -172,12 +182,17 @@ _cto.append(tx('2025-04-15', 'buy', symbol='MC.PA', qty=1, price=538.00,
                note='Renforcement après correction'))
 _cto.append(tx('2025-05-06', 'dividend', symbol='LI.PA', qty=40, price=1.20,
                amount=48.00))
-_cto.append(tx('2025-06-23', 'deposit', amount=1500))
+_cto.append(tx('2025-05-07', 'dividend', symbol='SAN.PA', qty=18, price=3.76,
+               amount=67.68))
+_cto.append(tx('2025-06-23', 'deposit', amount=2100))
 _cto.append(tx('2025-06-25', 'buy', symbol='EUNA.DE', qty=320, price=4.735,
                amount=buy_amount(320, 4.735, 4), fee=4,
                note='Poche obligataire'))
 _cto.append(tx('2025-06-27', 'buy', symbol='4GLD.DE', qty=8, price=85.10,
                amount=buy_amount(8, 85.10, 4), fee=4))
+_cto.append(tx('2025-09-16', 'sell', symbol='SAN.PA', qty=18, price=97.40,
+               amount=sell_amount(18, 97.40, 4), fee=4,
+               note='Sortie totale de la ligne'))
 _cto.append(tx('2025-11-13', 'dividend', symbol='AAPL', qty=8, price=0.26,
                amount=round(8 * 0.26 * 0.87, 2), currency='USD', settlement='EUR'))
 _cto.append(tx('2025-12-04', 'dividend', symbol='MC.PA', qty=3, price=5.50,
@@ -188,6 +203,12 @@ _cto.append(tx('2026-04-23', 'dividend', symbol='MC.PA', qty=3, price=7.50,
                amount=22.50, note='Solde du dividende'))
 _cto.append(tx('2026-05-12', 'dividend', symbol='LI.PA', qty=40, price=1.30,
                amount=52.00))
+# SORTIE DE TITRES SANS CESSION : emporte sa quote-part de base de coût, donc le
+# PRU des titres restants ne bouge pas, ne réalise aucune plus-value et ne touche
+# pas aux espèces (amount=null). Partielle, pour que la poche immobilière reste
+# représentée dans l'allocation.
+_cto.append(tx('2026-05-29', 'transferOut', symbol='LI.PA', qty=15,
+               note='Transfert sortant vers un autre établissement'))
 _cto.append(tx('2026-05-14', 'dividend', symbol='AAPL', qty=8, price=0.26,
                amount=round(8 * 0.26 * 0.875, 2), currency='USD', settlement='EUR'))
 JOURNAL['a-cto'] = _cto
@@ -249,6 +270,8 @@ ASSETS = {
              'type': 'stock', 'currency': 'USD', 'exchange': 'NMS'},
     'MC.PA': {'symbol': 'MC.PA', 'name': 'LVMH Moët Hennessy Louis Vuitton',
               'type': 'stock', 'currency': 'EUR', 'exchange': 'PAR'},
+    'SAN.PA': {'symbol': 'SAN.PA', 'name': 'Sanofi',
+               'type': 'stock', 'currency': 'EUR', 'exchange': 'PAR'},
     # Overrides manuels du type (typeLocked) : ETC or et ETF obligataire —
     # jamais auto-détectables (Yahoo les renvoie EQUITY/ETF).
     '4GLD.DE': {'symbol': '4GLD.DE', 'name': 'Xetra-Gold ETC',
@@ -298,7 +321,11 @@ def replay(txs):
         if k == 'buy':
             qty += q
             cost += q * p + fee
-        elif k == 'sell':
+        elif k in ('sell', 'transferOut'):
+            # Même jambe COÛT pour les deux : la base de coût part au prorata du
+            # WAC courant, le PRU des titres restants est inchangé. Ce qui les
+            # distingue (plus-value réalisée, effet espèces) ne concerne pas la
+            # projection titre, seule calculée ici.
             sold = F(0)
             if qty > 0:
                 q_eff = min(q, qty)

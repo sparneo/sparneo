@@ -99,13 +99,22 @@ void main() {
           reason: '$accountId/$symbol : quantité déclarée ≠ projection',
         );
         final declaredPru = (p['averageBuyPrice'] as num?)?.toDouble();
-        expect(declaredPru, isNotNull,
-            reason: '$accountId/$symbol : PRU manquant');
-        expect(
-          proj.averagePrice,
-          closeTo(declaredPru!, declaredPru.abs() * 1e-6),
-          reason: '$accountId/$symbol : PRU déclaré ≠ projection WAC',
-        );
+        if (proj.quantity == Decimal.zero) {
+          // Ligne SOLDÉE : plus de titres, donc plus de prix de revient — un PRU
+          // s'y inventerait. Elle reste déclarée (son journal fait partie de
+          // l'histoire du patrimoine) mais l'app la masque des positions
+          // détenues, et c'est justement ce que le jeu de démo doit exposer.
+          expect(declaredPru, isNull,
+              reason: '$accountId/$symbol : ligne soldée, PRU sans objet');
+        } else {
+          expect(declaredPru, isNotNull,
+              reason: '$accountId/$symbol : PRU manquant');
+          expect(
+            proj.averagePrice,
+            closeTo(declaredPru!, declaredPru.abs() * 1e-6),
+            reason: '$accountId/$symbol : PRU déclaré ≠ projection WAC',
+          );
+        }
         checked++;
       }
     }
@@ -145,13 +154,12 @@ void main() {
         .expand((accId) => journalOf(accId as String))
         .toList();
 
-    // `transferOut` est une primitive PRODUITE À L'IMPORT de relevé (sortie de
-    // titres sans cession) : elle solderait une position et n'a pas sa place
-    // dans le jeu de démo curé pour les captures d'écran (saisie manuelle). On
-    // l'exclut donc de la vitrine « tous les kinds » — sa couverture vit dans
-    // corporate_actions_import_test.dart / ledger_import_movements_test.dart.
-    for (final kind in TransactionKind.values
-        .where((k) => k != TransactionKind.transferOut)) {
+    // `transferOut` était exclu de cette vitrine, au motif qu'il « solderait une
+    // position ». Réintégré le 31/07 : c'est un kind du format d'export fiscal
+    // et une promesse du README (opérations sur titres), donc il doit se voir
+    // dans le jeu qui sert à démontrer l'app. L'objection tombe d'elle-même en
+    // le prenant PARTIEL — la ligne reste détenue, seule une part sort.
+    for (final kind in TransactionKind.values) {
       expect(allTxs.any((t) => t.kind == kind), isTrue,
           reason: 'kind ${kind.wire} absent du jeu de démo');
     }
