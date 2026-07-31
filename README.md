@@ -135,6 +135,8 @@ Ces deux APIs sont **publiques et sans clé** : rien à configurer. Seuls des sy
 
 ## 🚀 Installation
 
+> Les nouveautés et les points d'attention de chaque version sont dans le [journal des versions](CHANGELOG.md) — à lire avant une mise à jour.
+
 ### Prérequis
 
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) (canal stable recommandé, Dart `^3.11`)

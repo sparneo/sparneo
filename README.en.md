@@ -135,6 +135,8 @@ Both APIs are **public and key-free**: nothing to configure. Only symbols and cu
 
 ## 🚀 Installation
 
+> What each release brings, and what to watch out for when upgrading, is in the [changelog](CHANGELOG.md) (in French).
+
 ### Prerequisites
 
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) (stable channel recommended, Dart `^3.11`)
