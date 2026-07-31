@@ -5,7 +5,7 @@
 /// GARDER SYNCHRO avec `pubspec.yaml` (champ `version`) — pas de lecture
 /// automatique (pas de dépendance `package_info_plus` dans ce projet), donc
 /// mise à jour manuelle à chaque bump de version.
-const String kAppVersion = '0.1.0';
+const String kAppVersion = '0.2.0';
 
 /// Notice AGPL-3.0 courte, source unique partagée par le registre de licences
 /// ([main]) et les « mentions légales » de `showLicensePage` (page Réglages).
