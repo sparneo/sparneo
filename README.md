@@ -11,7 +11,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Flutter-blue)
 ![License](https://img.shields.io/badge/license-AGPL%20v3-blue)
-![Version](https://img.shields.io/badge/version-0.1.0-orange)
+![Version](https://img.shields.io/badge/version-0.2.0-orange)
 
 **Votre patrimoine, 100 % local et privé. Aucune inscription, aucun serveur, aucune clé API.**
 
@@ -59,23 +59,25 @@ Honnêteté oblige, ce que cela ne garantit **pas** : les cotations transitent p
 
 - **Multi-patrimoines** : gérez plusieurs portefeuilles (ex. « Personnel », « Pro ») et basculez de l'un à l'autre en touchant le nom du patrimoine en haut de l'écran.
 - **Comptes typés par enveloppe** : CTO, PEA, PEA-PME, assurance vie, PEE, PER, crypto, espèces, métaux précieux. La nature du compte détermine son mode de valorisation (titres, solde ou métal) ; l'application n'effectue **aucun calcul d'imposition**.
-- **Journal des mouvements** par compte : neuf types (achat, vente, dividende, versement, retrait, intérêts, frais, solde initial, ajustement), filtrable par type et par période, modifiable a posteriori.
-- **Import de relevé courtier** : chargez un relevé **Bourse Direct** (`.xlsx`) ou un **CSV générique** (colonnes auto-détectées) — le fichier est parsé **sur l'appareil**, rien n'est envoyé. Un **aperçu complet** avant toute écriture montre l'effet sur vos positions et vos espèces, signale les doublons ignorés et les lignes à revoir ; la résolution **ISIN → symbole** est assistée (recherche de cotation, ou repli « non coté » hors ligne). L'import est **additif et idempotent** — ré-importer le même relevé n'ajoute que les nouveautés — et **annulable** en un geste. Le journal reste la source de vérité : rien n'est jamais écrasé.
+- **Journal des mouvements** par compte : dix natures — achat, vente, dividende, versement, retrait, intérêts, frais, solde initial déclaratif, ajustement et transfert de titres sortant (les trois dernières sont produites par l'application, jamais saisies à la main). Filtrable par nature et par période, modifiable a posteriori.
+- **Import de relevé courtier** : chargez un relevé **Bourse Direct** (`.xlsx`) ou un **CSV générique** (délimiteur, encodage, format de date et vocabulaire du courtier détectés puis ajustables) — le fichier est parsé **sur l'appareil**, rien n'est envoyé. Un **aperçu complet** avant toute écriture montre l'effet sur vos positions et vos espèces, signale les doublons ignorés et les lignes à revoir avec leur numéro dans le fichier ; la résolution **ISIN → symbole** est assistée (recherche de cotation, ou repli « non coté » hors ligne pour les titres délistés). Les **opérations sur titres** sont reconnues : sorties de titres, attributions gratuites, rachats de rompus, changements de place de cotation, régularisations d'espèces — les droits de souscription, eux, sont signalés pour revue plutôt que devinés. L'import est **additif et idempotent** — ré-importer le même relevé n'ajoute que les nouveautés — et **annulable** en un geste. Le journal reste la source de vérité : rien n'est jamais écrasé.
 - **Positions dérivées du journal** : quantité et **PRU** sont projetés depuis l'historique des mouvements (le journal est la source de vérité), avec plus-value **latente** et plus-value **réalisée** par position.
-- **Espèces dérivées du journal** : sur les comptes titres, le solde de liquidités est calculé automatiquement à partir des mouvements (un achat débite, un dividende crédite…). Les comptes espèces purs restent à saisie directe, **multi-devises** avec conversion automatique en euros.
+- **Espèces dérivées du journal** : le solde de liquidités est calculé à partir des mouvements (un achat débite, un dividende crédite…) dès qu'un premier mouvement l'ancre — sur un compte titres comme sur un compte espèces pur, qui dispose de son propre écran et de son propre journal. Les soldes restent **multi-devises**, avec conversion automatique en euros.
 - **Type d'actif auto-détecté** (action, ETF, crypto, fonds…) à partir des métadonnées de cotation, avec **remplacement manuel** possible (le choix explicite n'est jamais écrasé).
 - **💰 Calcul spécifique métaux précieux** *(fonctionnalité distinctive rare)* : le prix d'une pièce ou d'un lingot est déduit du cours spot selon la formule
   > **prix unitaire = cours spot × poids de métal fin × (1 + prime %)**
 
   Vous saisissez le poids fin (en grammes) et la prime, l'app valorise chaque unité automatiquement à partir du cours de référence.
 - **Graphiques interactifs** (via `fl_chart`) :
-  - Évolution de la valeur (patrimoine global, par compte et par position) sur plusieurs périodes (J, 1M, 3M, 1A, 5A, Max). Deux lectures au choix : l'**évolution réelle**, reconstruite depuis votre journal et les cours historiques — ce que vous déteniez vraiment à chaque date, avec la ligne du **capital investi** en regard — ou **vos positions actuelles** reprojetées sur les cours passés.
-  - Répartition par classe d'actifs (camembert), liquidités incluses.
+  - Évolution de la valeur (patrimoine global, par compte et par position) sur plusieurs périodes (J, 1M, 3M, 1A, 5A, Max). Deux lectures au choix : l'**évolution réelle**, reconstruite depuis votre journal et les cours historiques — ce que vous déteniez vraiment à chaque date, avec la ligne du **capital investi** en regard, dont l'écart à la courbe de valeur *est* le gain — ou **vos positions actuelles** reprojetées sur les cours passés. La courbe des apports s'escamote d'elle-même quand elle écraserait la courbe de valeur, et se rappelle d'un tap.
+  - **Performance de la période**, neutre aux apports et aux retraits, affichée à côté de la plus-value — en cumulé, et en annualisé au-delà de dix-huit mois. Le détail du gain total isole l'**impact des frais**.
+  - Répartition par compte et par classe d'actifs (camemberts), liquidités incluses.
 - **Cibles d'allocation** : définissez un pourcentage cible par classe d'actifs (et pour les liquidités) et suivez les **écarts** entre allocation réelle et cible.
 - **Mode dégradé assumé** : en cas de panne réseau ou d'API indisponible, l'app ressert le **dernier cours connu** (persisté localement) en signalant l'ancienneté de la donnée.
 - **Sauvegarde & restauration** : export et import de l'intégralité de vos données au format JSON (fichier local ou partage), pour sauvegarder ou migrer d'appareil. À l'import, les positions déclarées sont **réconciliées** avec le journal pour garantir la cohérence. Un export séparé du journal des mouvements d'un patrimoine, au format JSON [documenté et versionné](docs/sparneo-fiscal-export.md), complète cette portabilité de vos données.
 - **Réglages** : thème système / clair / sombre, note de confidentialité, licences (AGPL-3.0 et dépendances).
 - **Précision monétaire** : les montants du journal sont stockés et calculés en **décimal exact** (jamais en flottant).
+- **Accessibilité** : l'interface reste lisible et utilisable jusqu'à l'échelle de police système 2,0 — les rangées trop serrées basculent en colonnes, la densité des graduations d'axes suit la place réellement disponible.
 - **Bilingue FR / EN**, interface **Material 3**.
 
 ## 📸 Captures d'écran
@@ -85,18 +87,26 @@ Honnêteté oblige, ce que cela ne garantit **pas** : les cotations transitent p
 <table>
   <tr>
     <td align="center"><img src="screenshots/home.png" alt="Vue Patrimoine" width="200"/></td>
+    <td align="center"><img src="screenshots/allocation.png" alt="Répartition &amp; écarts vs cibles" width="200"/></td>
     <td align="center"><img src="screenshots/account.png" alt="Vue Compte" width="200"/></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Vue Patrimoine —<br/>valeur totale, évolution réelle<br/>&amp; capital investi</sub></td>
+    <td align="center"><sub>Répartition —<br/>par compte, par classe d'actifs<br/>&amp; écarts vs cibles</sub></td>
+    <td align="center"><sub>Vue Compte —<br/>positions &amp; espèces<br/>d'une enveloppe</sub></td>
+  </tr>
+  <tr>
     <td align="center"><img src="screenshots/detail.png" alt="Détail Position" width="200"/></td>
     <td align="center"><img src="screenshots/journal.png" alt="Journal des mouvements" width="200"/></td>
+    <td align="center"><img src="screenshots/import.png" alt="Import de relevé courtier" width="200"/></td>
   </tr>
   <tr>
-    <td align="center"><sub>Vue Patrimoine —<br/>valeur totale, évolution &amp; répartition</sub></td>
-    <td align="center"><sub>Vue Compte —<br/>positions &amp; espèces d'une enveloppe</sub></td>
-    <td align="center"><sub>Détail Position —<br/>plus-values latente &amp; réalisée</sub></td>
-    <td align="center"><sub>Journal —<br/>historique filtrable des mouvements</sub></td>
+    <td align="center"><sub>Détail Position —<br/>plus-values latente<br/>&amp; réalisée</sub></td>
+    <td align="center"><sub>Journal —<br/>historique filtrable<br/>des mouvements</sub></td>
+    <td align="center"><sub>Import de relevé —<br/>aperçu de l'effet<br/>avant toute écriture</sub></td>
   </tr>
   <tr>
-    <td align="center" colspan="4"><img src="screenshots/settings.png" alt="Réglages" width="200"/><br/><sub>Réglages —<br/>thème, sauvegarde &amp; confidentialité</sub></td>
+    <td align="center" colspan="3"><img src="screenshots/settings.png" alt="Réglages" width="200"/><br/><sub>Réglages —<br/>thème, sauvegarde &amp; confidentialité</sub></td>
   </tr>
 </table>
 
@@ -104,7 +114,9 @@ Honnêteté oblige, ce que cela ne garantit **pas** : les cotations transitent p
 
 </div>
 
-> 🎬 **Jeu de données de démonstration** : le fichier [`sample_data/demo-backup.json`](sample_data/demo-backup.json) contient le portefeuille fictif d'un épargnant français type (~60 000 €) — six comptes (**PEA**, **Compte-titres**, **Assurance-vie**, **Livret A**, **Crypto**, **Or physique**), quatorze positions (ETF, actions dont une ligne en devise, obligations, foncière, crypto, or papier et pièces d'or au poids et à la prime) et trois ans de journal (~75 mouvements : versements, achats avec frais, ventes, dividendes, intérêts, frais de gestion, retraits, soldes initiaux déclaratifs et ajustements), avec cibles d'allocation et deux ans d'historique de valorisation. Chaque position correspond exactement à la projection de son journal (garanti par un test dédié). Pour l'explorer sans rien saisir, ouvrez **Réglages → Sauvegarde &amp; export → Importer / restaurer** et sélectionnez ce fichier. C'est aussi le jeu utilisé pour les captures ci-dessus.
+> 🎬 **Jeu de données de démonstration** : le fichier [`sample_data/demo-backup.json`](sample_data/demo-backup.json) contient le portefeuille fictif d'un épargnant français type (~62 000 €) — six comptes (**PEA**, **Compte-titres**, **Assurance-vie**, **Livret A**, **Crypto**, **Or physique**), quinze lignes (ETF, actions dont une en devise, obligations, foncière, crypto, or papier et pièces d'or au poids et à la prime), dont **une entièrement soldée** — elle ne pèse plus rien aujourd'hui, mais elle porte une plus-value réalisée et reste visible dans l'évolution réelle du patrimoine — et plus de trois ans de journal (**80 mouvements couvrant les dix natures** : versements, achats avec frais, ventes, dividendes, intérêts, droits de garde, retraits, soldes initiaux déclaratifs, ajustements et un transfert de titres sortant), avec cibles d'allocation. L'historique de valorisation n'est pas stocké : il est **reconstruit** depuis ce journal et les cours historiques. Chaque position correspond exactement à la projection de son journal (garanti par un test dédié). Pour l'explorer sans rien saisir, ouvrez **Réglages → Sauvegarde &amp; export → Importer / restaurer** et sélectionnez ce fichier. C'est aussi le jeu utilisé pour les captures ci-dessus.
+>
+> 📄 **Relevé d'exemple** : [`sample_data/demo-releve.csv`](sample_data/demo-releve.csv) est un relevé courtier fictif au format qu'exportent couramment les courtiers français (séparateur `;`, dates `jj/mm/aaaa`, virgule décimale, encodage Latin-1), dont une ligne identifiée par ISIN. Chargez-le sur le **Compte-titres** du jeu de démo via **⋮ → Importer un relevé…** pour dérouler l'assistant d'import de bout en bout.
 
 ## 🛠️ Stack technique
 
@@ -115,6 +127,7 @@ Honnêteté oblige, ce que cela ne garantit **pas** : les cotations transitent p
 | **Stockage** | SQLite (`sqflite` sur mobile, `sqflite_common_ffi` sur desktop) |
 | **Précision décimale** | `decimal` / `rational` (montants exacts, jamais de flottants) |
 | **Graphiques** | `fl_chart` |
+| **Import de relevés** | `csv`, plus `archive` + `xml` pour lire un `.xlsx` sans dépendance lourde |
 | **HTTP** | `http` |
 | **Logging** | `logger` |
 | **Partage / export** | `share_plus`, `file_picker`, `path_provider` |
@@ -176,8 +189,9 @@ Aucune configuration de clé API n'est nécessaire : les sources de données son
    - Actions / ETF / crypto : saisissez un symbole (ex. `AAPL`, `BTC-EUR`), déclarez votre position de départ (quantité, PRU optionnel), puis enregistrez vos mouvements (achats, ventes, dividendes…) au fil de l'eau — quantité et PRU sont recalculés automatiquement.
    - Métaux précieux : renseignez le poids de métal fin et la prime ; la valorisation se calcule à partir du cours spot.
    - Espèces : indiquez le solde dans la devise voulue, ou tenez le journal (versements, retraits, intérêts, frais).
-4. **Visualiser** : graphiques d'évolution et de répartition, écarts par rapport à vos cibles d'allocation.
-5. **Sauvegarder** : depuis **Réglages → Sauvegarde &amp; export**, exportez vos données (JSON) pour les archiver ou les restaurer sur un autre appareil.
+4. **Importer un relevé** (plutôt que tout saisir) : depuis le menu **⋮** d'un compte, « **Importer un relevé…** ». L'assistant détecte le format du fichier, vous laissez associer chaque libellé du courtier à une nature de mouvement, puis un aperçu montre l'effet exact sur vos positions et vos espèces avant d'écrire quoi que ce soit. Un import déjà passé peut être annulé d'un geste.
+5. **Visualiser** : graphiques d'évolution et de répartition, performance de la période, écarts par rapport à vos cibles d'allocation.
+6. **Sauvegarder** : depuis **Réglages → Sauvegarde &amp; export**, exportez vos données (JSON) pour les archiver ou les restaurer sur un autre appareil.
 
 ## 📂 Structure du projet
 
@@ -192,21 +206,24 @@ Vue d'ensemble par dossier (plutôt qu'une arborescence fichier par fichier, qui
     │                      #   (cotations Yahoo derrière MarketDataProvider,
     │                      #   taux de change, cache « dernier cours connu »),
     │                      #   sauvegarde/restauration & exports, LedgerService
-    │                      #   (projection atomique journal → position & espèces)
+    │                      #   (projection atomique journal → position & espèces),
+    │                      #   import de relevés & résolution d'ISIN
     ├── logic/             # Fonctions pures, testables sans UI ni I/O :
     │                      #   projection de position, allocation & écarts,
     │                      #   agrégation d'historique, valorisation
     ├── controllers/       # État applicatif (ChangeNotifier) : patrimoine
     │                      #   actif, compte, thème
     ├── widgets/           # Écrans & composants : vue patrimoine, vue compte,
-    │                      #   détail position, journal, réglages, dialogues
+    │                      #   détail position, journal, assistant d'import,
+    │                      #   réglages, graphiques, dialogues
     ├── theme/             # Palette & thèmes clair/sombre
     ├── utils/             # Formatage, périodes de graphique, logging, snackbars
     └── l10n/              # Localisation FR / EN (gen-l10n, fichiers .arb)
 
     test/                  # Suite de tests unitaires et de widgets
     docs/                  # Formats de fichiers documentés (export JSON)
-    sample_data/           # Jeu de démonstration & son générateur
+    sample_data/           # Jeu de démonstration, relevé d'exemple & générateur
+    CHANGELOG.md           # Journal des versions
 
 ## 🤝 Contribuer
 

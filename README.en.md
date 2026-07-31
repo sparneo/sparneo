@@ -11,7 +11,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Flutter-blue)
 ![License](https://img.shields.io/badge/license-AGPL%20v3-blue)
-![Version](https://img.shields.io/badge/version-0.1.0-orange)
+![Version](https://img.shields.io/badge/version-0.2.0-orange)
 
 **Your wealth, 100% local and private. No sign-up, no server, no API key.**
 
@@ -59,23 +59,25 @@ In all honesty, here is what this does **not** guarantee: quotes go through thir
 
 - **Multiple portfolios**: manage several portfolios (e.g. "Personal", "Business") and switch between them by tapping the portfolio name at the top of the screen.
 - **Accounts typed by wrapper**: CTO, PEA, PEA-PME, assurance vie, PEE, PER, crypto, cash, precious metals. The account's nature determines how it is valued (securities, balance or metal); the app performs **no tax computation whatsoever**.
-- **Transaction journal** per account: nine kinds (buy, sell, dividend, deposit, withdrawal, interest, fees, opening balance, adjustment), filterable by kind and period, editable after the fact.
-- **Broker statement import**: load a **Bourse Direct** statement (`.xlsx`) or a **generic CSV** (columns auto-detected) — the file is parsed **on your device**, nothing is uploaded. A **full preview** before any write shows the effect on your positions and cash, flags skipped duplicates and lines to review; **ISIN → symbol** resolution is assisted (quote lookup, or an offline "unlisted" fallback). The import is **additive and idempotent** — re-importing the same statement only adds what's new — and can be **undone** in one tap. The journal stays the source of truth: nothing is ever overwritten.
+- **Transaction journal** per account: ten kinds — buy, sell, dividend, deposit, withdrawal, interest, fees, declared opening balance, adjustment and outgoing securities transfer (the last three are produced by the app, never entered by hand). Filterable by kind and period, editable after the fact.
+- **Broker statement import**: load a **Bourse Direct** statement (`.xlsx`) or a **generic CSV** (delimiter, encoding, date format and the broker's own vocabulary are detected, then adjustable) — the file is parsed **on your device**, nothing is uploaded. A **full preview** before any write shows the effect on your positions and cash, flags skipped duplicates and lines to review together with their line number in the file; **ISIN → symbol** resolution is assisted (quote lookup, or an offline "unlisted" fallback for delisted securities). **Corporate actions** are recognised: securities transfers out, free share allocations, fractional-share buyouts, listing venue changes, cash regularisations — subscription rights, on the other hand, are flagged for review rather than guessed. The import is **additive and idempotent** — re-importing the same statement only adds what's new — and can be **undone** in one tap. The journal stays the source of truth: nothing is ever overwritten.
 - **Positions derived from the journal**: quantity and **average cost basis** are projected from the transaction history (the journal is the source of truth), with **unrealized** and **realized** gains per position.
-- **Cash derived from the journal**: on securities accounts, the cash balance is computed automatically from the transactions (a buy debits, a dividend credits…). Pure cash accounts remain directly editable, **multi-currency** with automatic conversion to euros.
+- **Cash derived from the journal**: the cash balance is computed from the transactions (a buy debits, a dividend credits…) as soon as a first transaction anchors it — on a securities account as well as on a pure cash account, which has its own screen and its own journal. Balances stay **multi-currency**, with automatic conversion to euros.
 - **Auto-detected asset type** (stock, ETF, crypto, fund…) from quote metadata, with a **manual override** available (an explicit choice is never overwritten).
 - **💰 Dedicated precious-metals pricing** *(a rare, distinctive feature)*: the price of a coin or bar is derived from the spot price using
   > **unit price = spot price × fine metal weight × (1 + premium %)**
 
   You enter the fine weight (in grams) and the premium; the app values each unit automatically from the reference quote.
 - **Interactive charts** (via `fl_chart`):
-  - Value over time (whole portfolio, per account and per position) across several periods (1D, 1M, 3M, 1Y, 5Y, Max). Two readings to choose from: **actual evolution**, rebuilt from your journal and historical quotes — what you really held on each date, with the **invested capital** line alongside — or **your current positions** reprojected onto past quotes.
-  - Allocation by asset class (pie chart), cash included.
+  - Value over time (whole portfolio, per account and per position) across several periods (1D, 1M, 3M, 1Y, 5Y, Max). Two readings to choose from: **actual evolution**, rebuilt from your journal and historical quotes — what you really held on each date, with the **invested capital** line alongside, whose gap to the value curve *is* the gain — or **your current positions** reprojected onto past quotes. The contributions line steps aside on its own when it would flatten the value curve, and comes back on a tap.
+  - **Period performance**, neutral to deposits and withdrawals, shown next to the unrealized gain — cumulative, and annualized beyond eighteen months. The total-gain breakdown isolates the **impact of fees**.
+  - Allocation by account and by asset class (pie charts), cash included.
 - **Allocation targets**: set a target percentage per asset class (and for cash) and track the **gaps** between actual and target allocation.
 - **Graceful degradation**: if the network or the quote API is down, the app serves the **last known price** (persisted locally) while flagging how old the data is.
 - **Backup & restore**: export and import all of your data as JSON (local file or share sheet), to back up or migrate devices. On import, declared positions are **reconciled** against the journal to guarantee consistency. A separate export of a portfolio's transaction journal, in a [documented, versioned JSON format](docs/sparneo-fiscal-export.md), completes this data portability.
 - **Settings**: system / light / dark theme, privacy notice, licenses (AGPL-3.0 and dependencies).
 - **Monetary precision**: journal amounts are stored and computed as **exact decimals** (never floats).
+- **Accessibility**: the interface stays readable and usable up to an Android system font scale of 2.0 — rows that get too cramped switch to columns, and axis tick density follows the space actually available.
 - **Bilingual FR / EN**, **Material 3** interface.
 
 ## 📸 Screenshots
@@ -85,26 +87,36 @@ In all honesty, here is what this does **not** guarantee: quotes go through thir
 <table>
   <tr>
     <td align="center"><img src="screenshots/home.png" alt="Portfolio view" width="200"/></td>
+    <td align="center"><img src="screenshots/allocation.png" alt="Allocation &amp; gaps vs targets" width="200"/></td>
     <td align="center"><img src="screenshots/account.png" alt="Account view" width="200"/></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Portfolio view —<br/>total value, actual evolution<br/>&amp; invested capital</sub></td>
+    <td align="center"><sub>Allocation —<br/>by account, by asset class<br/>&amp; gaps vs targets</sub></td>
+    <td align="center"><sub>Account view —<br/>positions &amp; cash<br/>of one wrapper</sub></td>
+  </tr>
+  <tr>
     <td align="center"><img src="screenshots/detail.png" alt="Position detail" width="200"/></td>
     <td align="center"><img src="screenshots/journal.png" alt="Transaction journal" width="200"/></td>
+    <td align="center"><img src="screenshots/import.png" alt="Broker statement import" width="200"/></td>
   </tr>
   <tr>
-    <td align="center"><sub>Portfolio view —<br/>total value, history &amp; allocation</sub></td>
-    <td align="center"><sub>Account view —<br/>positions &amp; cash of one wrapper</sub></td>
-    <td align="center"><sub>Position detail —<br/>unrealized &amp; realized gains</sub></td>
-    <td align="center"><sub>Journal —<br/>filterable transaction history</sub></td>
+    <td align="center"><sub>Position detail —<br/>unrealized &amp; realized<br/>gains</sub></td>
+    <td align="center"><sub>Journal —<br/>filterable transaction<br/>history</sub></td>
+    <td align="center"><sub>Statement import —<br/>preview of the effect<br/>before any write</sub></td>
   </tr>
   <tr>
-    <td align="center" colspan="4"><img src="screenshots/settings.png" alt="Settings" width="200"/><br/><sub>Settings —<br/>theme, backup &amp; privacy</sub></td>
+    <td align="center" colspan="3"><img src="screenshots/settings.png" alt="Settings" width="200"/><br/><sub>Settings —<br/>theme, backup &amp; privacy</sub></td>
   </tr>
 </table>
 
-<p><em>A clean, data-focused interface. Screenshots taken with the demo dataset below.</em></p>
+<p><em>A clean, data-focused interface. Screenshots taken with the demo dataset below (French UI).</em></p>
 
 </div>
 
-> 🎬 **Demo dataset**: the file [`sample_data/demo-backup.json`](sample_data/demo-backup.json) contains the fictional portfolio of a typical French saver (~€60,000) — six accounts (**PEA**, **brokerage**, **assurance-vie**, **Livret A** savings, **crypto**, **physical gold**), fourteen positions (ETFs, stocks including a foreign-currency line, bonds, a REIT, crypto, paper gold and gold coins priced by weight and premium) and three years of journal history (~75 transactions: deposits, buys with fees, sells, dividends, interest, management fees, withdrawals, declared opening balances and adjustments), plus allocation targets and two years of valuation history. Every position matches the projection of its journal exactly (guaranteed by a dedicated test). To explore it without entering anything, open **Settings → Backup &amp; export → Import / Restore** and select this file. It is also the dataset used for the screenshots above.
+> 🎬 **Demo dataset**: the file [`sample_data/demo-backup.json`](sample_data/demo-backup.json) contains the fictional portfolio of a typical French saver (~€62,000) — six accounts (**PEA**, **brokerage**, **assurance-vie**, **Livret A** savings, **crypto**, **physical gold**), fifteen lines (ETFs, stocks including a foreign-currency one, bonds, a REIT, crypto, paper gold and gold coins priced by weight and premium), one of which is **fully closed out** — it is worth nothing today, but it carries a realized gain and still shows up in the actual evolution of the portfolio — and over three years of journal history (**80 transactions covering all ten kinds**: deposits, buys with fees, sells, dividends, interest, custody fees, withdrawals, declared opening balances, adjustments and one outgoing securities transfer), plus allocation targets. Valuation history is not stored: it is **rebuilt** from this journal and historical quotes. Every position matches the projection of its journal exactly (guaranteed by a dedicated test). To explore it without entering anything, open **Settings → Backup &amp; export → Import / Restore** and select this file. It is also the dataset used for the screenshots above.
+>
+> 📄 **Sample statement**: [`sample_data/demo-releve.csv`](sample_data/demo-releve.csv) is a fictional broker statement in the format French brokers commonly export (`;` delimiter, `dd/mm/yyyy` dates, decimal comma, Latin-1 encoding), including one line identified only by its ISIN. Load it into the demo dataset's **brokerage account** via **⋮ → Import a statement…** to walk through the import wizard end to end.
 
 ## 🛠️ Tech stack
 
@@ -115,6 +127,7 @@ In all honesty, here is what this does **not** guarantee: quotes go through thir
 | **Storage** | SQLite (`sqflite` on mobile, `sqflite_common_ffi` on desktop) |
 | **Decimal precision** | `decimal` / `rational` (exact amounts, never floats) |
 | **Charts** | `fl_chart` |
+| **Statement import** | `csv`, plus `archive` + `xml` to read an `.xlsx` without a heavy dependency |
 | **HTTP** | `http` |
 | **Logging** | `logger` |
 | **Sharing / export** | `share_plus`, `file_picker`, `path_provider` |
@@ -176,8 +189,9 @@ No API key setup is needed: the data sources are public.
    - Stocks / ETFs / crypto: enter a symbol (e.g. `AAPL`, `BTC-EUR`), declare your starting position (quantity, optional cost basis), then record your transactions (buys, sells, dividends…) as they happen — quantity and cost basis are recomputed automatically.
    - Precious metals: enter the fine metal weight and the premium; valuation is derived from the spot price.
    - Cash: enter the balance in the currency of your choice, or keep the journal (deposits, withdrawals, interest, fees).
-4. **Visualize**: value-over-time and allocation charts, gaps against your allocation targets.
-5. **Back up**: from **Settings → Backup &amp; export**, export your data (JSON) to archive it or restore it on another device.
+4. **Import a statement** (rather than typing everything in): from an account's **⋮** menu, "**Import a statement…**". The wizard detects the file's format, lets you map each of the broker's own labels to a transaction kind, then shows a preview of the exact effect on your positions and cash before writing anything. An import that already went through can be undone in one tap.
+5. **Visualize**: value-over-time and allocation charts, period performance, gaps against your allocation targets.
+6. **Back up**: from **Settings → Backup &amp; export**, export your data (JSON) to archive it or restore it on another device.
 
 ## 📂 Project structure
 
@@ -192,21 +206,24 @@ A per-folder overview (rather than a file-by-file tree, which would drift):
     │                      #   (Yahoo quotes behind MarketDataProvider,
     │                      #   exchange rates, "last known price" cache),
     │                      #   backup/restore & exports, LedgerService
-    │                      #   (atomic journal → position & cash projection)
+    │                      #   (atomic journal → position & cash projection),
+    │                      #   statement import & ISIN resolution
     ├── logic/             # Pure functions, testable without UI or I/O:
     │                      #   position projection, allocation & gaps,
     │                      #   history aggregation, valuation
     ├── controllers/       # App state (ChangeNotifier): active portfolio,
     │                      #   account, theme
     ├── widgets/           # Screens & components: portfolio view, account view,
-    │                      #   position detail, journal, settings, dialogs
+    │                      #   position detail, journal, import wizard,
+    │                      #   settings, charts, dialogs
     ├── theme/             # Palette & light/dark themes
     ├── utils/             # Formatting, chart periods, logging, snackbars
     └── l10n/              # FR / EN localization (gen-l10n, .arb files)
 
     test/                  # Unit and widget test suite
     docs/                  # Documented file formats (JSON export)
-    sample_data/           # Demo dataset & its generator
+    sample_data/           # Demo dataset, sample statement & generator
+    CHANGELOG.md           # Changelog
 
 ## 🤝 Contributing
 
