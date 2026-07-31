@@ -150,13 +150,31 @@ Both APIs are **public and key-free**: nothing to configure. Only symbols and cu
 
 > What each release brings, and what to watch out for when upgrading, is in the [changelog](CHANGELOG.md) (in French).
 
-### Prerequisites
+### From a published release
+
+Artifacts live on the [releases page](https://github.com/sparneo/sparneo/releases).
+
+- **Android** — download the `.apk` and install it (you will need to allow installation from your browser or file manager). The app is signed; the certificate's SHA-256 fingerprint is published in every release's notes and stays the same across versions — that is what makes in-place upgrades possible.
+- **Linux x64** — the archive is portable, extract it wherever you like:
+
+    ```bash
+    tar xzf sparneo-0.2.0-linux-x64.tar.gz
+    cd sparneo-0.2.0
+    ./portfolio_tracker          # run it directly
+    ./install.sh                 # or: menu entry + icons, for the current user
+    ```
+
+    `install.sh` only writes under `~/.local/share` and points the menu entry at the extracted folder — don't move it without re-running the script. `./uninstall.sh` removes the entry and the icons, leaving your data alone.
+
+### Building from source
+
+#### Prerequisites
 
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) (stable channel recommended, Dart `^3.11`)
 - A code editor (VS Code, Android Studio)
 - An emulator or a connected physical device
 
-### Steps
+#### Steps
 
 1. **Clone the repository**
     ```bash

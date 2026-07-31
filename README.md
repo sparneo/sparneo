@@ -150,13 +150,31 @@ Ces deux APIs sont **publiques et sans clé** : rien à configurer. Seuls des sy
 
 > Les nouveautés et les points d'attention de chaque version sont dans le [journal des versions](CHANGELOG.md) — à lire avant une mise à jour.
 
-### Prérequis
+### Depuis une release publiée
+
+Les artefacts sont sur la [page des releases](https://github.com/sparneo/sparneo/releases).
+
+- **Android** — téléchargez le `.apk` et installez-le (il faut autoriser l'installation depuis votre navigateur ou votre gestionnaire de fichiers). L'application est signée ; l'empreinte SHA-256 du certificat est publiée dans les notes de chaque release, et reste la même d'une version à l'autre — c'est ce qui permet la mise à jour par-dessus la précédente.
+- **Linux x64** — l'archive est portable, elle s'extrait où vous voulez :
+
+    ```bash
+    tar xzf sparneo-0.2.0-linux-x64.tar.gz
+    cd sparneo-0.2.0
+    ./portfolio_tracker          # lancement direct
+    ./install.sh                 # ou : entrée de menu + icônes, pour l'utilisateur courant
+    ```
+
+    `install.sh` n'écrit que dans `~/.local/share` et pointe l'entrée de menu sur le dossier extrait — ne le déplacez pas sans le relancer. `./uninstall.sh` retire l'entrée et les icônes, sans toucher à vos données.
+
+### Compiler depuis les sources
+
+#### Prérequis
 
 - [Flutter SDK](https://docs.flutter.dev/get-started/install) (canal stable recommandé, Dart `^3.11`)
 - Un éditeur de code (VS Code, Android Studio)
 - Un émulateur ou un appareil physique connecté
 
-### Étapes
+#### Étapes
 
 1. **Cloner le dépôt**
     ```bash
