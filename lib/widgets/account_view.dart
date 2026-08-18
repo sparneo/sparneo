@@ -787,6 +787,7 @@ class _AccountViewState extends State<AccountView> {
       context,
       l10n.positionDeleted(symbol),
       type: SnackType.info,
+      undoWindow: true,
       action: SnackBarAction(
         label: l10n.undoAction,
         onPressed: () => _ctrl.restorePosition(symbol),

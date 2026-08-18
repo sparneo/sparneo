@@ -150,6 +150,7 @@ class _ManageWalletsPageState extends State<ManageWalletsPage> {
       context,
       l10n.walletDeleted(wallet.name),
       type: SnackType.info,
+      undoWindow: true,
       action: SnackBarAction(
         label: l10n.undoAction,
         onPressed: () {

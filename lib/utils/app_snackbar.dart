@@ -4,6 +4,17 @@ import 'package:flutter/material.dart';
 /// Nature d'un message éphémère (snackbar), qui détermine ses couleurs.
 enum SnackType { info, success, error, warning }
 
+/// Snackbar actuellement affiché qui porte une fenêtre d'annulation encore
+/// ouverte, s'il y en a un. Tant qu'il est là, [showAppSnackBar] n'évince plus
+/// le snackbar courant : il empile. Remis à `null` à sa fermeture.
+ScaffoldFeatureController<SnackBar, SnackBarClosedReason>? _openUndoWindow;
+
+/// Oublie la fenêtre d'annulation protégée (tests uniquement) : l'état est
+/// global au processus et un test qui se termine snackbar ouvert le laisserait
+/// fuir sur le suivant.
+@visibleForTesting
+void resetUndoWindowForTesting() => _openUndoWindow = null;
+
 /// Affiche un snackbar M3 cohérent et lisible dans les deux thèmes.
 ///
 /// Remplace les `SnackBar(backgroundColor: Colors.red/green)` dispersés :
@@ -13,12 +24,16 @@ enum SnackType { info, success, error, warning }
 /// Retourne le contrôleur du snackbar affiché : permet d'observer sa fermeture
 /// (`.closed`) — utile pour les motifs « supprimé + Annuler » où la suppression
 /// réelle n'est validée qu'à l'expiration sans annulation.
+///
+/// Passer [undoWindow] à `true` pour un snackbar qui PORTE une telle fenêtre
+/// d'annulation : il devient inévinçable tant qu'il est affiché (cf. MIN-3).
 ScaffoldFeatureController<SnackBar, SnackBarClosedReason> showAppSnackBar(
   BuildContext context,
   String message, {
   SnackType type = SnackType.info,
   SnackBarAction? action,
   Duration? duration,
+  bool undoWindow = false,
 }) {
   final scheme = Theme.of(context).colorScheme;
 
@@ -29,8 +44,18 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason> showAppSnackBar(
     SnackType.info => (scheme.inverseSurface, scheme.onInverseSurface),
   };
 
-  final messenger = ScaffoldMessenger.of(context)..hideCurrentSnackBar();
-  return messenger.showSnackBar(
+  final messenger = ScaffoldMessenger.of(context);
+  // On masque le snackbar courant pour éviter les empilements — SAUF s'il porte
+  // une fenêtre d'annulation encore ouverte. `hideCurrentSnackBar()` le
+  // fermerait avec `reason = hide`, que les motifs « supprimé + Annuler »
+  // interprètent (à raison) comme « pas d'annulation » : le commit différé
+  // partirait aussitôt et la fenêtre serait quasi nulle. Dans ce cas on laisse
+  // le messenger EMPILER : le nouveau message attend son tour, l'utilisateur
+  // garde ses secondes pour appuyer sur « Annuler ».
+  if (_openUndoWindow == null) {
+    messenger.hideCurrentSnackBar();
+  }
+  final controller = messenger.showSnackBar(
     SnackBar(
       content: Text(message, style: TextStyle(color: foreground)),
       backgroundColor: background,
@@ -46,4 +71,15 @@ ScaffoldFeatureController<SnackBar, SnackBarClosedReason> showAppSnackBar(
       persist: false,
     ),
   );
+
+  if (undoWindow) {
+    _openUndoWindow = controller;
+    // Ne libère la protection que si c'est bien CE snackbar qui la détient :
+    // deux suppressions rapprochées empilent deux fenêtres, et la fermeture de
+    // la première ne doit pas exposer la seconde.
+    controller.closed.whenComplete(() {
+      if (identical(_openUndoWindow, controller)) _openUndoWindow = null;
+    });
+  }
+  return controller;
 }

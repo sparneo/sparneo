@@ -283,6 +283,7 @@ class _WalletViewState extends State<WalletView> {
       context,
       l10n.accountDeleted(account.name),
       type: SnackType.info,
+      undoWindow: true,
       action: SnackBarAction(
         label: l10n.undoAction,
         onPressed: () {
