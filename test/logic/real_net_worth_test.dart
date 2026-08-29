@@ -1492,6 +1492,217 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
+  // Résidu 2 (design doc 18 §11.8, soldé) — la brique (a) de
+  // buildExternalFlowsCurve gate désormais son `openingBalance`/`adjustment`
+  // ESPÈCES sur [journalHasCashAnchor], exactement comme
+  // reconstructRealNetWorth : sur un compte NON ancré, un `adjustment`
+  // espèces pur (atteignable par l'import Bourse Direct, `cashRegularization`
+  // → `adjustment` `symbol: null`) n'a de contrepartie NULLE PART en aval
+  // (ni valeur, ni gain) et ne doit donc plus gonfler le capital investi.
+  // ---------------------------------------------------------------------------
+  group('HistoryAggregator.buildExternalFlowsCurve — adjustment ESPÈCES '
+      'gaté sur compte ANCRÉ (résidu 2, design doc 18 §11.8)', () {
+    test('compte NON ANCRÉ : adjustment ESPÈCES ignoré, seul le buy compte '
+        '(b bis)', () {
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc-unanchored',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000', // renseigné, mais SANS aucun ancrage sur ce compte
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final adjustCash = AssetTransaction(
+        id: 'adj1',
+        accountId: 'acc-unanchored',
+        symbol: null,
+        kind: TransactionKind.adjustment,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 5)],
+        [100.0, 100.0, 100.0],
+      );
+      final gridDates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 1, 2),
+        DateTime(2024, 1, 5),
+      ];
+
+      final values = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc-unanchored': [buy, adjustCash],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: gridDates,
+        usdToEurRate: 1.0,
+      );
+
+      // Le buy (SANS ancrage) redevient flux externe via (b bis) : 10×100 =
+      // 1000. L'adjustment espèces, lui, N'APPARAÎT NULLE PART : compte non
+      // ancré ⇒ pas capté par (a) (filtré), ni par (b) (`symbol == null`),
+      // ni par (b bis) (pas un buy/sell). Le dernier point vaut 1000, PAS
+      // 1050.
+      expect(values, [0.0, 1000.0, 1000.0]);
+    });
+
+    test('contre-épreuve : le MÊME journal + un deposit ANTÉRIEUR ancre le '
+        'compte → le buy redevient transfert interne (0) et l\'adjustment '
+        'espèces compte bien dans le flux cash', () {
+      final deposit = AssetTransaction(
+        id: 'd1',
+        accountId: 'acc-unanchored',
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 1),
+      );
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc-unanchored',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000', // financé EN INTERNE, désormais compte ANCRÉ
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final adjustCash = AssetTransaction(
+        id: 'adj1',
+        accountId: 'acc-unanchored',
+        symbol: null,
+        kind: TransactionKind.adjustment,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 5)],
+        [100.0, 100.0, 100.0],
+      );
+      final gridDates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 1, 2),
+        DateTime(2024, 1, 5),
+      ];
+
+      final values = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'AAPL': [buy],
+        },
+        txsByAccount: {
+          'acc-unanchored': [deposit, buy, adjustCash],
+        },
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: gridDates,
+        usdToEurRate: 1.0,
+      );
+
+      // J1 : dépôt seul (2000). J2 : le buy reste un transfert interne
+      // (compte désormais ANCRÉ + amount renseigné) : la courbe ne bouge
+      // pas. J5 : + 50 de l'adjustment, désormais capté par (a) puisque le
+      // compte est ancré → 2000 + 50 = 2050.
+      expect(values, [2000.0, 2000.0, 2050.0]);
+    });
+
+    test('invariant : Valeur − Capital investi == gain total malgré '
+        'l\'adjustment espèces ignoré sur un compte NON ancré', () {
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc-unanchored',
+        symbol: 'AAPL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '100',
+        amount: '-1000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      );
+      final adjustCash = AssetTransaction(
+        id: 'adj1',
+        accountId: 'acc-unanchored',
+        symbol: null,
+        kind: TransactionKind.adjustment,
+        amount: '50',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      );
+      final hist = _histData(
+        'AAPL',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 10)],
+        [100.0, 100.0, 120.0],
+      );
+      final gridDates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 1, 2),
+        DateTime(2024, 1, 10),
+      ];
+      final txsByAccount = {
+        'acc-unanchored': [buy, adjustCash],
+      };
+      final txsBySymbol = {
+        'AAPL': [buy],
+      };
+
+      final flows = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: txsBySymbol,
+        txsByAccount: txsByAccount,
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        gridDates: gridDates,
+        usdToEurRate: 1.0,
+      );
+      expect(flows.last, closeTo(1000.0, 1e-9));
+
+      final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: txsBySymbol,
+        txsByAccount: txsByAccount,
+        symbolToData: {'AAPL': hist},
+        assetBySymbol: {'AAPL': Asset(symbol: 'AAPL', currency: 'EUR')},
+        usdToEurRate: 1.0,
+        gridDates: gridDates,
+      );
+      // L'adjustment espèces ne change RIEN à la valeur (compte non ancré,
+      // aucune timeline cash construite) : identique au cas sans adjustment.
+      expect(reconstructed.values.last, closeTo(1200.0, 1e-9));
+
+      final position = PositionWithMarketData(
+        position: Position(
+          accountId: 'acc-unanchored',
+          asset: Asset(symbol: 'AAPL', currency: 'EUR'),
+          quantity: '10',
+          averageBuyPrice: 100.0, // coût déclaré du seul achat (1000 / 10)
+        ),
+        currentPrice: 120.0,
+      );
+      final totalGain = HistoryAggregator.computeRealTotalGain(
+        positions: [position],
+        txsBySymbol: txsBySymbol,
+        txsByAccount: txsByAccount,
+        usdToEurRate: 1.0,
+        cashEur: 0.0, // convention AccountController : compte non ancré
+      );
+
+      final gap = reconstructed.values.last - flows.last;
+      expect(gap, closeTo(totalGain.totalGain!, 1e-9));
+      expect(totalGain.totalGain, closeTo(200.0, 1e-9));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // B7 correction financière (design §7.3, décision « voie b ») : gain TOTAL
   // en ÉTAT COURANT (base coût), INDÉPENDANT de toute grille de dates.
   // ---------------------------------------------------------------------------

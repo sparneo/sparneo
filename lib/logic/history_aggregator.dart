@@ -742,11 +742,15 @@ class HistoryAggregator {
   /// seule des deux, jamais aux deux ni à aucune) :
   ///
   /// (a) FLUX CASH : [deposit]/[withdrawal] (tous), et [openingBalance]/
-  /// [adjustment] à `symbol == null` (variante ESPÈCES). EXCLUS : `dividend`/
-  /// `interest`/`charge` (performance, pas capital) et `buy`/`sell` (la jambe
-  /// cash n'est qu'un TRANSFERT INTERNE vers la jambe titre, contribution
-  /// nette 0 — la sommer serait un double-comptage avec (b)). Réutilise
-  /// [buildCashTimeline]/[cashAt], même sémantique que
+  /// [adjustment] à `symbol == null` (variante ESPÈCES) — ces derniers
+  /// restreints aux comptes ANCRÉS ([journalHasCashAnchor], EXACTEMENT le
+  /// même gating que [reconstructRealNetWorth], cf. (b bis) plus bas et
+  /// l'anti-double-comptage) : en pratique le seul kind concerné est
+  /// `adjustment` espèces (`openingBalance` espèces ancre lui-même). EXCLUS :
+  /// `dividend`/`interest`/`charge` (performance, pas capital) et `buy`/
+  /// `sell` (la jambe cash n'est qu'un TRANSFERT INTERNE vers la jambe titre,
+  /// contribution nette 0 — la sommer serait un double-comptage avec (b)).
+  /// Réutilise [buildCashTimeline]/[cashAt], même sémantique que
   /// [buildContributionsCurve].
   ///
   /// (b) FLUX TITRE : pour chaque symbole, [replayLedger] avec `onStep` —
@@ -809,10 +813,15 @@ class HistoryAggregator {
   /// bascule la contribution du côté (b) : elle non plus n'est alors comptée
   /// qu'une fois, (a) ne portant par construction AUCUNE timeline pour ce
   /// compte (cf. gating [journalHasCashAnchor] de [reconstructRealNetWorth],
-  /// répliqué à l'identique ici). Un prix manquant (résiduel malgré le
-  /// repli) donne une valorisation `0` en (b) — vue IDENTIQUEMENT par
-  /// [reconstructRealNetWorth] (même `symbolToData`), l'écart valeur/flux
-  /// reste donc net de cet aléa.
+  /// répliqué à l'identique ici — désormais aussi pour son propre filtre sur
+  /// [openingBalance]/[adjustment] ESPÈCES, résidu 2 du design doc 18 §11.8 :
+  /// un `adjustment` espèces sur un compte NON ancré n'est capté ni par (a)
+  /// [le filtre l'exclut], ni par (b) [`symbol == null`], ni par (b bis)
+  /// [pas un `buy`/`sell`] — il ne compte simplement PAS en capital, comme il
+  /// ne compte NULLE PART en aval côté valeur/gain). Un prix manquant
+  /// (résiduel malgré le repli) donne une valorisation `0` en (b) — vue
+  /// IDENTIQUEMENT par [reconstructRealNetWorth] (même `symbolToData`),
+  /// l'écart valeur/flux reste donc net de cet aléa.
   ///
   /// Change : même compromis v1 que le reste du mode 2 (§6) — USD converti via
   /// [usdToEurRate] au taux COURANT.
@@ -826,31 +835,50 @@ class HistoryAggregator {
   }) {
     if (gridDates.isEmpty) return <double>[];
 
-    // (a) Flux CASH — sous-ensemble filtré, mêmes briques que
-    // buildContributionsCurve : deposit/withdrawal (tous) + openingBalance/
-    // adjustment ESPÈCES (symbol == null) SEULEMENT.
-    final cashFlows = <AssetTransaction>[
-      for (final txs in txsByAccount.values)
-        for (final tx in txs)
-          if (tx.kind == TransactionKind.deposit ||
-              tx.kind == TransactionKind.withdrawal ||
-              ((tx.kind == TransactionKind.openingBalance ||
-                      tx.kind == TransactionKind.adjustment) &&
-                  tx.symbol == null))
-            tx,
-    ];
-    final cashTimeline = buildCashTimeline(cashFlows);
-
     // Comptes ANCRÉS (design (b bis), réconciliation du 29/07) — précalculé
     // UNE FOIS, exactement le même prédicat [journalHasCashAnchor] que le
     // gating de [reconstructRealNetWorth], pour que les deux courbes ne
     // puissent jamais diverger sur ce critère. Un compte absent de cet
     // ensemble n'a AUCUNE timeline cash en aval : son `buy`/`sell` n'est
-    // alors jamais un transfert interne, quel que soit son `amount`.
+    // alors jamais un transfert interne, quel que soit son `amount` — et,
+    // depuis la brique (a) ci-dessous, son `openingBalance`/`adjustment`
+    // ESPÈCES non plus (résidu 2 du design doc 18 §11.8).
     final anchoredAccountIds = <String>{
       for (final entry in txsByAccount.entries)
         if (journalHasCashAnchor(entry.value)) entry.key,
     };
+
+    // (a) Flux CASH — sous-ensemble filtré, mêmes briques que
+    // buildContributionsCurve : deposit/withdrawal + openingBalance/
+    // adjustment ESPÈCES (symbol == null), le tout restreint aux comptes
+    // ANCRÉS ([anchoredAccountIds]) — même gating EXACT que
+    // [reconstructRealNetWorth] (résidu 2 du design doc 18 §11.8, soldé).
+    // `deposit`/`withdrawal` ancrent PAR DÉFINITION ([journalHasCashAnchor])
+    // : le filtre est un no-op pour eux, mais l'appliquer uniformément à
+    // toute la brique est plus simple à lire qu'un test différencié par
+    // kind. Le seul kind RÉELLEMENT concerné en pratique est `adjustment`
+    // ESPÈCES (`openingBalance` ESPÈCES ancre lui aussi, cf.
+    // [journalHasCashAnchor]) : sur un compte SANS trésorerie suivie, un
+    // `adjustment` espèces pur (ex. `cashRegularization` de l'import Bourse
+    // Direct, `statement_import_service.dart`) n'a de contrepartie NULLE
+    // PART en aval — ni dans la valeur ([reconstructRealNetWorth] ne
+    // construit aucune timeline cash pour ce compte), ni dans le gain
+    // ([computeRealTotalGain]) — et ne doit donc pas non plus compter en
+    // capital investi, sous peine de faire dériver `Valeur − Capital investi
+    // == gain total` du montant de l'ajustement (cas de test : +50 € de dérive
+    // sur un `adjustment` de +50 € importé sur un compte non ancré).
+    final cashFlows = <AssetTransaction>[
+      for (final entry in txsByAccount.entries)
+        if (anchoredAccountIds.contains(entry.key))
+          for (final tx in entry.value)
+            if (tx.kind == TransactionKind.deposit ||
+                tx.kind == TransactionKind.withdrawal ||
+                ((tx.kind == TransactionKind.openingBalance ||
+                        tx.kind == TransactionKind.adjustment) &&
+                    tx.symbol == null))
+              tx,
+    ];
+    final cashTimeline = buildCashTimeline(cashFlows);
 
     // (b) Flux TITRE — accumulation par date-only UTC, un seul rejeu par
     // symbole (réutilise le fold unique de replayLedger, aucune arithmétique
