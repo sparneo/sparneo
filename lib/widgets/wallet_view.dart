@@ -90,6 +90,10 @@ class _WalletViewState extends State<WalletView> {
     // Axe unique : la nature du compte porte valorisation + fiscalité.
     AccountKind selectedKind = AccountKind.autre;
     double cashBalance = 0.0;
+    // Date de l'openingBalance espèces émis à la création (défaut aujourd'hui,
+    // MODIFIABLE — B18/doc 19 §3bis : un solde initial est souvent antidaté).
+    // Sans effet pour un compte non-cash.
+    DateTime openingBalanceDate = DateTime.now();
 
     final confirmed = await showDialog<bool>(
       context: context,
@@ -142,6 +146,37 @@ class _WalletViewState extends State<WalletView> {
                       cashBalance = double.tryParse(val) ?? 0.0;
                     },
                   ),
+                  const SizedBox(height: 16),
+                  // Date du solde initial, MODIFIABLE (défaut aujourd'hui) —
+                  // même pattern que CashOpeningBalanceDialog. Pas de date
+                  // future : un solde initial ne se déclare qu'après-coup.
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: openingBalanceDate,
+                        firstDate: DateTime(1970),
+                        lastDate: DateTime.now(),
+                      );
+                      if (picked != null) {
+                        setDialogState(() => openingBalanceDate = picked);
+                      }
+                    },
+                    borderRadius: BorderRadius.circular(4),
+                    child: InputDecorator(
+                      decoration: InputDecoration(
+                        labelText: l10n.transactionDate,
+                        isDense: true,
+                        border: const OutlineInputBorder(),
+                        suffixIcon: const Icon(Icons.calendar_today, size: 18),
+                      ),
+                      child: Text(
+                        '${openingBalanceDate.day.toString().padLeft(2, '0')}/'
+                        '${openingBalanceDate.month.toString().padLeft(2, '0')}/'
+                        '${openingBalanceDate.year}',
+                      ),
+                    ),
+                  ),
                 ],
               ],
             ),
@@ -166,6 +201,7 @@ class _WalletViewState extends State<WalletView> {
           name: nameController.text.trim(),
           kind: selectedKind,
           cashBalance: cashBalance,
+          openingBalanceDate: openingBalanceDate,
         );
 
         if (mounted) {

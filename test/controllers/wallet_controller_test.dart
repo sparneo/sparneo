@@ -562,6 +562,72 @@ void main() {
       expect(journalHasCashAnchor(txs), isTrue);
       expect(controller.accountValues[created.id], closeTo(0.0, 1e-9));
     });
+
+    // =======================================================================
+    // B18/doc 19 §3bis — le solde initial ESPÈCES doit être DATABLE (défaut
+    // aujourd'hui, modifiable) à la création : `openingBalanceDate`.
+    // =======================================================================
+
+    test(
+        'createAccount(kind: cash, openingBalanceDate: <antidaté>) émet '
+        'l\'openingBalance espèces à CETTE date, pas à aujourd\'hui',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-l18a', name: 'Test B18 date'));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      final antidated = DateTime(2020, 3, 15);
+      final created = await controller.createAccount(
+        name: 'Livret antidaté',
+        kind: AccountKind.cash,
+        cashBalance: 300.0,
+        openingBalanceDate: antidated,
+      );
+
+      final txs = await TransactionStorage(database: db)
+          .getByAccount(created.id);
+      expect(txs, hasLength(1));
+      expect(txs.single.date, antidated);
+    });
+
+    test(
+        'createAccount(kind: cash) SANS openingBalanceDate émet '
+        'l\'openingBalance espèces à aujourd\'hui (comportement par défaut '
+        'inchangé)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-l18b', name: 'Test B18 défaut'));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      final before = DateTime.now();
+      final created = await controller.createAccount(
+        name: 'Livret par défaut',
+        kind: AccountKind.cash,
+        cashBalance: 50.0,
+      );
+      final after = DateTime.now();
+
+      final txs = await TransactionStorage(database: db)
+          .getByAccount(created.id);
+      expect(txs, hasLength(1));
+      // Tolérance jour : la fenêtre before/after peut chevaucher minuit.
+      expect(
+        txs.single.date.difference(before).inDays.abs() <= 1 &&
+            txs.single.date.difference(after).inDays.abs() <= 1,
+        isTrue,
+        reason: 'date obtenue : ${txs.single.date}, attendue proche de '
+            '$before..$after',
+      );
+    });
   });
 
   // =========================================================================

@@ -31,6 +31,7 @@ import 'package:portfolio_tracker/widgets/charts/chart_notes.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/account_journal_page.dart';
+import 'package:portfolio_tracker/widgets/cash_opening_balance_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/empty_state.dart';
 import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
@@ -714,9 +715,9 @@ class _AccountViewState extends State<AccountView> {
     final l10n = AppLocalizations.of(context)!;
 
     final currency = _ctrl.activeAccount?.currency ?? 'EUR';
-    final outcome = await showDialog<_CashOpeningBalanceOutcome>(
+    final outcome = await showDialog<CashOpeningBalanceOutcome>(
       context: context,
-      builder: (_) => _CashOpeningBalanceDialog(currency: currency),
+      builder: (_) => CashOpeningBalanceDialog(currency: currency),
     );
     if (outcome == null || !mounted) return;
 
@@ -1761,161 +1762,6 @@ class _AccountViewState extends State<AccountView> {
       slices: slices,
       othersLabel: l10n.chartOthers,
       noDataLabel: l10n.noData,
-    );
-  }
-}
-
-// =============================================================================
-// Dialogue « Définir le solde espèces initial » (aucun ancrage cash encore posé)
-// =============================================================================
-
-/// Résultat du dialogue de solde espèces initial : montant SIGNÉ (négatif =
-/// découvert déclaré), date et note optionnelle.
-class _CashOpeningBalanceOutcome {
-  final String amount;
-  final DateTime date;
-  final String? note;
-
-  const _CashOpeningBalanceOutcome({
-    required this.amount,
-    required this.date,
-    required this.note,
-  });
-}
-
-class _CashOpeningBalanceDialog extends StatefulWidget {
-  final String currency;
-
-  const _CashOpeningBalanceDialog({required this.currency});
-
-  @override
-  State<_CashOpeningBalanceDialog> createState() =>
-      _CashOpeningBalanceDialogState();
-}
-
-class _CashOpeningBalanceDialogState
-    extends State<_CashOpeningBalanceDialog> {
-  final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _amountCtrl;
-  late final TextEditingController _noteCtrl;
-  late DateTime _date;
-
-  @override
-  void initState() {
-    super.initState();
-    _amountCtrl = TextEditingController();
-    _noteCtrl = TextEditingController();
-    _date = DateTime.now();
-  }
-
-  @override
-  void dispose() {
-    _amountCtrl.dispose();
-    _noteCtrl.dispose();
-    super.dispose();
-  }
-
-  String _formatDate(DateTime dt) =>
-      '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _date,
-      firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
-    );
-    if (picked != null && mounted) setState(() => _date = picked);
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-    final note = _noteCtrl.text.trim();
-    Navigator.of(context).pop(
-      _CashOpeningBalanceOutcome(
-        amount: _amountCtrl.text.trim().replaceAll(',', '.'),
-        date: _date,
-        note: note.isEmpty ? null : note,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-
-    return AlertDialog(
-      title: Text(l10n.setInitialCashBalanceTitle),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Montant SIGNÉ (négatif = découvert déclaré, cf. design §3).
-                TextFormField(
-                  controller: _amountCtrl,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    labelText: l10n.cashOpeningBalanceAmountLabel,
-                    suffixText: Formatters.formatCurrencySymbol(widget.currency),
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true, signed: true),
-                  validator: (v) {
-                    final t = (v ?? '').trim().replaceAll(',', '.');
-                    if (Decimal.tryParse(t) == null) return l10n.invalidValue;
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 12),
-
-                // Date éditable (un solde initial est souvent antidaté).
-                InkWell(
-                  onTap: _pickDate,
-                  borderRadius: BorderRadius.circular(4),
-                  child: InputDecorator(
-                    decoration: InputDecoration(
-                      labelText: l10n.transactionDate,
-                      isDense: true,
-                      border: const OutlineInputBorder(),
-                      suffixIcon: const Icon(Icons.calendar_today, size: 18),
-                    ),
-                    child: Text(_formatDate(_date)),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Note optionnelle.
-                TextFormField(
-                  controller: _noteCtrl,
-                  decoration: InputDecoration(
-                    labelText: l10n.optionalNoteLabel,
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  maxLines: 2,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(l10n.cancel),
-        ),
-        FilledButton(
-          onPressed: _submit,
-          child: Text(l10n.validate),
-        ),
-      ],
     );
   }
 }

@@ -978,10 +978,15 @@ class WalletController extends ChangeNotifier {
   /// mouvement) — accepté par le design (§3bis) : l'échec du second appel
   /// laisse un compte non ancré à solde nul, dégradation propre, rattrapable
   /// par l'action d'amorçage (« Définir le solde espèces initial… »).
+  ///
+  /// [openingBalanceDate] : date de l'`openingBalance` espèces émis pour un
+  /// compte cash — daté, MODIFIABLE À LA CRÉATION (défaut aujourd'hui si
+  /// omis), cf. doc 19 §3bis et B18. Sans effet pour un compte non-cash.
   Future<Account> createAccount({
     required String name,
     required AccountKind kind,
     double? cashBalance,
+    DateTime? openingBalanceDate,
   }) async {
     final newAccount = Account(
       id: Account.generateId(),
@@ -996,7 +1001,7 @@ class WalletController extends ChangeNotifier {
         accountId: newAccount.id,
         amount: (cashBalance ?? 0.0).toString(),
         currency: newAccount.currency,
-        date: DateTime.now(),
+        date: openingBalanceDate ?? DateTime.now(),
       );
     }
     await loadAllData();

@@ -893,6 +893,11 @@
     "description": "Title of the initial-cash-balance dialog"
   },
 
+  "editInitialCashBalanceTitle": "Edit opening cash balance",
+  "@editInitialCashBalanceTitle": {
+    "description": "Title of the initial-cash-balance dialog when editing an already-emitted opening balance from the account journal (B18)"
+  },
+
   "adjustCashBalanceAction": "Adjust cash balance…",
   "@adjustCashBalanceAction": {
     "description": "Action label (button/menu) opening the adjust-cash-balance dialog on a securities account (cash-ledger lot)"
@@ -1716,7 +1721,7 @@
   "@journalSystemLineTitle": {
     "description": "Title of the help popup shown when tapping a read-only system-generated cash line in the account journal"
   },
-  "journalSystemLineBody": "This line was generated automatically (opening balance, adjustment or corporate action) and anchors other figures — cash balance, cost basis. It can't be edited here so those figures stay correct. To change it, edit the original operation (a buy, a deposit) from its detail page.",
+  "journalSystemLineBody": "This line was generated automatically (an adjustment or a leg of a security operation) and anchors other figures — cash balance, cost basis. It can't be edited here so those figures stay correct. To fix it, go to the relevant position's detail page, or add a new adjustment.",
   "@journalSystemLineBody": {
     "description": "Body explaining why a system-generated cash line is read-only and where to make a correction instead"
   },

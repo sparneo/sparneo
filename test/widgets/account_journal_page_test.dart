@@ -21,6 +21,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart' show DatabaseExecutor;
 
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/logic/position_projection.dart'
+    show journalHasCashAnchor;
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
@@ -207,17 +209,15 @@ void main() {
     );
 
     testWidgets(
-      'openingBalance / adjustment ESPÈCES (système) : tap → popup '
+      // B18/doc 19 §3bis : SEUL l'openingBalance ESPÈCES est devenu éditable
+      // (cf. groupe « édition du solde espèces initial » plus bas) —
+      // adjustment ESPÈCES reste, lui, verrouillé en lecture seule (non-
+      // régression). openingBalance a donc quitté ce test.
+      'adjustment ESPÈCES (système restant) : tap → popup '
       '« Mouvement automatique », JAMAIS le dialogue d\'édition, aucun '
       'bouton supprimer',
       (tester) async {
         final txs = [
-          _cashTx(
-            id: 'tx-opening',
-            kind: TransactionKind.openingBalance,
-            date: DateTime(2024, 2, 1),
-            amount: '1000',
-          ),
           _cashTx(
             id: 'tx-adjustment',
             kind: TransactionKind.adjustment,
@@ -337,6 +337,91 @@ void main() {
         expect(ledger.recorded, hasLength(1));
         expect(ledger.recorded.single.id, 'tx-deposit');
         expect(ledger.deletedIds, isEmpty);
+      },
+    );
+  });
+
+  // ===========================================================================
+  // B18/doc 19 §3bis : le solde espèces initial (openingBalance espèces) est
+  // devenu la QUATRIÈME famille éditable du journal (dialogue dédié
+  // CashOpeningBalanceDialog), seule exception aux mouvements système
+  // verrouillés — cf. commentaire de _openEditCashOpeningBalance.
+  // ===========================================================================
+  group(
+      'AccountJournalPage — édition du solde espèces initial (openingBalance '
+      'espèces)', () {
+    testWidgets(
+      'tap sur la ligne openingBalance espèces ouvre le dialogue dédié '
+      '(titre « Modifier… »), pas de bouton supprimer',
+      (tester) async {
+        final tx = _cashTx(
+          id: 'tx-opening',
+          kind: TransactionKind.openingBalance,
+          date: DateTime(2024, 6, 10),
+          amount: '1000',
+        );
+        final txs = [tx];
+        final ledger = _FakeLedgerService(txs);
+
+        await tester.pumpWidget(_host(txs: txs, ledger: ledger));
+        await tester.pumpAndSettle();
+
+        final dateText = _fmtDate(tx.date);
+        expect(_tileInkWell(tester, dateText).onTap, isNotNull);
+        expect(_tileDeleteButton(dateText), findsNothing,
+            reason: 'un solde initial ne se SUPPRIME pas (seul ancrage cash)');
+
+        await tester.tap(find.text(dateText));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Modifier le solde espèces initial'), findsOneWidget);
+        // PAS le dialogue générique deposit/withdrawal/... (bouton « Enregistrer »).
+        expect(find.text('Enregistrer'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'valider une nouvelle date persiste, via recordTransaction, une '
+      'transaction de MÊME id/kind/symbol null — seule la date change ; '
+      'l\'ancrage cash (journalHasCashAnchor) survit à l\'édition',
+      (tester) async {
+        final tx = _cashTx(
+          id: 'tx-opening',
+          kind: TransactionKind.openingBalance,
+          date: DateTime(2024, 6, 10),
+          amount: '1000',
+        );
+        final txs = [tx];
+        final ledger = _FakeLedgerService(txs);
+
+        await tester.pumpWidget(_host(txs: txs, ledger: ledger));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text(_fmtDate(tx.date)));
+        await tester.pumpAndSettle();
+
+        // Ouvre le sélecteur de date (InkWell portant le libellé « Date »)
+        // puis choisit un autre jour DU MÊME MOIS (aucune navigation requise).
+        await tester.tap(find.text(_fmtDate(tx.date)).last);
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('15'));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('OK'));
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Valider'));
+        await tester.pumpAndSettle();
+
+        expect(ledger.recorded, hasLength(1));
+        final edited = ledger.recorded.single;
+        expect(edited.id, 'tx-opening');
+        expect(edited.kind, TransactionKind.openingBalance);
+        expect(edited.symbol, isNull);
+        expect(edited.amount, '1000', reason: 'montant inchangé');
+        expect(edited.date, DateTime(2024, 6, 15));
+
+        // Ancrage préservé (le discriminant dépend du KIND seul).
+        expect(journalHasCashAnchor(ledger.txs), isTrue);
       },
     );
   });

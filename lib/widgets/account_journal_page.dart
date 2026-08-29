@@ -10,6 +10,7 @@ import 'package:portfolio_tracker/theme/app_colors.dart';
 import 'package:portfolio_tracker/utils/app_snackbar.dart';
 import 'package:portfolio_tracker/utils/error_text.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
+import 'package:portfolio_tracker/widgets/cash_opening_balance_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/empty_state.dart';
 import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
@@ -285,10 +286,12 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   // ---------------------------------------------------------------------------
   // Édition / suppression d'un mouvement d'espèces (calqué sur
   // position_detail_page.dart, mêmes garde-fous). RÉSERVÉ aux mouvements
-  // SAISIS À LA MAIN (!isSystemGenerated, cf. _buildTile) : un openingBalance
-  // /adjustment/transferOut reste en LECTURE SEULE dans ce journal — ces kinds
-  // portent une sémantique câblée ailleurs (ancrage cash, PRU) qu'un dialogue
-  // générique casserait s'il les rendait éditables ici.
+  // SAISIS À LA MAIN (!isSystemGenerated, cf. _buildTile) : un adjustment/
+  // transferOut/openingBalance TITRE reste en LECTURE SEULE dans ce journal —
+  // ces kinds portent une sémantique câblée ailleurs (PRU, jambe d'OST) qu'un
+  // dialogue générique casserait s'il les rendait éditables ici. EXCEPTION
+  // (B18/doc 19 §3bis) : l'openingBalance ESPÈCES (symbol null) a SA PROPRE
+  // édition dédiée, cf. _openEditCashOpeningBalance ci-dessous.
   // ---------------------------------------------------------------------------
 
   Future<void> _openEditTransaction(AssetTransaction tx) async {
@@ -317,6 +320,45 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
 
     // JAMAIS d'insert direct (même garde-fou que _openAddCashTransaction).
     await _ledger.recordTransaction(result);
+    if (mounted) {
+      showAppSnackBar(context, l10n.transactionSaved, type: SnackType.success);
+      await _load();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Édition du SOLDE ESPÈCES INITIAL (openingBalance espèces, `symbol` null) —
+  // B18/doc 19 §3bis : c'est la SEULE ligne système désormais éditable ici (les
+  // autres, adjustment/transferOut/openingBalance TITRE, restent verrouillées,
+  // cf. _showSystemLineHelp). Justifié par un fait de projection : le cash est
+  // additif et kind-agnostique (Σ amount, position_projection.dart), et
+  // l'ancrage `journalHasCashAnchor` dépend du KIND seul — modifier date/
+  // montant/note d'un openingBalance espèces existant ne casse ni le calcul ni
+  // l'ancrage. PAS de suppression (cf. trailing dans _buildTile) : supprimer le
+  // seul ancrage ferait retomber le compte en régime legacy (doc 19 §2.4).
+  // ---------------------------------------------------------------------------
+
+  Future<void> _openEditCashOpeningBalance(AssetTransaction tx) async {
+    final l10n = AppLocalizations.of(context)!;
+    final currency = _accountCurrency;
+    if (currency == null) return; // devise du compte pas encore chargée
+
+    final outcome = await showDialog<CashOpeningBalanceOutcome>(
+      context: context,
+      builder: (_) => CashOpeningBalanceDialog(currency: currency, existing: tx),
+    );
+    if (outcome == null || !mounted) return;
+
+    // Ne change QUE montant/date/note : id/accountId/kind/symbol(null)/
+    // currency/meta sont préservés (même transaction, pas une nouvelle ligne)
+    // — recordTransaction est un upsert qui reprojette (même chemin que
+    // _openEditTransaction).
+    final edited = tx.copyWith(
+      amount: outcome.amount,
+      date: outcome.date,
+      note: outcome.note,
+    );
+    await _ledger.recordTransaction(edited);
     if (mounted) {
       showAppSnackBar(context, l10n.transactionSaved, type: SnackType.success);
       await _load();
@@ -631,9 +673,9 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       subtitle = nature;
     }
 
-    // TROIS familles, chacune avec un tap PRÉVISIBLE (uniformisation du 30/07 :
-    // le vrai défaut n'était pas que les espèces soient éditables, mais qu'une
-    // ligne titre soit un tap MORT sans explication) :
+    // QUATRE familles, chacune avec un tap PRÉVISIBLE (uniformisation du
+    // 30/07 : le vrai défaut n'était pas que les espèces soient éditables,
+    // mais qu'une ligne titre soit un tap MORT sans explication) :
     //
     // 1. ESPÈCES ORDINAIRES (`!isSystemGenerated && symbol == null` :
     //    deposit/withdrawal/interest/charge) → éditables/supprimables ICI, seul
@@ -644,23 +686,36 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     //    système) → tap qui NAVIGUE vers la fiche position, où vit le dialogue
     //    titre complet. Éditer ici forcerait `symbol: null` (cf.
     //    _openEditTransaction) et casserait le rattachement au titre.
-    // 3. SYSTÈME espèces (`isSystemGenerated && symbol == null`) → lecture
+    // 3. SOLDE ESPÈCES INITIAL (`kind == openingBalance && symbol == null`,
+    //    B18/doc 19 §3bis) → éditable via son propre dialogue dédié
+    //    ([CashOpeningBalanceDialog]), PAS supprimable : la projection cash est
+    //    additive et kind-agnostique (position_projection.dart), donc corriger
+    //    date/montant/note ne casse rien, mais supprimer le seul ancrage cash
+    //    ferait retomber le compte en régime legacy (doc 19 §2.4).
+    // 4. SYSTÈME espèces restant (`isSystemGenerated && symbol == null`,
+    //    hors openingBalance : adjustment/transferOut espèces) → lecture
     //    seule, mais un tap EXPLIQUE le pourquoi (ancre de trésorerie / jambe
     //    d'OST, câblées ailleurs) au lieu de rester inerte.
     final isPlainCash = !tx.kind.isSystemGenerated && tx.symbol == null;
     final isTitleLinked = tx.symbol != null;
+    final isCashOpeningBalance =
+        tx.kind == TransactionKind.openingBalance && tx.symbol == null;
 
     final VoidCallback? onTap;
     if (isPlainCash) {
       onTap = () => _openEditTransaction(tx);
     } else if (isTitleLinked) {
       onTap = () => _openPositionForSymbol(tx.symbol!);
+    } else if (isCashOpeningBalance) {
+      onTap = () => _openEditCashOpeningBalance(tx);
     } else {
       onTap = _showSystemLineHelp;
     }
 
     // Affordance de fin de tuile, alignée sur le tap : supprimer (espèces),
-    // chevron « ouvre ailleurs » (titre), ⓘ « pourquoi verrouillé » (système).
+    // chevron « ouvre ailleurs » (titre), crayon « éditer » (solde initial,
+    // PAS de corbeille — cf. commentaire ci-dessus), ⓘ « pourquoi verrouillé »
+    // (système restant).
     final Widget trailing;
     if (isPlainCash) {
       trailing = IconButton(
@@ -676,6 +731,12 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       trailing = Icon(
         Icons.chevron_right,
         size: 20,
+        color: theme.colorScheme.onSurfaceVariant,
+      );
+    } else if (isCashOpeningBalance) {
+      trailing = Icon(
+        Icons.edit_outlined,
+        size: 18,
         color: theme.colorScheme.onSurfaceVariant,
       );
     } else {
