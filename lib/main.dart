@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:portfolio_tracker/app_info.dart';
+import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/controllers/theme_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
@@ -43,6 +44,11 @@ Future<void> main() async {
   // Charge la préférence de thème (device, hors backup) AVANT le premier
   // build : évite un flash au thème par défaut suivi d'un changement.
   await ThemeController.shared().load();
+
+  // Idem pour le mode de courbe choisi sur chaque écran (device, hors backup) :
+  // chargé avant le premier build, sans quoi le graphe s'ouvrirait sur le mode
+  // résolu automatiquement puis basculerait sur le choix de l'utilisateur.
+  await ChartModeController.shared().load();
 
   runApp(const MainApp());
 }

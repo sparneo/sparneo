@@ -16,6 +16,7 @@ import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
+import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart'
     show journalHasCashAnchor;
 import 'package:portfolio_tracker/services/account_storage.dart';
@@ -96,6 +97,41 @@ class _DelayedMarketDataService extends MarketDataService {
     int days = 30,
   }) =>
       _historyCompleter.future;
+}
+
+/// Fake du service de marché entièrement PILOTABLE en cours de test : les
+/// cotations/historiques renvoyés sont mutables entre deux appels à
+/// [loadAllData], et l'historique peut être bloqué à volonté sur un
+/// [Completer] ([pendingHistory]) — pour figer un rechargement en plein vol
+/// (`_isLoadingHistory == true`) et observer l'état intermédiaire, comme le
+/// gel de [realCurveCoverage].
+class _ControllableMarketDataService extends MarketDataService {
+  Map<String, AssetQuoteData?> quotesBySymbol;
+  Map<String, AssetHistoricalData?> historicalBySymbol;
+
+  /// Non-null : TOUT appel à [getHistoricalDataForAsset] reste en attente sur
+  /// ce Completer, quel que soit le symbole — le second rechargement du test
+  /// ne porte jamais que sur un seul symbole en pratique.
+  Completer<AssetHistoricalData?>? pendingHistory;
+
+  _ControllableMarketDataService({
+    this.quotesBySymbol = const {},
+    this.historicalBySymbol = const {},
+  }) : super.forTesting(_FakeExchangeRateService());
+
+  @override
+  Future<AssetQuoteData?> getQuoteForAsset(Asset asset) async =>
+      quotesBySymbol[asset.symbol];
+
+  @override
+  Future<AssetHistoricalData?> getHistoricalDataForAsset(
+    Asset asset, {
+    int days = 30,
+  }) {
+    final pending = pendingHistory;
+    if (pending != null) return pending.future;
+    return Future.value(historicalBySymbol[asset.symbol]);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1648,6 +1684,391 @@ void main() {
       expect(controller.realChartValues.last, closeTo(2100.0, 1e-9));
       expect(controller.realChartValues.last,
           closeTo(controller.totalPatrimoine, 1e-6));
+      // Journal COMPLET : la couverture est exactement 1 — la garde de
+      // qualité laisse donc le mode réel par défaut (cf. chart_mode_policy).
+      expect(controller.realCurveCoverage, closeTo(1.0, 1e-9));
+      expect(isRealCurveIncomplete(controller.realCurveCoverage), isFalse);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Couverture de la courbe réelle (garde de qualité du mode par défaut)
+  // -------------------------------------------------------------------------
+
+  group('WalletController – realCurveCoverage', () {
+    test(
+        'position HÉRITÉE (aucun mouvement journalisé) : elle pèse dans le '
+        'patrimoine et pas dans la courbe → couverture < 1, repli mode 1',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-cov', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-cov',
+        walletId: 'w-cov',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      // Journalisée : reconstruite par le mode 2.
+      await storage.savePosition(
+        'acc-cov',
+        Position(
+          accountId: 'acc-cov',
+          asset: Asset(symbol: 'JRNL', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+      // HÉRITÉE : aucun mouvement, donc absente de la reconstruction.
+      await storage.savePosition(
+        'acc-cov',
+        Position(
+          accountId: 'acc-cov',
+          asset: Asset(symbol: 'LEGW', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+
+      await LedgerService(database: db).recordTransaction(AssetTransaction(
+        id: 'tx-cov-buy',
+        accountId: 'acc-cov',
+        symbol: 'JRNL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '50',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      ));
+
+      final base = DateTime(2024, 1, 10);
+      final controller = _makeController(
+        db: db,
+        marketService: _FakeMarketDataService(
+          quotesBySymbol: {
+            'JRNL': AssetQuoteData(symbol: 'JRNL', price: 60.0, currency: 'EUR'),
+            'LEGW': AssetQuoteData(symbol: 'LEGW', price: 100.0, currency: 'EUR'),
+          },
+          historicalBySymbol: {
+            'JRNL': AssetHistoricalData(
+              symbol: 'JRNL',
+              dates: [
+                base,
+                base.add(const Duration(days: 1)),
+                base.add(const Duration(days: 2)),
+              ],
+              prices: const [50.0, 55.0, 60.0],
+            ),
+          },
+        ),
+      );
+      await controller.loadAllData();
+
+      // Patrimoine : 10×60 (journalisée) + 10×100 (héritée) = 1 600.
+      expect(controller.totalPatrimoine, closeTo(1600.0, 1e-9));
+      expect(controller.hasRealCurve, isTrue);
+      expect(controller.realExcludedLegacyCount, 1);
+      // GROUPÉE PAR COMPTE : l'écran patrimoine nomme le compte où l'on
+      // pourra agir, pas le titre (sur lequel il ne sait rien faire).
+      final groups = controller.realExcludedLegacyGroups;
+      expect(groups, hasLength(1));
+      expect(groups.single.accountId, 'acc-cov');
+      expect(groups.single.accountName, 'CTO');
+      expect(groups.single.symbols, ['LEGW']);
+      expect(groups.single.count, 1);
+      // Compteur DÉRIVÉ de la liste (une seule source).
+      expect(
+        controller.realExcludedLegacyCount,
+        groups.fold<int>(0, (sum, g) => sum + g.count),
+      );
+      // Courbe : la position héritée n'y figure pas → 600 sur 1 600.
+      expect(controller.realChartValues.last, closeTo(600.0, 1e-9));
+      expect(controller.realCurveCoverage, closeTo(600.0 / 1600.0, 1e-9));
+      expect(isRealCurveIncomplete(controller.realCurveCoverage), isTrue);
+      // Sans choix de l'utilisateur : la politique replie sur le mode 1.
+      expect(
+        resolveUseRealCurve(
+          persistedChoice: null,
+          hasRealCurve: controller.hasRealCurve,
+          coverage: controller.realCurveCoverage,
+        ),
+        isFalse,
+      );
+      // Un choix explicite « évolution réelle » reste souverain.
+      expect(
+        resolveUseRealCurve(
+          persistedChoice: true,
+          hasRealCurve: controller.hasRealCurve,
+          coverage: controller.realCurveCoverage,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'compte MASQUÉ (fenêtre « supprimé + Annuler ») : il sort de la liste '
+        'nommée ET du compteur, comme il sort déjà du total', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-hid', name: 'Test'));
+      for (final id in ['acc-keep', 'acc-drop']) {
+        await storage.saveAccount(Account(
+          id: id,
+          walletId: 'w-hid',
+          name: id == 'acc-keep' ? 'PEA' : 'CTO',
+          kind: AccountKind.autre,
+        ));
+      }
+      // Journalisée sur acc-keep : donne une courbe réelle au patrimoine.
+      await storage.savePosition(
+        'acc-keep',
+        Position(
+          accountId: 'acc-keep',
+          asset: Asset(symbol: 'JRNL', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+      // HÉRITÉE sur CHAQUE compte : une de part et d'autre du masquage.
+      await storage.savePosition(
+        'acc-keep',
+        Position(
+          accountId: 'acc-keep',
+          asset: Asset(symbol: 'LEGA', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+      await storage.savePosition(
+        'acc-drop',
+        Position(
+          accountId: 'acc-drop',
+          asset: Asset(symbol: 'LEGB', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+
+      await LedgerService(database: db).recordTransaction(AssetTransaction(
+        id: 'tx-hid-buy',
+        accountId: 'acc-keep',
+        symbol: 'JRNL',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '50',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      ));
+
+      final base = DateTime(2024, 1, 10);
+      final controller = _makeController(
+        db: db,
+        marketService: _FakeMarketDataService(
+          quotesBySymbol: {
+            'JRNL': AssetQuoteData(symbol: 'JRNL', price: 60.0, currency: 'EUR'),
+            'LEGA': AssetQuoteData(symbol: 'LEGA', price: 100.0, currency: 'EUR'),
+            'LEGB': AssetQuoteData(symbol: 'LEGB', price: 100.0, currency: 'EUR'),
+          },
+          historicalBySymbol: {
+            'JRNL': AssetHistoricalData(
+              symbol: 'JRNL',
+              dates: [base, base.add(const Duration(days: 1))],
+              prices: const [50.0, 60.0],
+            ),
+          },
+        ),
+      );
+      await controller.loadAllData();
+
+      expect(controller.realExcludedLegacyCount, 2);
+      expect(
+        controller.realExcludedLegacyGroups.map((g) => g.accountId).toSet(),
+        {'acc-keep', 'acc-drop'},
+      );
+
+      // Masquage EN MÉMOIRE (aucune I/O, aucun recalcul d'historique) : c'est
+      // exactement l'état de la fenêtre d'annulation. La note ne doit plus
+      // citer — ni proposer d'ouvrir — un compte que l'utilisateur vient de
+      // supprimer et qui a déjà quitté le total.
+      controller.hideAccount('acc-drop');
+
+      expect(controller.realExcludedLegacyGroups, hasLength(1));
+      expect(controller.realExcludedLegacyGroups.single.accountId, 'acc-keep');
+      expect(controller.realExcludedLegacyGroups.single.symbols, ['LEGA']);
+      expect(controller.realExcludedLegacyCount, 1);
+
+      // « Annuler » : le compte revient, la note aussi (aucun recalcul requis).
+      controller.restoreAccount(Account(
+        id: 'acc-drop',
+        walletId: 'w-hid',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      expect(controller.realExcludedLegacyCount, 2);
+    });
+
+    test('sans courbe réelle : couverture null (rien à mesurer)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-cov2', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-cov2',
+        walletId: 'w-cov2',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      // Patrimoine 100 % hérité : aucun titre journalisé, aucun livret ancré.
+      await storage.savePosition(
+        'acc-cov2',
+        Position(
+          accountId: 'acc-cov2',
+          asset: Asset(symbol: 'LEGW', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+
+      final base = DateTime(2024, 1, 10);
+      final controller = _makeController(
+        db: db,
+        marketService: _FakeMarketDataService(
+          quotesBySymbol: {
+            'LEGW': AssetQuoteData(symbol: 'LEGW', price: 100.0, currency: 'EUR'),
+          },
+          historicalBySymbol: {
+            'LEGW': AssetHistoricalData(
+              symbol: 'LEGW',
+              dates: [base, base.add(const Duration(days: 1))],
+              prices: const [98.0, 100.0],
+            ),
+          },
+        ),
+      );
+      await controller.loadAllData();
+
+      expect(controller.hasRealCurve, isFalse);
+      expect(controller.realCurveCoverage, isNull);
+      // MAIS la liste des positions héritées reste renseignée (bug constaté à
+      // l'écran, doc privé) : faute de courbe réelle à montrer, c'est la
+      // SEULE indication de ce qu'il y a à déclarer — elle ne doit pas être
+      // vidée par le retour anticipé « rien à reconstruire ».
+      expect(controller.realExcludedLegacyCount, 1);
+      expect(controller.realExcludedLegacyGroups, hasLength(1));
+      expect(
+        controller.realExcludedLegacyGroups.single.accountId,
+        'acc-cov2',
+      );
+      expect(controller.realExcludedLegacyGroups.single.symbols, ['LEGW']);
+    });
+
+    test(
+        'GEL pendant un rechargement : la valorisation courante change '
+        'AVANT que la nouvelle courbe réelle soit disponible → la '
+        'couverture reste celle d\'avant le rechargement tant que '
+        '_isLoadingHistory est vrai, puis se met à jour une fois le '
+        'rechargement terminé', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-freeze', name: 'Test'));
+      await storage.saveAccount(Account(
+        id: 'acc-freeze',
+        walletId: 'w-freeze',
+        name: 'CTO',
+        kind: AccountKind.autre,
+      ));
+      // Position JOURNALISÉE (seule) : couverture exactement 1 au départ.
+      await storage.savePosition(
+        'acc-freeze',
+        Position(
+          accountId: 'acc-freeze',
+          asset: Asset(symbol: 'FRZ', currency: 'EUR'),
+          quantity: '10',
+        ),
+      );
+      await LedgerService(database: db).recordTransaction(AssetTransaction(
+        id: 'tx-freeze-buy',
+        accountId: 'acc-freeze',
+        symbol: 'FRZ',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '50',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 2),
+      ));
+
+      final base = DateTime(2024, 1, 10);
+      final market = _ControllableMarketDataService(
+        quotesBySymbol: {
+          'FRZ': AssetQuoteData(symbol: 'FRZ', price: 60.0, currency: 'EUR'),
+        },
+        historicalBySymbol: {
+          'FRZ': AssetHistoricalData(
+            symbol: 'FRZ',
+            dates: [base, base.add(const Duration(days: 1))],
+            prices: const [50.0, 60.0],
+          ),
+        },
+      );
+      final controller = _makeController(db: db, marketService: market);
+
+      // Premier chargement, NON bloqué : établit la couverture de référence.
+      await controller.loadAllData();
+      expect(controller.totalPatrimoine, closeTo(600.0, 1e-9)); // 10×60
+      expect(controller.realCurveCoverage, closeTo(1.0, 1e-9));
+
+      // Le cours DOUBLE (nouvelle valorisation courante) et l'historique du
+      // second chargement reste bloqué : `loadAllData` pose déjà
+      // `_accountValues`/`totalPatrimoine` sur le nouveau cours AVANT que
+      // `_loadHistory` (qui pose `_realChartValues`) n'ait pu recalculer quoi
+      // que ce soit — exactement la fenêtre décrite par le correctif.
+      market.quotesBySymbol = {
+        'FRZ': AssetQuoteData(symbol: 'FRZ', price: 120.0, currency: 'EUR'),
+      };
+      market.pendingHistory = Completer<AssetHistoricalData?>();
+
+      final loadFuture = controller.loadAllData();
+
+      // Attend que le rechargement atteigne réellement `_isLoadingHistory`
+      // (I/O SQLite réelle entre-temps : on poll au lieu de supposer un
+      // nombre fixe de microtasks).
+      final sw = Stopwatch()..start();
+      while (!controller.isLoadingHistory && sw.elapsedMilliseconds < 5000) {
+        await Future<void>.delayed(const Duration(milliseconds: 1));
+      }
+      expect(
+        controller.isLoadingHistory,
+        isTrue,
+        reason: 'le second rechargement doit être bloqué sur l\'historique '
+            'avant la fin du test (sinon le test ne prouve rien)',
+      );
+
+      // La valorisation courante a DÉJÀ changé...
+      expect(controller.totalPatrimoine, closeTo(1200.0, 1e-9)); // 10×120
+      // ... mais la couverture reste GELÉE à la valeur d'avant (1.0), PAS
+      // recalculée sur l'ancienne courbe (600) / la nouvelle valorisation
+      // (1200), ce qui donnerait 0.5 et ferait basculer le sélecteur de mode
+      // le temps du calcul.
+      expect(controller.realCurveCoverage, closeTo(1.0, 1e-9));
+
+      // Débloque le second chargement avec l'historique à jour et laisse le
+      // rechargement se terminer.
+      market.pendingHistory!.complete(AssetHistoricalData(
+        symbol: 'FRZ',
+        dates: [base, base.add(const Duration(days: 1))],
+        prices: const [60.0, 120.0],
+      ));
+      await loadFuture;
+
+      // Rechargement terminé : la couverture se recalcule enfin, cohérente
+      // avec la nouvelle courbe ET la nouvelle valorisation.
+      expect(controller.isLoadingHistory, isFalse);
+      expect(controller.totalPatrimoine, closeTo(1200.0, 1e-9));
+      expect(controller.realCurveCoverage, closeTo(1.0, 1e-9));
     });
   });
 }

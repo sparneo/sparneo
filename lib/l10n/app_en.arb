@@ -145,6 +145,108 @@
     }
   },
 
+  "chartRealCoverageFallbackCaption": "The real-evolution curve only covers about {percent}% of your current value, so it is shown second.",
+  "@chartRealCoverageFallbackCaption": {
+    "description": "Caption shown below the chart in performance mode (mode 1) ONLY when the mode policy fell back to it on its own: no explicit user choice for this scope AND the real curve covers less than the coverage threshold of the current valuation. Explains the demotion, and nothing else: what is missing, and what to do about it, is named by chartRealExcludedLegacyNamedPrefix rendered just above — repeating the advice here would be two notes saying the same thing.",
+    "placeholders": {
+      "percent": {
+        "type": "int",
+        "example": "43"
+      }
+    }
+  },
+
+  "chartRealCoverageWarning": "This curve only covers about {percent}% of your current value: positions with no history, or securities with no usable price, are missing from it.",
+  "@chartRealCoverageWarning": {
+    "description": "Warning shown below the chart in real-evolution mode (mode 2) when the reconstructed curve covers less than the coverage threshold of the current valuation — same visual treatment as chartApproxValuesWarning. Says nothing about the default mode: the user is looking at the real curve either way. Names only the REAL causes: untracked cash is absent from BOTH sides of the ratio and never lowers coverage.",
+    "placeholders": {
+      "percent": {
+        "type": "int",
+        "example": "43"
+      }
+    }
+  },
+
+  "chartRealCoverageWarningShort": "In all, this curve only covers about {percent}% of your current value.",
+  "@chartRealCoverageWarningShort": {
+    "description": "Variant of chartRealCoverageWarning used when a note ABOVE it has already named what is missing (the named legacy-positions list, or the approximate-values warning). Same number, no cause: naming the cause twice in two consecutive lines is the redundancy this variant exists to remove.",
+    "placeholders": {
+      "percent": {
+        "type": "int",
+        "example": "43"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyNamedPrefix": "{count, plural, =1{One position with no history is missing from this curve:} other{{count} positions with no history are missing from this curve:}}",
+  "@chartRealExcludedLegacyNamedPrefix": {
+    "description": "Opening clause of the NAMED variant of the excluded-legacy note: the count, followed by a colon and the clickable names themselves (account names on the wallet screen, symbols on the account screen). Replaces chartRealExcludedLegacyCaption wherever names are available — a bare count told the user nothing about which positions, nor where to act.",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "3"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyNoCurvePrefix": "{count, plural, =1{No real evolution to reconstruct: one position with no history:} other{No real evolution to reconstruct: {count} positions with no history:}}",
+  "@chartRealExcludedLegacyNoCurvePrefix": {
+    "description": "Opening clause of the named excluded-legacy note used INSTEAD of chartRealExcludedLegacyNamedPrefix when there is no real-evolution curve at all (not merely one that omits these positions) — e.g. an account or a whole wallet where every position is legacy (no journaled movement anywhere). chartRealExcludedLegacyNamedPrefix's \"is missing from this curve\" is false in that case: there is no curve to be missing from. Same named/clickable list follows either way, cf. ChartNotes.realCurveAvailable.",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "3"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyOtherModePrefix": "{count, plural, =1{One position with no history is missing from the real evolution:} other{{count} positions with no history are missing from the real evolution:}}",
+  "@chartRealExcludedLegacyOtherModePrefix": {
+    "description": "Opening clause of the named excluded-legacy note used INSTEAD of chartRealExcludedLegacyNamedPrefix when mode 1 (\"Your positions\") is the one on screen while a real-evolution curve DOES exist (realCurveAvailable true, useRealCurve false — automatic fallback or an explicit user choice). chartRealExcludedLegacyNamedPrefix's \"is missing from this curve\" can only mean the curve on screen, and mode 1's curve INCLUDES these positions — the real evolution is the only curve they are actually missing from, so it must be named explicitly rather than pointed at with \"this\".",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "3"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyAccountLink": "{name} ({count})",
+  "@chartRealExcludedLegacyAccountLink": {
+    "description": "One clickable entry of the named excluded-legacy note on the WALLET screen: the account name followed by how many of its positions are excluded. Tapping it opens that account, the level where the missing transaction can actually be recorded.",
+    "placeholders": {
+      "name": {
+        "type": "String",
+        "example": "PEA"
+      },
+      "count": {
+        "type": "int",
+        "example": "2"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyMore": "{count, plural, =1{and 1 more} other{and {count} more}}",
+  "@chartRealExcludedLegacyMore": {
+    "description": "Trailing clause of the named excluded-legacy note when more entries exist than the note lists inline. Keeps the caption to one readable line on a narrow phone instead of enumerating everything.",
+    "placeholders": {
+      "count": {
+        "type": "int",
+        "example": "2"
+      }
+    }
+  },
+
+  "chartRealExcludedLegacyDeclareHint": "Tap a security to declare its initial position.",
+  "@chartRealExcludedLegacyDeclareHint": {
+    "description": "Trailing sentence of the named excluded-legacy note on the ACCOUNT screen only: says what tapping a listed symbol does (opens the initial-position dialog, prefilled with the held quantity and known average buy price). The wallet screen needs no equivalent — tapping an account name obviously opens that account."
+  },
+
+  "positionNoJournalCaption": "No movement recorded for this line: there is no real evolution to reconstruct. Set its initial position above.",
+  "@positionNoJournalCaption": {
+    "description": "Caption shown under the period selector INSTEAD of the mode selector when the line has no journal at all (an inherited position). Explains why only one mode exists here, and points back to the single action that fixes it — now the reconciled badge/button in the info card ABOVE this caption (no button next to the caption itself any more)."
+  },
+
   "chartRealUnanchoredRevenueCaption": "{amount} of income counted in total gain but absent from this curve (account with no tracked cash).",
   "@chartRealUnanchoredRevenueCaption": {
     "description": "Caption below the chart in real-evolution mode, only when an unanchored account carries dividends/interest/charges: these count toward total gain but never appear on the curve (no cash timeline is built for unanchored accounts). Names the known card-vs-curve residual rather than leaving it unexplained.",
@@ -780,9 +882,20 @@
     "description": "Title of the adjust-quantity dialog"
   },
 
+  "setInitialPositionTitleFor": "Initial position — {symbol}",
+  "@setInitialPositionTitleFor": {
+    "description": "Title of the initial-position dialog when it is opened for a NAMED security (from the account chart note, or from the position chart shortcut) rather than from the position it already belongs to. Same dialog, same act as setInitialPositionTitle — only the symbol is added, so the user knows which line they are declaring.",
+    "placeholders": {
+      "symbol": {
+        "type": "String",
+        "example": "AI.PA"
+      }
+    }
+  },
+
   "setInitialPositionAction": "Set initial position…",
   "@setInitialPositionAction": {
-    "description": "Action label (button/menu) opening the initial-position dialog on a reconciled position with an empty journal"
+    "description": "Action label (button/badge tooltip) opening the initial-position dialog on a position with an empty journal — legacy (never reconciled) or already reconciled and later emptied out, same single action either way"
   },
 
   "setInitialPositionTitle": "Set initial position",
@@ -865,12 +978,12 @@
 
   "positionUnreconciledBadge": "Not reconciled",
   "@positionUnreconciledBadge": {
-    "description": "Discreet badge shown on a legacy position whose quantity/ABP are not yet derived from a journal"
+    "description": "Discreet badge shown whenever the position has no reliable journal-derived projection: a legacy position (quantity/ABP not yet derived from a journal) OR a reconciled position whose journal was later emptied out. Tappable (opens the initial-position dialog) exactly when the journal is empty; inert otherwise."
   },
 
   "reconcilePosition": "Reconcile",
   "@reconcilePosition": {
-    "description": "Button label to reconcile a legacy position from its journal"
+    "description": "Button label to reconcile a legacy position from its journal. Shown next to the badge only when the journal is NON-empty (an empty journal shows setInitialPositionAction instead — there is nothing to recompute)."
   },
 
   "correctPruTitle": "Correct cost basis",

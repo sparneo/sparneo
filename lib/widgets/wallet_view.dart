@@ -1,8 +1,10 @@
 // lib/widgets/wallet_view.dart
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/controllers/wallet_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 import 'package:portfolio_tracker/utils/localized_labels.dart';
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/utils/app_snackbar.dart';
@@ -21,6 +23,7 @@ import 'package:portfolio_tracker/widgets/manage_wallets_page.dart';
 import 'package:portfolio_tracker/widgets/settings_page.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 import 'package:portfolio_tracker/widgets/charts/chart_notes.dart';
+import 'package:portfolio_tracker/widgets/charts/inline_links_caption.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/wallet/account_list_tile.dart';
@@ -57,17 +60,35 @@ class _WalletViewState extends State<WalletView> {
   static const double _chartBoxHeight = 224;
 
   // Mode d'affichage du graphe global (B7 Lot 3a, design doc 18 §7.2/§11.6).
-  // Purement local à la vue : les DEUX séries (performance / évolution
-  // réelle) sont déjà calculées par le contrôleur (Lots 1+2) — basculer ne
-  // recharge rien, un simple setState suffit. Faux par défaut : comportement
-  // identique à avant ce lot pour tout utilisateur n'ayant pas de courbe
-  // réelle disponible ([WalletController.hasRealCurve]).
-  // Défaut à true (retour manuel du 29/07) : l'évolution réelle reflète ce
-  // qui s'est VRAIMENT passé, contrairement au mode « Vos positions »
-  // (rétroprojection théorique) — sans effet tant que hasRealCurve est faux
-  // (le sélecteur est alors masqué et useRealCurve retombe à false via le
-  // && ci-dessous).
-  bool _showRealCurve = true;
+  // Les DEUX séries (performance / évolution réelle) sont déjà calculées par
+  // le contrôleur (Lots 1+2) — basculer ne recharge rien, un simple setState
+  // suffit.
+  //
+  // N'est PLUS un champ initialisé à `true` : le défaut reste le mode réel
+  // (retour manuel du 29/07 — il reflète ce qui s'est VRAIMENT passé,
+  // contrairement à la rétroprojection théorique « Vos positions »), mais
+  // désormais SOUS GARDE DE QUALITÉ (couverture de la courbe réelle) et
+  // DERRIÈRE le choix persisté de l'utilisateur pour cette portée (cf.
+  // [resolveUseRealCurve]). La couverture n'étant connue qu'APRÈS le calcul
+  // asynchrone du contrôleur, la résolution se fait AU BUILD, jamais dans
+  // initState. Sans courbe réelle le résultat retombe à false, comme avant
+  // (le sélecteur est alors masqué).
+  bool get _showRealCurve => resolveUseRealCurve(
+        persistedChoice: ChartModeController.shared().choiceFor(
+          ChartModeScope.wallet,
+        ),
+        hasRealCurve: _controller.hasRealCurve,
+        coverage: _controller.realCurveCoverage,
+      );
+
+  /// Vrai quand la politique a basculé d'elle-même sur « Vos positions » —
+  /// aucun choix de l'utilisateur pour cette portée ET couverture
+  /// insuffisante. Pilote la note explicative sous le graphe (ChartNotes) :
+  /// une bascule silencieuse serait incompréhensible.
+  bool get _autoFallbackToPositions =>
+      _controller.hasRealCurve &&
+      ChartModeController.shared().choiceFor(ChartModeScope.wallet) == null &&
+      isRealCurveIncomplete(_controller.realCurveCoverage);
 
   @override
   void initState() {
@@ -309,6 +330,59 @@ class _WalletViewState extends State<WalletView> {
   /// on ouvre une fenêtre d'annulation. La suppression réelle n'est validée
   /// qu'à la fermeture du snackbar SANS action « Annuler ». Aligné sur
   /// _onPositionDismissed / manage_wallets_page.
+  /// Traduit les positions héritées groupées par compte
+  /// ([WalletController.realExcludedLegacyGroups]) en entrées cliquables pour
+  /// la note sous le graphe : « PEA (2) », « CTO (1) »…
+  ///
+  /// Le callback ouvre le compte par le MÊME chemin que sa tuile ([_openAccount]),
+  /// retour `resultDeleted` compris. La CAPTURE du compte se fait ici, au build :
+  /// le groupe ne porte qu'un id, et le contrôleur peut avoir masqué le compte
+  /// entre-temps — d'où le `firstWhere` défensif ci-dessous, qui abandonne
+  /// silencieusement plutôt que d'ouvrir une page sur un compte disparu.
+  List<InlineLinkSpec> _buildLegacyAccountLinks(AppLocalizations l10n) {
+    return [
+      for (final group in _controller.realExcludedLegacyGroups)
+        InlineLinkSpec(
+          label: l10n.chartRealExcludedLegacyAccountLink(
+            group.accountName,
+            group.count,
+          ),
+          onTap: () {
+            final index = _controller.accounts.indexWhere(
+              (a) => a.id == group.accountId,
+            );
+            if (index < 0) return;
+            _openAccount(_controller.accounts[index]);
+          },
+        ),
+    ];
+  }
+
+  /// Ouvre la page d'UN compte, puis réaligne le patrimoine.
+  ///
+  /// Point d'entrée UNIQUE (tuile de la liste ET nom cliquable de la note des
+  /// positions héritées sous le graphe) : la page peut renvoyer
+  /// [AccountView.resultDeleted] (corbeille de sa barre), auquel cas on
+  /// emprunte le MÊME chemin de suppression différée que le balayage et on
+  /// sort AVANT `loadAllData` — sinon le rechargement du stockage (commit non
+  /// encore effectué) ferait réapparaître le compte, écrasant le masquage et
+  /// l'undo. Dupliquer ce retour par appelant, c'était s'exposer à en oublier
+  /// la moitié au second point d'entrée.
+  Future<void> _openAccount(Account account) async {
+    final result = await Navigator.push<String>(
+      context,
+      MaterialPageRoute(
+        builder: (context) => AccountView(initialAccountId: account.id),
+      ),
+    );
+    if (!mounted) return;
+    if (result == AccountView.resultDeleted) {
+      _onAccountDismissed(account);
+      return;
+    }
+    await _controller.loadAllData();
+  }
+
   void _onAccountDismissed(Account account) {
     if (!mounted) return;
     final l10n = AppLocalizations.of(context)!;
@@ -628,8 +702,9 @@ class _WalletViewState extends State<WalletView> {
                   // mode 1 plutôt que d'afficher un graphe vide.
                   Builder(
                     builder: (_) {
-                      final bool useRealCurve =
-                          _showRealCurve && _controller.hasRealCurve;
+                      // Résolu par la politique de qualité (garde
+                      // `hasRealCurve` comprise, cf. [resolveUseRealCurve]).
+                      final bool useRealCurve = _showRealCurve;
 
                       // En mode réel, la variation naïve (% mode 1) mélange
                       // apports et performance — trompeuse (masquée). On lui
@@ -752,10 +827,20 @@ class _WalletViewState extends State<WalletView> {
                                                   VisualDensity.compact,
                                             ),
                                             onSelectionChanged: (selection) {
-                                              setState(
-                                                () => _showRealCurve =
-                                                    selection.first,
+                                              // Choix EXPLICITE : persisté
+                                              // pour cette portée
+                                              // (préférence d'appareil), il
+                                              // prime dès lors sur la
+                                              // résolution automatique. Posé
+                                              // en mémoire avant l'await du
+                                              // disque, donc déjà relu par le
+                                              // rebuild ci-dessous.
+                                              ChartModeController.shared()
+                                                  .setChoice(
+                                                ChartModeScope.wallet,
+                                                selection.first,
                                               );
+                                              setState(() {});
                                             },
                                           ),
                                         ),
@@ -862,6 +947,27 @@ class _WalletViewState extends State<WalletView> {
                                     _controller.realCurveApproxSymbols.length,
                                 realUnanchoredRevenueEur:
                                     _controller.realUnanchoredRevenueEur,
+                                realCurveCoverage:
+                                    _controller.realCurveCoverage,
+                                autoFallbackToPositions:
+                                    _autoFallbackToPositions,
+                                // Positions héritées NOMMÉES par le compte où
+                                // l'on pourra agir : l'écran patrimoine ne
+                                // sait pas déclarer une opération d'origine,
+                                // il conduit à l'écran qui le sait.
+                                realExcludedLegacyLinks:
+                                    _buildLegacyAccountLinks(l10n),
+                                // Pendant un rechargement d'historique, la
+                                // couverture croise l'ANCIENNE courbe et le
+                                // NOUVEAU total : notes masquées le temps du
+                                // calcul (cf. ChartNotes.suppressCoverageNotes).
+                                suppressCoverageNotes:
+                                    _controller.isLoadingHistory,
+                                // Patrimoine 100 % hérité (bug constaté à
+                                // l'écran, doc privé) : aucune courbe réelle à
+                                // proposer — la note change alors de préfixe
+                                // (cf. ChartNotes.realCurveAvailable).
+                                realCurveAvailable: _controller.hasRealCurve,
                               ),
                             ],
                           ),
@@ -933,28 +1039,7 @@ class _WalletViewState extends State<WalletView> {
                           totalAccountCount: _controller.accounts.length,
                         ),
                         onDismissed: (_) => _onAccountDismissed(account),
-                        onTap: () async {
-                          // Cash comme titres : naviguer vers les détails. La
-                          // page peut renvoyer resultDeleted (corbeille de sa
-                          // barre) : on emprunte alors le MÊME chemin différé
-                          // que le balayage, et on sort AVANT loadAllData —
-                          // sinon le rechargement du stockage (commit non encore
-                          // effectué) ferait réapparaître le compte, écrasant le
-                          // masquage et l'undo.
-                          final result = await Navigator.push<String>(
-                            context,
-                            MaterialPageRoute(
-                              builder: (context) =>
-                                  AccountView(initialAccountId: account.id),
-                            ),
-                          );
-                          if (!mounted) return;
-                          if (result == AccountView.resultDeleted) {
-                            _onAccountDismissed(account);
-                            return;
-                          }
-                          await _controller.loadAllData();
-                        },
+                        onTap: () => _openAccount(account),
                       );
                     },
                   ),

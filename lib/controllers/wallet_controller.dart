@@ -8,6 +8,7 @@ import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/legacy_position_group.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
@@ -199,6 +200,10 @@ class WalletController extends ChangeNotifier {
   // [_allPositionsData]) sans reformuler un accès storage.
   Map<String, List<AssetTransaction>> _txsByAccountForHistory = {};
   List<double> _realChartValues = [];
+  // Dernière couverture calculée HORS chargement (cf. [realCurveCoverage]) —
+  // gèle le getter pendant un rechargement pour que le sélecteur de mode ne
+  // bascule pas le temps du recalcul.
+  double? _lastKnownCoverage;
   // Symboles dont la valeur, à au moins une date, provient d'un repli
   // « dernier cours connu » (pas un vrai historique de marché) — pour un
   // futur badge UI (Lot 3, design §4/§11.5 m1).
@@ -207,9 +212,15 @@ class WalletController extends ChangeNotifier {
   // journal (saisies à la main, sans aucun mouvement associé) — donc EXCLUES
   // de la reconstruction ci-dessus (`_allPositionsData` dont le symbole n'est
   // pas clé de `txsBySymbol`, cf. [_computeRealNetWorthCurve]). Alimente
-  // l'avertissement de complétude UI, conditionnel ET chiffré. Miroir wallet
-  // de [AccountController._realExcludedLegacyCount].
-  int _realExcludedLegacyCount = 0;
+  // l'avertissement de complétude UI, conditionnel, chiffré ET NOMMÉ. Miroir
+  // wallet de [AccountController._realExcludedLegacySymbols].
+  //
+  // GROUPÉ PAR COMPTE (accountId → symboles), et non plat : l'écran patrimoine
+  // ne sait pas agir sur un titre, il nomme donc le compte où l'on pourra agir
+  // (cf. [LegacyPositionGroup]). Stocké BRUT (tel que vu par le dernier calcul
+  // d'historique) ; le FILTRAGE des comptes masqués se fait à la LECTURE
+  // ([realExcludedLegacyGroups]) — cf. son doc-commentaire.
+  Map<String, List<String>> _realExcludedLegacyByAccount = const {};
   // Courbe des FLUX EXTERNES CUMULÉS (B7 correction financière, design
   // §11.4 — ex-« apports nets », désormais [HistoryAggregator.
   // buildExternalFlowsCurve], flux complets pas seulement le cash pur) :
@@ -300,13 +311,114 @@ class WalletController extends ChangeNotifier {
   /// m1) — destiné à un futur badge « valeurs approchées » (Lot 3).
   Set<String> get realCurveApproxSymbols => _realCurveApproxSymbols;
 
+  /// Positions détenues sans AUCUN mouvement journalisé, donc absentes de
+  /// [realChartValues], GROUPÉES PAR COMPTE et prêtes à être nommées sous le
+  /// graphe — cf. [_realExcludedLegacyByAccount]. Vide = rien n'est exclu.
+  ///
+  /// FILTRÉ À LA LECTURE sur les comptes VISIBLES ([_accounts]), pas au calcul.
+  /// Raison : [hideAccount] (fenêtre « supprimé + Annuler ») retire le compte
+  /// de [_accounts] SANS relancer le calcul d'historique — exactement comme
+  /// [totalPatrimoine], qui est lui aussi dérivé de [_accounts]. Sans ce
+  /// filtre, la note continuerait de citer, et de proposer d'ouvrir, un compte
+  /// que l'utilisateur vient de supprimer et qui ne pèse plus dans le total.
+  /// Le NOM du compte est repris de [_accounts] au même instant : un
+  /// renommage suit sans attendre le prochain calcul d'historique.
+  ///
+  /// ORDRE : compte le plus fourni d'abord (la note tronque à quelques
+  /// entrées — autant montrer les plus lourdes), puis nom croissant à égalité,
+  /// pour un rendu stable d'un build à l'autre.
+  ///
+  /// PEUT être non vide alors que [hasRealCurve] est faux : un patrimoine
+  /// 100 % hérité (aucun titre journalisé, aucun compte cash ancré) n'a pas de
+  /// courbe réelle à montrer, mais c'est justement là que cette liste importe
+  /// le plus — c'est tout ce qu'il y a à déclarer pour un jour en obtenir une.
+  List<LegacyPositionGroup> get realExcludedLegacyGroups {
+    if (_realExcludedLegacyByAccount.isEmpty) return const [];
+    final groups = <LegacyPositionGroup>[];
+    for (final account in _accounts) {
+      final symbols = _realExcludedLegacyByAccount[account.id];
+      if (symbols == null || symbols.isEmpty) continue;
+      groups.add(
+        LegacyPositionGroup(
+          accountId: account.id,
+          accountName: account.name,
+          symbols: List<String>.unmodifiable(symbols),
+        ),
+      );
+    }
+    groups.sort((a, b) {
+      final byCount = b.count.compareTo(a.count);
+      return byCount != 0 ? byCount : a.accountName.compareTo(b.accountName);
+    });
+    return List<LegacyPositionGroup>.unmodifiable(groups);
+  }
+
   /// Nombre de positions détenues (tout le patrimoine) sans AUCUN mouvement
-  /// journalisé, donc absentes de [realChartValues] — cf.
-  /// [_realExcludedLegacyCount]. `0` = rien n'est exclu.
-  int get realExcludedLegacyCount => _realExcludedLegacyCount;
+  /// journalisé, donc absentes de [realChartValues]. `0` = rien n'est exclu.
+  ///
+  /// DÉRIVÉ de [realExcludedLegacyGroups] (et non compté à part) : le chiffre
+  /// de la note et les noms qu'elle cite viennent ainsi de la MÊME source, y
+  /// compris quand un compte masqué en sort — deux compteurs parallèles
+  /// auraient fini par annoncer « 3 positions » sous une liste de deux.
+  int get realExcludedLegacyCount =>
+      realExcludedLegacyGroups.fold(0, (sum, g) => sum + g.count);
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
+
+  /// COUVERTURE de la courbe réelle : part du patrimoine COURANT que
+  /// représente son dernier point (`realChartValues.last / totalPatrimoine`).
+  /// `null` s'il n'y a pas de courbe réelle, ou si le patrimoine courant est
+  /// ≤ 0 (ratio dénué de sens). Alimente la politique de mode par défaut
+  /// (`lib/logic/chart_mode_policy.dart`) et la note chiffrée sous le graphe.
+  ///
+  /// Dérivée à la volée plutôt que mémoïsée : ses deux termes sont écrits par
+  /// le MÊME cycle de chargement ([loadAllData] pose `_accountValues` avant
+  /// d'appeler `_loadHistory`, qui pose `_realChartValues`), et le
+  /// dénominateur suit ensuite tout masquage/suppression de compte, qui ne
+  /// passe pas par le calcul d'historique.
+  ///
+  /// GEL pendant un rechargement ([_isLoadingHistory]) : `_realChartValues`
+  /// est alors l'ANCIENNE courbe alors que `totalPatrimoine` peut déjà
+  /// refléter la NOUVELLE valorisation (posée par [loadAllData] avant
+  /// `_loadHistory`) — recalculer ici donnerait un ratio incohérent, et donc
+  /// un bascule intempestif du sélecteur de mode le temps du calcul. On fige
+  /// alors la dernière valeur connue ([_lastKnownCoverage]) : le getter ne
+  /// recalcule et ne met à jour ce cache QUE hors chargement, préservant ainsi
+  /// hors chargement la propriété ci-dessus (suivi à la volée de tout
+  /// masquage/suppression de compte).
+  ///
+  /// CE QUE PÈSE LE DERNIER POINT (vérifié dans
+  /// [_computeRealNetWorthCurve]) — il contient, à la dernière date de la
+  /// grille affichée (donc la plus récente, les grilles étant triées) :
+  ///   - les titres JOURNALISÉS, quantité rejouée depuis le journal et
+  ///     valorisée au dernier cours HISTORIQUE de la fenêtre ;
+  ///   - le cash DÉRIVÉ de TOUS les comptes ANCRÉS (titres comme espèces),
+  ///     projeté à cette même date par [reconstructRealNetWorth] ;
+  ///   - le cash PUR des comptes de type cash NON ancrés, ajouté en
+  ///     CONSTANTE ([HistoryAggregator.addConstantPureCash]).
+  /// Il lui MANQUE, par rapport à [totalPatrimoine] :
+  ///   - les positions HÉRITÉES (détenues sans aucun mouvement journalisé,
+  ///     cf. [realExcludedLegacyCount]) — la source d'incomplétude n°1, et
+  ///     bien une incomplétude à compter : elles pèsent dans le total affiché
+  ///     et pas dans la courbe ;
+  ///   - un titre journalisé dont ni l'historique ni le repli « dernier cours
+  ///     connu » n'a rien donné (contribution 0) ;
+  ///   - l'écart de SOURCE DE PRIX (dernier cours historique vs cotation
+  ///     live), de l'ordre de quelques % — c'est lui que le seuil absorbe.
+  /// Les espèces d'un compte NON cash et NON ancré, elles, sont absentes des
+  /// DEUX termes (jamais agrégées par `loadAllData`) : elles ne creusent pas
+  /// le ratio.
+  double? get realCurveCoverage {
+    if (_isLoadingHistory) return _lastKnownCoverage;
+    double? result;
+    if (_realChartValues.isNotEmpty) {
+      final total = totalPatrimoine;
+      if (total > 0) result = _realChartValues.last / total;
+    }
+    _lastKnownCoverage = result;
+    return result;
+  }
 
   /// Courbe des apports nets cumulés (B7 Lot 3b), ALIGNÉE index-par-index sur
   /// [chartDates]/[realChartValues]. Vide tant qu'aucun calcul mode 2 n'a
@@ -1026,7 +1138,7 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur un patrimoine vide (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
+      _realExcludedLegacyByAccount = const {};
       // Aucun journal à agréger ici (patrimoine vide) : vidée pour rester
       // cohérente avec _realChartValues (évite un tableau apports périmé
       // d'une longueur différente si le patrimoine devient vide après avoir
@@ -1070,7 +1182,7 @@ class WalletController extends ChangeNotifier {
       // Mode 2 == mode 1 sur du cash plat (design §9 Lot 2 pt.5).
       _realChartValues = List<double>.from(_chartValues);
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
+      _realExcludedLegacyByAccount = const {};
       // Aucun compte non-cash ici (que du cash) : pas de journal à agréger,
       // même motif que ci-dessus.
       _realContributionsValues = [];
@@ -1125,7 +1237,7 @@ class WalletController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
-        _realExcludedLegacyCount = 0;
+        _realExcludedLegacyByAccount = const {};
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -1233,7 +1345,7 @@ class WalletController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
-        _realExcludedLegacyCount = 0;
+        _realExcludedLegacyByAccount = const {};
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -1331,7 +1443,7 @@ class WalletController extends ChangeNotifier {
     if (_chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
+      _realExcludedLegacyByAccount = const {};
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -1351,10 +1463,13 @@ class WalletController extends ChangeNotifier {
     // Positions détenues (tout le patrimoine) mais SANS AUCUN mouvement
     // journalisé : exclues de la reconstruction — comptées ICI, avant les
     // retours anticipés ci-dessous, pour rester cohérentes avec `txsBySymbol`
-    // au même instant (cf. [_realExcludedLegacyCount]).
-    _realExcludedLegacyCount = _allPositionsData
-        .where((p) => !txsBySymbol.containsKey(p.symbol))
-        .length;
+    // au même instant (cf. [_realExcludedLegacyByAccount]).
+    final legacyByAccount = <String, List<String>>{};
+    for (final p in _allPositionsData) {
+      if (txsBySymbol.containsKey(p.symbol)) continue;
+      legacyByAccount.putIfAbsent(p.accountId, () => <String>[]).add(p.symbol);
+    }
+    _realExcludedLegacyByAccount = legacyByAccount;
 
     // Aucun titre JOURNALISÉ dans tout le patrimoine (positions 100 % legacy,
     // saisies sans mouvement) NI aucun compte cash ancré : la reconstruction ne
@@ -1366,10 +1481,15 @@ class WalletController extends ChangeNotifier {
     // livret ancré, zéro titre » — le cas d'usage central du lot — a bien une
     // histoire à reconstruire (l'escalier de son journal) ; sans cet
     // élargissement il n'afficherait JAMAIS le mode 2.
+    //
+    // [_realExcludedLegacyByAccount] N'EST PAS remis à vide ici (bug constaté
+    // à l'écran, doc privé) : sur un patrimoine 100 % hérité, c'est justement
+    // cette liste — déjà calculée juste au-dessus — qui indique où se trouvent
+    // les positions à déclarer, faute de courbe réelle à montrer à la place.
+    // Ne réinitialiser que ce qui présuppose une reconstruction.
     if (txsBySymbol.isEmpty && !_hasAnchoredCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;

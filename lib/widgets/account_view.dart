@@ -3,7 +3,9 @@ import 'package:decimal/decimal.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/controllers/account_controller.dart';
+import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 // [isHeldPosition] vit désormais dans `logic/position_projection.dart`
 // (réutilisée par [HistoryAggregator.computeRealTotalGain], doc 19) —
 // importée ci-dessous pour l'usage local de ce fichier, RÉ-EXPORTÉE pour ne
@@ -28,12 +30,14 @@ import 'package:portfolio_tracker/widgets/position_detail_page.dart';
 import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 import 'package:portfolio_tracker/widgets/charts/chart_notes.dart';
+import 'package:portfolio_tracker/widgets/charts/inline_links_caption.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 import 'package:portfolio_tracker/widgets/account_journal_page.dart';
 import 'package:portfolio_tracker/widgets/cash_opening_balance_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/empty_state.dart';
 import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
+import 'package:portfolio_tracker/widgets/initial_position_dialog.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
 import 'package:portfolio_tracker/widgets/import/statement_import_page.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
@@ -85,16 +89,104 @@ class _AccountViewState extends State<AccountView> {
   /// (même base que le contrôleur).
   final TransactionStorage _txStorage = TransactionStorage();
 
-  /// Mode de courbe sélectionné par l'utilisateur (performance / évolution
-  /// réelle B7, design doc 18, MÊME motif que wallet_view Lot 3a). Combiné à
-  /// [AccountController.hasRealCurve] via [_useRealCurve] : robustesse si la
-  /// courbe réelle s'avère indisponible malgré la bascule utilisateur.
-  // Défaut à true (retour manuel du 29/07) : l'évolution réelle reflète ce
-  // qui s'est VRAIMENT passé, contrairement au mode « Vos positions »
-  // (rétroprojection théorique) — sans effet tant que hasRealCurve est faux
-  // (le sélecteur est alors masqué et _useRealCurve retombe à false via le
-  // && ci-dessous).
-  bool _showRealCurve = true;
+  /// Mode de courbe affiché par le sélecteur (performance / évolution réelle
+  /// B7, design doc 18, MÊME motif que wallet_view Lot 3a).
+  ///
+  /// N'est PLUS un champ initialisé à `true` : le défaut reste le mode réel
+  /// (retour manuel du 29/07 — il reflète ce qui s'est VRAIMENT passé,
+  /// contrairement à la rétroprojection théorique « Vos positions »), mais
+  /// désormais SOUS GARDE DE QUALITÉ et DERRIÈRE le choix persisté de
+  /// l'utilisateur (cf. [resolveUseRealCurve]). La couverture n'étant connue
+  /// qu'APRÈS le calcul asynchrone du contrôleur, la résolution doit se faire
+  /// au build, pas dans `initState`.
+  bool get _showRealCurve => resolveUseRealCurve(
+        persistedChoice: ChartModeController.shared().choiceFor(
+          ChartModeScope.account,
+        ),
+        hasRealCurve: _ctrl.hasRealCurve,
+        coverage: _ctrl.realCurveCoverage,
+      );
+
+  /// Vrai quand la politique a basculé d'elle-même sur « Vos positions » —
+  /// aucun choix de l'utilisateur pour cette portée ET couverture
+  /// insuffisante. Pilote la note explicative sous le graphe (ChartNotes) :
+  /// une bascule silencieuse serait incompréhensible.
+  bool get _autoFallbackToPositions =>
+      _ctrl.hasRealCurve &&
+      ChartModeController.shared().choiceFor(ChartModeScope.account) == null &&
+      isRealCurveIncomplete(_ctrl.realCurveCoverage);
+
+  /// Traduit [AccountController.realExcludedLegacySymbols] en entrées
+  /// cliquables pour la note sous le graphe. Un tap ouvre la déclaration de
+  /// l'opération d'origine du titre touché.
+  List<InlineLinkSpec> _buildLegacySymbolLinks() {
+    return [
+      for (final symbol in _ctrl.realExcludedLegacySymbols)
+        InlineLinkSpec(
+          label: symbol,
+          onTap: () => _declareInitialPosition(symbol),
+        ),
+    ];
+  }
+
+  /// Déclare l'opération d'origine d'une position HÉRITÉE : ouvre le dialogue
+  /// de position initiale PRÉREMPLI (quantité détenue + PRU connu), puis émet
+  /// l'`openingBalance` via le contrôleur, qui recharge le compte — la
+  /// position quitte alors [AccountController.realExcludedLegacySymbols] et
+  /// la courbe réelle se recalcule avec elle.
+  ///
+  /// LE SYMBOLE VIENT DE LA NOTE, la position de la liste COURANTE : entre le
+  /// build qui a posé le lien et le tap, un rechargement a pu faire
+  /// disparaître la ligne (suppression, changement de compte). On abandonne
+  /// alors silencieusement plutôt que de déclarer une position fantôme.
+  ///
+  /// ⚠️ N'est proposé QUE sur les symboles de [realExcludedLegacySymbols], qui
+  /// sont par définition sans aucun mouvement journalisé : c'est la condition
+  /// que [AccountController.declareInitialPosition] exige pour ne pas
+  /// double-compter (l'openingBalance s'ajoute à la projection du journal).
+  Future<void> _declareInitialPosition(String symbol) async {
+    final l10n = AppLocalizations.of(context)!;
+    final index = _ctrl.positionsData.indexWhere((p) => p.symbol == symbol);
+    if (index < 0) return;
+    final position = _ctrl.positionsData[index].position;
+
+    final outcome = await showDialog<InitialPositionOutcome>(
+      context: context,
+      builder: (_) => InitialPositionDialog(
+        currency: position.currency,
+        symbol: symbol,
+        initialQuantity: position.quantity,
+        initialUnitPrice: position.averageBuyPrice?.toString(),
+      ),
+    );
+    if (outcome == null || !mounted) return;
+
+    try {
+      await _ctrl.declareInitialPosition(
+        symbol: symbol,
+        quantity: outcome.quantity,
+        unitPrice: outcome.unitPrice,
+        date: outcome.date,
+        note: outcome.note,
+      );
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          l10n.initialPositionDeclared,
+          type: SnackType.success,
+        );
+      }
+    } catch (e, st) {
+      AppLogger.error('Erreur déclaration de position initiale', e, st);
+      if (mounted) {
+        showAppSnackBar(
+          context,
+          l10n.modificationError,
+          type: SnackType.error,
+        );
+      }
+    }
+  }
 
   /// Mode réel EFFECTIVEMENT actif (garde de robustesse — cf. wallet_view) :
   /// si l'utilisateur a basculé sur « évolution réelle » mais que la série
@@ -109,10 +201,12 @@ class _AccountViewState extends State<AccountView> {
   /// les cours historiques font varier ce mode même à quantités fixes).
   /// Offrir un choix dont une branche est tautologiquement inutile n'a pas de
   /// sens : dès qu'une courbe réelle existe, on la force, sans dépendre de
-  /// [_showRealCurve] (dont le sélecteur est d'ailleurs masqué, cf.
-  /// `_buildAccountChartSection`).
+  /// [_showRealCurve] NI de la garde de couverture (dont le sélecteur est
+  /// d'ailleurs masqué, cf. `_buildAccountChartSection`) — sur un livret la
+  /// couverture vaut de toute façon ~1, le dernier point de la grille
+  /// synthétique étant le solde dérivé du jour.
   bool get _useRealCurve =>
-      (_showRealCurve || _isCashAccount) && _ctrl.hasRealCurve;
+      _showRealCurve || (_isCashAccount && _ctrl.hasRealCurve);
 
   /// Vrai pour un compte de type [AccountType.cash] (livret, compte courant) :
   /// repli « compte sans titre » (B8, doc 19 §4.5) — pas de positions à
@@ -1323,49 +1417,12 @@ class _AccountViewState extends State<AccountView> {
 
     final account = _ctrl.activeAccount!;
 
-    double totalValueEur;
-    if (_isCashAccount) {
-      // Un livret n'a aucune position : sa valeur EST son solde espèces
-      // (dérivé du journal si ancré, `cash_balance` legacy sinon — même règle
-      // que WalletController.loadAllData, B8 doc 19 §4.4/§4.5).
-      final cashRaw = _ctrl.hasCashAnchor
-          ? double.tryParse(_ctrl.derivedCash ?? '0') ?? 0
-          : account.cashBalance ?? 0.0;
-      totalValueEur = account.currency.toUpperCase() == 'USD'
-          ? cashRaw * _ctrl.usdToEurRate
-          : cashRaw;
-    } else {
-      totalValueEur = 0;
-      for (final positionData in _ctrl.positionsData) {
-        final price = positionData.currentPrice ?? 0;
-        final qtyNum = double.tryParse(positionData.quantity) ?? 0;
-        double value = price * qtyNum;
-        if (positionData.asset.currency.toUpperCase() == 'USD') {
-          value = value * _ctrl.usdToEurRate;
-        }
-        totalValueEur += value;
-      }
-      // Cash dérivé du journal (achats/ventes/frais) : fait partie de la
-      // valeur détenue du compte, même règle que le capital du gain total
-      // mode 2 — l'omettre désynchronisait « Valeur totale » du solde
-      // « Espèces » affiché en dessous et de la courbe « Évolution réelle ».
-      //
-      // GARDE D'ANCRAGE, non négociable (invariant « faux négatif interdit »,
-      // design cash-ledger §6.7 / partition doc 19 §6.5) : sur un compte
-      // titres SANS mouvement d'espèces au journal, [AccountController.
-      // derivedCash] vaut « ce que les achats ont coûté », soit un solde
-      // NÉGATIF FICTIF (cache `accounts.derived_cash`, écrit
-      // inconditionnellement — sa non-nullité ne protège de rien, seul
-      // [hasCashAnchor] protège). L'ajouter retranchait silencieusement ce
-      // montant du total, sans RIEN à l'écran pour l'expliquer : la ligne
-      // « dont espèces » est elle-même gatée sur l'ancrage et reste muette.
-      // Même garde que la branche [_isCashAccount] ci-dessus, que
-      // [WalletController._cashBalances] et que [reconstructRealNetWorth].
-      if (_ctrl.hasCashAnchor) {
-        totalValueEur += (double.tryParse(_ctrl.derivedCash ?? '0') ?? 0.0) *
-            (account.currency.toUpperCase() == 'USD' ? _ctrl.usdToEurRate : 1.0);
-      }
-    }
+    // Valeur mise en avant du compte (titres au dernier cours connu +
+    // espèces, garde d'ancrage comprise) : le calcul a migré dans
+    // [AccountController.currentTotalValueEur], désormais partagé avec
+    // [AccountController.realCurveCoverage] — deux copies auraient fini par
+    // diverger sur la garde d'ancrage.
+    final double totalValueEur = _ctrl.currentTotalValueEur;
 
     // Ligne « dont espèces » (épuration UI, lot 3) : sur un compte-titres
     // ANCRÉ uniquement — elle explicite une composante de [totalValueEur]
@@ -1590,7 +1647,16 @@ class _AccountViewState extends State<AccountView> {
                             visualDensity: VisualDensity.compact,
                           ),
                           onSelectionChanged: (selection) {
-                            setState(() => _showRealCurve = selection.first);
+                            // Choix EXPLICITE : persisté pour cette portée
+                            // (préférence d'appareil), il prime dès lors sur
+                            // la résolution automatique. La valeur est posée
+                            // en mémoire avant l'await du disque, donc déjà
+                            // relue par le rebuild ci-dessous.
+                            ChartModeController.shared().setChoice(
+                              ChartModeScope.account,
+                              selection.first,
+                            );
+                            setState(() {});
                           },
                         ),
                       ),
@@ -1693,6 +1759,24 @@ class _AccountViewState extends State<AccountView> {
                     realCurveApproxSymbolsCount:
                         _ctrl.realCurveApproxSymbols.length,
                     realUnanchoredRevenueEur: _ctrl.realUnanchoredRevenueEur,
+                    realCurveCoverage: _ctrl.realCurveCoverage,
+                    autoFallbackToPositions: _autoFallbackToPositions,
+                    // Positions héritées NOMMÉES par leur SYMBOLE : ici, on
+                    // sait agir sur un titre — toucher son nom ouvre la
+                    // déclaration de son opération d'origine.
+                    realExcludedLegacyLinks: _buildLegacySymbolLinks(),
+                    realExcludedLegacyHint:
+                        l10n.chartRealExcludedLegacyDeclareHint,
+                    // Cf. ChartNotes.suppressCoverageNotes : pendant un
+                    // rechargement d'historique, le ratio croise l'ANCIENNE
+                    // courbe et le NOUVEAU total.
+                    suppressCoverageNotes: _ctrl.isLoadingHistory,
+                    // Compte 100 % hérité (bug constaté à l'écran, doc privé) :
+                    // aucune courbe réelle à proposer — la note des positions
+                    // héritées change alors de préfixe (« pas d'évolution
+                    // réelle à reconstruire », pas « ne figure pas dans cette
+                    // courbe »).
+                    realCurveAvailable: _ctrl.hasRealCurve,
                   ),
                 ],
               ),

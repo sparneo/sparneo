@@ -143,6 +143,10 @@ class AccountController extends ChangeNotifier {
   // mode 1 du compte ([HistoryAggregator.aggregateHistoricalData], titres seuls
   // sans cash) : le petit écart au basculement est le solde espèces, assumé.
   List<double> _realChartValues = [];
+  // Dernière couverture calculée HORS chargement (cf. [realCurveCoverage]) —
+  // gèle le getter pendant un rechargement pour que le sélecteur de mode ne
+  // bascule pas le temps du recalcul.
+  double? _lastKnownCoverage;
   // Symboles dont la valeur, à au moins une date, provient d'un repli
   // « dernier cours connu » (pas un vrai historique de marché) — badge UI.
   Set<String> _realCurveApproxSymbols = {};
@@ -150,10 +154,14 @@ class AccountController extends ChangeNotifier {
   // main, sans aucun mouvement associé) — donc EXCLUES de la reconstruction
   // ci-dessus (`currentPositions` dont le symbole n'est pas clé de
   // `txsBySymbol`, cf. [_computeAccountRealCurve]). Alimente l'avertissement
-  // de complétude UI, désormais conditionnel ET chiffré (épuration UI,
-  // remplace l'ancienne phrase inconditionnelle) : `0` sur un compte cash, qui
-  // n'a par construction aucune position.
-  int _realExcludedLegacyCount = 0;
+  // de complétude UI, désormais conditionnel, chiffré ET NOMMÉ (épuration UI,
+  // remplace l'ancienne phrase inconditionnelle) : vide sur un compte cash,
+  // qui n'a par construction aucune position.
+  // NOMMÉES et non seulement comptées : l'écran compte, lui, sait AGIR sur un
+  // titre (déclarer son opération d'origine, cf. [declareInitialPosition]) —
+  // il cite donc les symboles. Ordre de [_positionsData] au moment du calcul,
+  // stable d'un rendu à l'autre.
+  List<String> _realExcludedLegacySymbols = const [];
 
   // Courbe des FLUX EXTERNES CUMULÉS du compte (B7 correction financière,
   // design §11.4 — ex-« apports nets », désormais [HistoryAggregator.
@@ -272,14 +280,115 @@ class AccountController extends ChangeNotifier {
   /// badge « valeurs approchées ».
   Set<String> get realCurveApproxSymbols => _realCurveApproxSymbols;
 
+  /// Symboles détenus sur le compte actif sans AUCUN mouvement journalisé,
+  /// donc absents de [realChartValues] — cf. [_realExcludedLegacySymbols].
+  /// Vide = rien n'est exclu (notamment tout compte cash, sans position par
+  /// construction). C'est la liste que la note sous le graphe NOMME, et dont
+  /// chaque entrée ouvre la déclaration de l'opération d'origine.
+  ///
+  /// PEUT être non vide alors que [hasRealCurve] est faux : un compte 100 %
+  /// hérité (aucun titre journalisé) n'a pas de courbe réelle à montrer, mais
+  /// c'est justement là que cette liste importe le plus — c'est tout ce qu'il
+  /// y a à déclarer pour un jour en obtenir une.
+  List<String> get realExcludedLegacySymbols =>
+      List<String>.unmodifiable(_realExcludedLegacySymbols);
+
   /// Nombre de positions détenues sans AUCUN mouvement journalisé, donc
-  /// absentes de [realChartValues] — cf. [_realExcludedLegacyCount]. `0` =
-  /// rien n'est exclu (notamment tout compte cash, sans position par
-  /// construction).
-  int get realExcludedLegacyCount => _realExcludedLegacyCount;
+  /// absentes de [realChartValues]. `0` = rien n'est exclu.
+  ///
+  /// DÉRIVÉ de [realExcludedLegacySymbols] : un seul champ écrit, donc jamais
+  /// un chiffre qui contredirait la liste affichée juste à côté.
+  int get realExcludedLegacyCount => _realExcludedLegacySymbols.length;
 
   /// Vrai si une courbe mode 2 est disponible pour l'affichage.
   bool get hasRealCurve => _realChartValues.isNotEmpty;
+
+  /// Valeur COURANTE du compte en EUR, telle que l'écran la met en avant
+  /// (« Valeur totale ») : titres au dernier cours connu + espèces.
+  ///
+  /// Vit ICI et non dans la vue depuis l'ajout de [realCurveCoverage] : les
+  /// deux en ont besoin, et deux calculs parallèles auraient fini par diverger
+  /// sur la GARDE D'ANCRAGE ci-dessous — la subtilité qui compte.
+  ///
+  /// GARDE D'ANCRAGE, non négociable (invariant « faux négatif interdit »,
+  /// design cash-ledger §6.7 / partition doc 19 §6.5) : sur un compte SANS
+  /// mouvement d'espèces au journal, [derivedCash] vaut « ce que les achats
+  /// ont coûté », soit un solde NÉGATIF FICTIF (le cache `accounts.
+  /// derived_cash` est écrit inconditionnellement — sa non-nullité ne protège
+  /// de rien, seul [hasCashAnchor] protège). Même garde que
+  /// [WalletController._cashBalances] et que [reconstructRealNetWorth].
+  double get currentTotalValueEur {
+    final account = _activeAccount;
+    if (account == null) return 0.0;
+    final cashRate =
+        account.currency.toUpperCase() == 'USD' ? _usdToEurRate : 1.0;
+
+    if (account.type == AccountType.cash) {
+      // Un livret n'a aucune position : sa valeur EST son solde espèces
+      // (dérivé du journal si ancré, `cash_balance` legacy sinon — même règle
+      // que WalletController.loadAllData, B8 doc 19 §4.4/§4.5).
+      final cashRaw = _hasCashAnchor
+          ? (double.tryParse(_derivedCash ?? '0') ?? 0.0)
+          : (account.cashBalance ?? 0.0);
+      return cashRaw * cashRate;
+    }
+
+    var total = 0.0;
+    for (final positionData in _positionsData) {
+      final price = positionData.currentPrice ?? 0;
+      final qty = double.tryParse(positionData.quantity) ?? 0;
+      var value = price * qty;
+      if (positionData.asset.currency.toUpperCase() == 'USD') {
+        value *= _usdToEurRate;
+      }
+      total += value;
+    }
+    // Cash dérivé du journal : fait partie de la valeur détenue du compte.
+    if (_hasCashAnchor) {
+      total += (double.tryParse(_derivedCash ?? '0') ?? 0.0) * cashRate;
+    }
+    return total;
+  }
+
+  /// COUVERTURE de la courbe réelle : part de la valeur COURANTE du compte
+  /// que représente son dernier point (`realChartValues.last /
+  /// currentTotalValueEur`). `null` sans courbe réelle, ou si la valeur
+  /// courante est ≤ 0 (ratio dénué de sens). Alimente la politique de mode par
+  /// défaut (`lib/logic/chart_mode_policy.dart`) et la note chiffrée sous le
+  /// graphe.
+  ///
+  /// CE QUE PÈSE LE DERNIER POINT (vérifié dans [_computeAccountRealCurve]) —
+  /// à la dernière date de la grille affichée (la plus récente, grilles
+  /// triées) : les titres JOURNALISÉS du compte au dernier cours HISTORIQUE
+  /// de la fenêtre, PLUS le cash dérivé du compte s'il est ancré (gating
+  /// [journalHasCashAnchor] appliqué par [reconstructRealNetWorth]) — le même
+  /// terme d'espèces, sous la même garde, que [currentTotalValueEur]. Il lui
+  /// manque donc, face à la valeur courante : les positions HÉRITÉES (cf.
+  /// [realExcludedLegacyCount]), un titre journalisé sans aucun cours
+  /// exploitable, et l'écart de source de prix (dernier cours historique vs
+  /// cotation live) que le seuil de la politique absorbe.
+  ///
+  /// Compte CASH ancré : le dernier point de la grille synthétique est
+  /// `now` et vaut le solde dérivé courant — la couverture y est ~1, la garde
+  /// n'y change donc rien (la vue y force de toute façon le mode réel).
+  ///
+  /// GEL pendant un rechargement ([_isLoadingHistory]) : `_realChartValues`
+  /// est alors l'ANCIENNE courbe alors que `currentTotalValueEur` peut déjà
+  /// refléter une NOUVELLE valorisation — recalculer ici donnerait un ratio
+  /// incohérent, et donc un bascule intempestif du sélecteur de mode le temps
+  /// du calcul. On fige alors la dernière valeur connue
+  /// ([_lastKnownCoverage]) : le getter ne recalcule et ne met à jour ce cache
+  /// QUE hors chargement.
+  double? get realCurveCoverage {
+    if (_isLoadingHistory) return _lastKnownCoverage;
+    double? result;
+    if (_realChartValues.isNotEmpty) {
+      final total = currentTotalValueEur;
+      if (total > 0) result = _realChartValues.last / total;
+    }
+    _lastKnownCoverage = result;
+    return result;
+  }
 
   /// Courbe des apports nets cumulés du compte (B7 Lot 3b), ALIGNÉE
   /// index-par-index sur [chartDates]/[realChartValues]. Vide tant qu'aucun
@@ -710,7 +819,7 @@ class AccountController extends ChangeNotifier {
       _periodChangePercent = null;
       _realChartValues = [];
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
+      _realExcludedLegacySymbols = const [];
       _realContributionsValues = [];
       _resetRealGains();
       _safeNotify();
@@ -780,7 +889,7 @@ class AccountController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
-        _realExcludedLegacyCount = 0;
+        _realExcludedLegacySymbols = const [];
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -890,7 +999,7 @@ class AccountController extends ChangeNotifier {
         );
         _realChartValues = [];
         _realCurveApproxSymbols = {};
-        _realExcludedLegacyCount = 0;
+        _realExcludedLegacySymbols = const [];
         _realContributionsValues = [];
         _resetRealGains();
       }
@@ -945,7 +1054,7 @@ class AccountController extends ChangeNotifier {
     if (_activeAccount == null || _chartDates.isEmpty) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
+      _realExcludedLegacySymbols = const [];
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -966,10 +1075,11 @@ class AccountController extends ChangeNotifier {
     // Positions détenues mais SANS AUCUN mouvement journalisé : exclues de la
     // reconstruction (aucun historique pour les projeter) — comptées ICI,
     // avant les retours anticipés ci-dessous, pour rester cohérentes avec
-    // `txsBySymbol` au même instant (cf. [_realExcludedLegacyCount]).
-    _realExcludedLegacyCount = currentPositions
-        .where((p) => !txsBySymbol.containsKey(p.symbol))
-        .length;
+    // `txsBySymbol` au même instant (cf. [_realExcludedLegacySymbols]).
+    _realExcludedLegacySymbols = [
+      for (final p in currentPositions)
+        if (!txsBySymbol.containsKey(p.symbol)) p.symbol,
+    ];
 
     // Aucun titre JOURNALISÉ (compte 100 % legacy, saisi à la main sans
     // mouvement) : le mode 2 serait une courbe plate à 0 (rien à reconstruire),
@@ -981,12 +1091,18 @@ class AccountController extends ChangeNotifier {
     // est la NORME et où le journal porte au contraire toute l'histoire du
     // compte. La garde reste stricte pour un compte TITRES sans titre
     // journalisé (le raisonnement ci-dessus y vaut toujours).
+    //
+    // [_realExcludedLegacySymbols] N'EST PAS remis à vide ici (bug constaté à
+    // l'écran, doc privé) : sur un compte 100 % hérité, c'est justement CETTE
+    // liste — déjà calculée juste au-dessus — qui indique à l'utilisateur ce
+    // qu'il a à déclarer, faute de courbe réelle à lui montrer à la place. Ne
+    // réinitialiser que ce qui présuppose une reconstruction (courbe,
+    // approximations, flux, gains).
     final isJournaledCashAccount =
         _activeAccount!.type == AccountType.cash && journalHasCashAnchor(txs);
     if (txsBySymbol.isEmpty && !isJournaledCashAccount) {
       _realChartValues = [];
       _realCurveApproxSymbols = {};
-      _realExcludedLegacyCount = 0;
       _realContributionsValues = [];
       _resetRealGains();
       return;
@@ -1293,6 +1409,68 @@ class AccountController extends ChangeNotifier {
     // mouvements du même symbole). Un journal vide (position legacy) est un
     // no-op sur transactions ; la ligne positions est supprimée dans tous les cas.
     await _ledger.deletePositionWithJournal(_activeAccount!.id, symbol);
+    await _initService();
+  }
+
+  /// Déclare l'OPÉRATION D'ORIGINE d'une position HÉRITÉE (détenue, journal
+  /// entièrement vide) : émet un `openingBalance` TITRE déclaratif puis
+  /// recharge le compte, de sorte que la position rejoigne la reconstruction
+  /// « Évolution réelle » (elle n'est plus dans [realExcludedLegacySymbols]).
+  ///
+  /// POURQUOI `openingBalance` ET PAS `buy` — c'est LE point du lot :
+  ///   - un `buy` porte `amount = -(q×p + frais)`, sommé tel quel par
+  ///     [LedgerService.reprojectCashWithin] : déclarer aujourd'hui l'achat
+  ///     d'un lot acquis il y a dix ans RETRANCHERAIT son coût du solde
+  ///     espèces dérivé du compte, sans rien à l'écran pour l'expliquer. Un
+  ///     `openingBalance` TITRE a `amount == null` PAR CONSTRUCTION (invariant
+  ///     de partition des champs, `position_projection.dart`) : zéro effet
+  ///     cash ;
+  ///   - un `buy` entre dans le CAPITAL INVESTI comme flux d'espèces daté du
+  ///     jour ; l'`openingBalance` y entre comme ENTRÉE DE TITRES valorisée au
+  ///     cours du jour de l'opération, ce qui est exactement ce qui s'est
+  ///     passé (les titres sont entrés dans le périmètre, l'argent non) ;
+  ///   - c'est déjà la convention du projet pour toute position saisie à la
+  ///     main : [addNewPosition] et [addNewPreciousMetal] émettent le même
+  ///     mouvement. Déclarer l'origine d'une position héritée, c'est lui
+  ///     donner l'acte de naissance que les positions récentes ont déjà.
+  ///
+  /// AUCUN DOUBLE COMPTAGE : [LedgerService.recordTransaction] reprojette le
+  /// symbole par un UPDATE de `positions.quantity` avec la projection du
+  /// journal ENTIER — la quantité déclarée REMPLACE la quantité détenue, elle
+  /// ne s'y ajoute pas. Sur un journal vide, projeter le seul `openingBalance`
+  /// redonne donc exactement la quantité saisie. ⚠️ Corollaire : n'appeler
+  /// que sur une position au journal VIDE (l'appelant le garantit via
+  /// [realExcludedLegacySymbols]) — sur un journal existant, l'openingBalance
+  /// s'AJOUTERAIT à la projection.
+  ///
+  /// [unitPrice] optionnel (base de coût inconnue = PRU null, cf.
+  /// [LedgerService.emitOpeningBalance]). [date] est celle de l'opération
+  /// d'origine : plus elle est juste, plus la courbe réelle l'est.
+  Future<void> declareInitialPosition({
+    required String symbol,
+    required String quantity,
+    String? unitPrice,
+    required DateTime date,
+    String? note,
+  }) async {
+    final account = _activeAccount;
+    if (account == null) return;
+    final index = _positionsData.indexWhere((p) => p.symbol == symbol);
+    if (index < 0) return;
+    final position = _positionsData[index].position;
+
+    await _ledger.emitOpeningBalance(
+      accountId: account.id,
+      symbol: symbol,
+      quantity: quantity,
+      unitPrice: unitPrice,
+      // Devise de COTATION de l'actif (celle du PRU) — même contrat que
+      // [addNewPosition], jamais la devise du compte.
+      currency: position.asset.currency,
+      date: date,
+      declarative: true,
+      note: note,
+    );
     await _initService();
   }
 

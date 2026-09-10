@@ -4,7 +4,10 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
 import 'package:portfolio_tracker/widgets/common/help_dialog.dart';
+import 'package:portfolio_tracker/widgets/initial_position_dialog.dart';
+import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 import 'package:portfolio_tracker/utils/localized_labels.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/position.dart';
@@ -111,6 +114,11 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   List<DateTime> _realDates = [];
   List<double> _realValues = [];
 
+  /// Dernière couverture calculée HORS chargement (cf. [_realCurveCoverage]) —
+  /// gèle le getter pendant un rechargement pour que le sélecteur de mode ne
+  /// bascule pas le temps du recalcul.
+  double? _lastKnownCoverage;
+
   /// Capital investi cumulé de la position (coût d'acquisition), aligné
   /// index-par-index sur [_realDates] — l'écart à [_realValues] EST la
   /// plus-value latente.
@@ -123,14 +131,80 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   double? _realPeriodGainPercent;
   double? _realPeriodGainPercentAnnualized;
 
-  /// Mode réel par défaut, comme les écrans compte et patrimoine (Lot 8).
-  bool _showRealCurve = true;
-
   /// Une courbe réelle n'existe que si la position a un journal exploitable —
   /// une position legacy (saisie à la main, journal vide) n'a rien à
   /// reconstruire. Le sélecteur est alors masqué, jamais offert à vide.
   bool get _hasRealCurve => _realValues.isNotEmpty;
-  bool get _useRealCurve => _showRealCurve && _hasRealCurve;
+
+  /// COUVERTURE de la courbe réelle : part de la valeur COURANTE de la ligne
+  /// que représente son dernier point. `null` sans courbe réelle, ou si la
+  /// valeur courante est ≤ 0 (cotation absente, ratio dénué de sens).
+  ///
+  /// Dernier point = quantité REJOUÉE depuis le journal à la dernière date de
+  /// la grille (la plus récente : la grille est triée), valorisée au cours
+  /// HISTORIQUE de cette date. Face à `prix live × quantité projetée`, il lui
+  /// manque donc l'écart de source de prix (quelques %, absorbé par le seuil)
+  /// et surtout tout mouvement NON journalisé de cette ligne — un renfort
+  /// saisi à la main sans mouvement fait chuter le ratio, et c'est bien
+  /// l'incomplétude que l'on veut nommer.
+  ///
+  /// GEL pendant un rechargement ([_isLoadingHistory]) : `_realValues` (posé
+  /// par [_computeRealCurve], appelé depuis [_loadHistoricalData]) peut être
+  /// l'ANCIENNE courbe alors que `_currentValueEur` (cotation live, chargée
+  /// par [_loadCurrentPrice], EN PARALLÈLE) a déjà changé — recalculer ici
+  /// donnerait un ratio incohérent, et donc un bascule intempestif du
+  /// sélecteur de mode le temps du calcul. On fige alors la dernière valeur
+  /// connue ([_lastKnownCoverage]). NB : [_loadCurrentPrice] n'a pas son
+  /// propre indicateur de chargement — mais ses deux seuls appelants
+  /// ([initState] et l'éditeur de poids/prime des métaux précieux)
+  /// déclenchent TOUJOURS aussi [_loadHistoricalData] au même instant, donc
+  /// [_isLoadingHistory] couvre déjà la fenêtre où les deux pourraient
+  /// diverger — inutile d'ajouter un second indicateur.
+  double? get _realCurveCoverage {
+    if (_isLoadingHistory) return _lastKnownCoverage;
+    double? result;
+    if (_realValues.isNotEmpty) {
+      final current = _currentValueEur;
+      if (current > 0) result = _realValues.last / current;
+    }
+    _lastKnownCoverage = result;
+    return result;
+  }
+
+  /// Valeur courante de la ligne en EUR (cotation live × quantité projetée),
+  /// `0` tant que la cotation n'est pas revenue.
+  double get _currentValueEur {
+    final qty = double.tryParse(_quantity) ?? 0;
+    final value = (_currentPrice ?? 0) * qty;
+    return _currentPosition.currency.toUpperCase() == 'USD'
+        ? value * _usdToEurRate
+        : value;
+  }
+
+  /// Mode de courbe affiché par le sélecteur. Le défaut reste le mode réel
+  /// (comme les écrans compte et patrimoine, Lot 8), mais désormais SOUS
+  /// GARDE DE QUALITÉ et DERRIÈRE le choix persisté de l'utilisateur pour la
+  /// portée « position » — la couverture n'étant connue qu'APRÈS la
+  /// reconstruction, la résolution se fait AU BUILD, pas dans `initState`.
+  bool get _showRealCurve => resolveUseRealCurve(
+        persistedChoice: ChartModeController.shared().choiceFor(
+          ChartModeScope.position,
+        ),
+        hasRealCurve: _hasRealCurve,
+        coverage: _realCurveCoverage,
+      );
+
+  /// Vrai quand la politique a basculé d'elle-même sur « Vos positions »
+  /// (aucun choix de l'utilisateur pour cette portée ET couverture
+  /// insuffisante) — pilote la note explicative sous le graphe.
+  bool get _autoFallbackToPositions =>
+      _hasRealCurve &&
+      ChartModeController.shared().choiceFor(ChartModeScope.position) == null &&
+      isRealCurveIncomplete(_realCurveCoverage);
+
+  /// Mode réel EFFECTIVEMENT actif (la garde `hasRealCurve` est déjà dans
+  /// [resolveUseRealCurve]).
+  bool get _useRealCurve => _showRealCurve;
 
   @override
   void initState() {
@@ -562,12 +636,32 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   ///
   /// Seule occasion de poser une base de coût (PRU optionnel). Émet un
   /// openingBalance déclaratif, souvent antidaté (date éditable).
-  Future<void> _openSetInitialPosition() async {
+  Future<void> _openSetInitialPosition({bool prefillFromHolding = false}) async {
     final l10n = AppLocalizations.of(context)!;
 
-    final outcome = await showDialog<_InitialPositionOutcome>(
+    // Garde de CORRECTION, pas de confort : l'openingBalance émis plus bas
+    // s'AJOUTE à la projection du journal (cf. LedgerService.
+    // reprojectSymbolWithin, qui rejoue le journal ENTIER). Le déclarer sur
+    // une ligne qui a déjà des mouvements DOUBLERAIT sa quantité. Les deux
+    // points d'entrée qui mènent ici sont déjà gatés sur un journal vide ;
+    // cette garde est la ceinture qui rend l'erreur impossible même si un
+    // futur appelant l'oublie.
+    if (_transactions.isNotEmpty) return;
+
+    final outcome = await showDialog<InitialPositionOutcome>(
       context: context,
-      builder: (_) => _InitialPositionDialog(currency: _currentPosition.currency),
+      builder: (_) => InitialPositionDialog(
+        currency: _currentPosition.currency,
+        symbol: prefillFromHolding ? _currentPosition.symbol : null,
+        // Préremplissage depuis ce qui est DÉTENU : déclarer l'opération
+        // d'origine, c'est reproduire l'état courant, pas le retaper. Le PRU
+        // connu suit — l'omettre effacerait une base de coût déjà saisie
+        // (l'openingBalance devient la seule source du PRU projeté).
+        initialQuantity: prefillFromHolding ? _quantity : null,
+        initialUnitPrice: prefillFromHolding
+            ? _currentPosition.averageBuyPrice?.toString()
+            : null,
+      ),
     );
     if (outcome == null || !mounted) return;
 
@@ -1083,6 +1177,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                   const SizedBox(height: 8),
                   _buildPeriodSelector(),
                   _buildModeSelector(),
+                  _buildNoJournalShortcut(),
                 ],
               ),
               const SizedBox(height: 16),
@@ -1110,8 +1205,10 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                 )
               else if (_historicalData == null || _historicalData!.isEmpty)
                 Center(child: Text(l10n.noHistoricalDataAvailable))
-              else
+              else ...[
                 _buildChart(),
+                _buildCoverageNote(),
+              ],
 
               const SizedBox(height: 24),
               _buildTransactionsSection(),
@@ -1323,6 +1420,41 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
+  /// Légende affichée À LA PLACE du sélecteur de mode quand la ligne n'a
+  /// AUCUN mouvement : dit pourquoi il n'y a qu'un mode ici.
+  ///
+  /// PLUS DE BOUTON ici (revue UX du 10/09/2026) : l'action qui fait naître la
+  /// courbe réelle (« Définir la position initiale… ») vit désormais SEULE
+  /// dans la carte d'info ci-dessus (badge « Non réconcilié » tapable + bouton
+  /// dédié) — deux gestes identiques à deux endroits du même écran ne
+  /// valaient pas mieux qu'un seul. La légende se contente de renvoyer vers
+  /// elle.
+  ///
+  /// La condition n'est PAS `!_hasRealCurve` seul : une courbe réelle peut
+  /// aussi manquer avec un journal NON vide (aucun cours exploitable sur la
+  /// fenêtre, par exemple) — dans ce cas la légende ne doit PAS s'afficher (il
+  /// n'y a alors rien à déclarer, et la carte au-dessus ne propose d'ailleurs
+  /// aucune action). D'où le gating conjoint sur un journal vide ET chargé —
+  /// pendant [_isLoadingTransactions], `_transactions` est encore vide et ne
+  /// prouve rien.
+  Widget _buildNoJournalShortcut() {
+    if (_hasRealCurve || _isLoadingTransactions || _transactions.isNotEmpty) {
+      return const SizedBox.shrink();
+    }
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        l10n.positionNoJournalCaption,
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
   /// Sélecteur de mode, identique à celui de l'écran compte — masqué tant
   /// qu'il n'y a pas de courbe réelle (une position legacy n'a qu'un mode : lui
   /// proposer un choix tautologique n'aurait aucun sens).
@@ -1360,7 +1492,15 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                 showSelectedIcon: false,
                 style: const ButtonStyle(visualDensity: VisualDensity.compact),
                 onSelectionChanged: (selection) {
-                  setState(() => _showRealCurve = selection.first);
+                  // Choix EXPLICITE : persisté pour la portée « position »
+                  // (préférence d'appareil), il prime dès lors sur la
+                  // résolution automatique. Posé en mémoire avant l'await du
+                  // disque, donc déjà relu par le rebuild ci-dessous.
+                  ChartModeController.shared().setChoice(
+                    ChartModeScope.position,
+                    selection.first,
+                  );
+                  setState(() {});
                 },
               ),
             ),
@@ -1414,10 +1554,9 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
 
     final currentPrice = _currentPrice ?? 0;
     final qtyNum = double.tryParse(_quantity) ?? 0;
-    double totalValueEur = currentPrice * qtyNum;
-    if (isUsd) {
-      totalValueEur = totalValueEur * _usdToEurRate;
-    }
+    // Même valeur que le dénominateur de [_realCurveCoverage] — un seul
+    // calcul, pour que la couverture mesure bien le total affiché ici.
+    final double totalValueEur = _currentValueEur;
 
     // ⭐ PLUS-VALUE LATENTE (uniquement si un PRU est défini)
     final pru = position.averageBuyPrice;
@@ -1485,50 +1624,91 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
               ],
             ),
 
-            // Badge « Non réconcilié » + action de réconciliation : affiché
-            // uniquement pour une position legacy (derived_at NULL — quantité/PRU
-            // saisis, jamais dérivés d'un journal).
-            if (_derivedAt == null) ...[
+            // Badge « Non réconcilié » + action UNIQUE : affiché dès qu'il n'y
+            // a PAS de projection fiable dérivée du journal — soit une
+            // position LEGACY (`derived_at` NULL), soit un journal VIDE
+            // (position déjà réconciliée puis vidée de tous ses mouvements,
+            // ex. suppressions). C'est le journal, PAS `derived_at`, qui
+            // décide de l'action proposée (constat UX du 10/09/2026) :
+            //   - journal VIDE  → « Définir la position initiale… » SEULE.
+            //     Le badge devient alors lui-même tapable (même action) pour
+            //     la découvrabilité. « Réconcilier » ne peut PAS être proposé
+            //     ici : sa confirmation dit « recalculé à partir du journal »,
+            //     ce qui serait faux, et son ancienne branche « journal vide »
+            //     datait le mouvement d'AUJOURD'HUI sans rien demander —
+            //     exactement les courbes tronquées que ce lot corrige.
+            //   - journal NON VIDE ET `derived_at == null` → « Réconcilier »
+            //     inchangé (badge non tapable, comme avant) : la confirmation
+            //     redevient vraie, il y a bien un journal à adopter.
+            if (!_isLoadingTransactions &&
+                (_derivedAt == null || _transactions.isEmpty)) ...[
               const SizedBox(height: 12),
               Row(
                 children: [
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    decoration: BoxDecoration(
-                      color: Theme.of(context)
-                          .colorScheme
-                          .surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.sync_problem_outlined,
-                          size: 14,
-                          color: Theme.of(context).colorScheme.onSurfaceVariant,
-                        ),
-                        const SizedBox(width: 4),
-                        Text(
-                          l10n.positionUnreconciledBadge,
-                          style: TextStyle(
-                            fontSize: 12,
+                  Builder(builder: (context) {
+                    final badge = Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 4,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context)
+                            .colorScheme
+                            .surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.sync_problem_outlined,
+                            size: 14,
                             color:
                                 Theme.of(context).colorScheme.onSurfaceVariant,
                           ),
+                          const SizedBox(width: 4),
+                          Text(
+                            l10n.positionUnreconciledBadge,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                    if (_transactions.isEmpty) {
+                      // Journal vide : le badge lui-même ouvre le dialogue
+                      // (même action que le bouton à droite).
+                      return Tooltip(
+                        message: l10n.setInitialPositionAction,
+                        child: InkWell(
+                          onTap: () => _openSetInitialPosition(
+                            prefillFromHolding: true,
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                          child: badge,
                         ),
-                      ],
-                    ),
-                  ),
+                      );
+                    }
+                    return badge;
+                  }),
                   const Spacer(),
-                  TextButton.icon(
-                    onPressed: _reconcilePosition,
-                    icon: const Icon(Icons.sync, size: 16),
-                    label: Text(l10n.reconcilePosition),
-                  ),
+                  if (_transactions.isEmpty)
+                    TextButton.icon(
+                      onPressed: () =>
+                          _openSetInitialPosition(prefillFromHolding: true),
+                      icon: const Icon(Icons.flag_outlined, size: 16),
+                      label: Text(l10n.setInitialPositionAction),
+                    )
+                  else
+                    TextButton.icon(
+                      onPressed: _reconcilePosition,
+                      icon: const Icon(Icons.sync, size: 16),
+                      label: Text(l10n.reconcilePosition),
+                    ),
                 ],
               ),
             ],
@@ -1557,27 +1737,24 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
               ],
             ),
 
-            // Action de journal explicite sur la quantité. Masquée tant que la
-            // position n'est pas réconciliée (`_derivedAt == null`) : le seul
-            // recours est alors le bouton « Réconcilier » ci-dessus. Masquée
-            // aussi pendant le chargement du journal : le choix ajuster/définir
-            // dépend de `_transactions` (vide ⇒ définir), qu'on ne veut pas
-            // trancher sur une liste encore incomplète.
-            if (_derivedAt != null && !_isLoadingTransactions) ...[
+            // « Ajuster la quantité… » — UNIQUEMENT position réconciliée
+            // (`_derivedAt != null`) ET journal NON vide : sur un journal
+            // vide, l'action à proposer est « Définir la position
+            // initiale… », déjà portée par le badge ci-dessus (qu'il soit
+            // legacy ou déjà réconciliée puis vidée — même geste dans les
+            // deux cas, cf. commentaire du badge). Masquée aussi pendant le
+            // chargement du journal : `_transactions` y est encore incomplet.
+            if (_derivedAt != null &&
+                !_isLoadingTransactions &&
+                _transactions.isNotEmpty) ...[
               const SizedBox(height: 4),
               Align(
                 alignment: Alignment.centerLeft,
-                child: _transactions.isEmpty
-                    ? TextButton.icon(
-                        onPressed: _openSetInitialPosition,
-                        icon: const Icon(Icons.flag_outlined, size: 16),
-                        label: Text(l10n.setInitialPositionAction),
-                      )
-                    : TextButton.icon(
-                        onPressed: _openAdjustQuantity,
-                        icon: const Icon(Icons.tune, size: 16),
-                        label: Text(l10n.adjustQuantityAction),
-                      ),
+                child: TextButton.icon(
+                  onPressed: _openAdjustQuantity,
+                  icon: const Icon(Icons.tune, size: 16),
+                  label: Text(l10n.adjustQuantityAction),
+                ),
               ),
             ],
             const SizedBox(height: 12),
@@ -1865,6 +2042,38 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
+  /// Note de COUVERTURE sous le graphe — cette page n'utilise pas [ChartNotes]
+  /// (pas de gain de période à y afficher), mais doit la même honnêteté que
+  /// les écrans compte et patrimoine : dire quand la reconstruction ne
+  /// représente qu'une fraction de la ligne, et pourquoi le mode a basculé de
+  /// lui-même. Rien à afficher quand la couverture est bonne (ou inconnue).
+  Widget _buildCoverageNote() {
+    final coverage = _realCurveCoverage;
+    if (!isRealCurveIncomplete(coverage)) return const SizedBox.shrink();
+    final useReal = _useRealCurve;
+    // Mode 1 CHOISI par l'utilisateur : la courbe affichée est complète, la
+    // couverture ne qualifie rien de ce qu'il regarde — on se tait.
+    if (!useReal && !_autoFallbackToPositions) return const SizedBox.shrink();
+
+    final l10n = AppLocalizations.of(context)!;
+    final theme = Theme.of(context);
+    final percent = (coverage! * 100).round().clamp(0, 100);
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        useReal
+            ? l10n.chartRealCoverageWarning(percent)
+            : l10n.chartRealCoverageFallbackCaption(percent),
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: useReal
+              ? theme.colorScheme.error
+              : theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
   Widget _buildChart() {
     if (_historicalData == null) return const SizedBox.shrink();
 
@@ -1927,12 +2136,21 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   // Section : analyse du journal (plus-value réalisée dérivée du journal)
   // ---------------------------------------------------------------------------
 
-  /// Réconcilie une position legacy (derived_at NULL) depuis son état courant
-  /// ou son journal (flux D3), après confirmation.
+  /// Réconcilie une position legacy (derived_at NULL) dont le journal est NON
+  /// VIDE, après confirmation : adopte le journal existant (reprojection),
+  /// SANS émettre d'openingBalance, pour ne pas double-compter.
   ///
-  ///   - journal VIDE  ⇒ emitOpeningBalance(quantité + PRU courants, declarative)
-  ///   - journal NON VIDE ⇒ adoption du journal (reprojection) SANS
-  ///     openingBalance, pour ne pas double-compter.
+  /// N'est proposée par l'UI (cf. le badge de [_buildInfoCard]) QUE journal
+  /// non vide — un journal vide propose « Définir la position initiale… » à
+  /// la place. Constat UX du 10/09/2026 : la confirmation ci-dessous
+  /// (« recalculés à partir du journal ») MENT sur un journal vide (rien à
+  /// recalculer), et l'ancienne branche D3 « journal vide » datait alors le
+  /// mouvement d'AUJOURD'HUI sans rien demander — exactement les courbes
+  /// tronquées que ce lot corrige. Le garde `journal.isEmpty` ci-dessous est
+  /// désormais purement DÉFENSIF (ex. le journal est vidé par ailleurs entre
+  /// l'ouverture de la confirmation et sa validation) : s'il est malgré tout
+  /// atteint, on ouvre le MÊME dialogue que le bouton « Définir la position
+  /// initiale… » plutôt que de reproduire l'ancien comportement muet.
   Future<void> _reconcilePosition() async {
     final l10n = AppLocalizations.of(context)!;
 
@@ -1962,22 +2180,14 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     try {
       final journal = await _txStorage.getBySymbol(accountId, symbol);
       if (journal.isEmpty) {
-        // D3 (journal vide) : la quantité/PRU legacy deviennent une position
-        // initiale déclarative.
-        await _ledger.emitOpeningBalance(
-          accountId: accountId,
-          symbol: symbol,
-          quantity: _currentPosition.quantity,
-          unitPrice: _currentPosition.averageBuyPrice?.toString(),
-          currency: _currentPosition.currency,
-          date: DateTime.now(),
-          declarative: true,
-        );
-      } else {
-        // D3 (journal non vide) : adoption — le ledger reprojette et pose
-        // derived_at, SANS émettre d'openingBalance (évite le double comptage).
-        await _ledger.reconcileFromJournal(accountId, symbol);
+        // Garde défensive (cf. doc-commentaire) : ne devrait plus être
+        // atteint depuis l'UI.
+        await _openSetInitialPosition(prefillFromHolding: true);
+        return;
       }
+      // Adoption — le ledger reprojette et pose derived_at, SANS émettre
+      // d'openingBalance (évite le double comptage).
+      await _ledger.reconcileFromJournal(accountId, symbol);
 
       await _reloadProjection();
       if (mounted) {
@@ -2432,190 +2642,6 @@ class _AdjustQuantityDialogState extends State<_AdjustQuantityDialog> {
                 }
               : null,
           child: Text(l10n.addAdjustmentButton),
-        ),
-      ],
-    );
-  }
-}
-
-// =============================================================================
-// Dialogue « Définir la position initiale » (position réconciliée, journal VIDE)
-// =============================================================================
-
-/// Résultat du dialogue de position initiale : quantité (normalisée), PRU
-/// optionnel (null = base de coût inconnue), date et note optionnelle.
-class _InitialPositionOutcome {
-  final String quantity;
-  final String? unitPrice;
-  final DateTime date;
-  final String? note;
-
-  const _InitialPositionOutcome({
-    required this.quantity,
-    required this.unitPrice,
-    required this.date,
-    required this.note,
-  });
-}
-
-class _InitialPositionDialog extends StatefulWidget {
-  final String currency;
-
-  const _InitialPositionDialog({required this.currency});
-
-  @override
-  State<_InitialPositionDialog> createState() => _InitialPositionDialogState();
-}
-
-class _InitialPositionDialogState extends State<_InitialPositionDialog> {
-  final _formKey = GlobalKey<FormState>();
-  late final TextEditingController _qtyCtrl;
-  late final TextEditingController _pruCtrl;
-  late final TextEditingController _noteCtrl;
-  late DateTime _date;
-
-  @override
-  void initState() {
-    super.initState();
-    _qtyCtrl = TextEditingController();
-    _pruCtrl = TextEditingController();
-    _noteCtrl = TextEditingController();
-    _date = DateTime.now();
-  }
-
-  @override
-  void dispose() {
-    _qtyCtrl.dispose();
-    _pruCtrl.dispose();
-    _noteCtrl.dispose();
-    super.dispose();
-  }
-
-  String _formatDate(DateTime dt) =>
-      '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
-
-  Future<void> _pickDate() async {
-    final picked = await showDatePicker(
-      context: context,
-      initialDate: _date,
-      firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(const Duration(days: 1)),
-    );
-    if (picked != null && mounted) setState(() => _date = picked);
-  }
-
-  void _submit() {
-    if (!_formKey.currentState!.validate()) return;
-    final pru = _pruCtrl.text.trim();
-    final note = _noteCtrl.text.trim();
-    Navigator.of(context).pop(
-      _InitialPositionOutcome(
-        quantity: _qtyCtrl.text.trim().replaceAll(',', '.'),
-        unitPrice: pru.isEmpty ? null : pru.replaceAll(',', '.'),
-        date: _date,
-        note: note.isEmpty ? null : note,
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-
-    return AlertDialog(
-      title: Text(l10n.setInitialPositionTitle),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: SingleChildScrollView(
-          child: Form(
-            key: _formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Quantité (requise, > 0).
-                TextFormField(
-                  controller: _qtyCtrl,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    labelText: l10n.quantityLabel,
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  validator: (v) {
-                    final t = (v ?? '').trim().replaceAll(',', '.');
-                    final n = double.tryParse(t);
-                    if (n == null || n <= 0) return l10n.invalidQuantity;
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 12),
-
-                // PRU OPTIONNEL (seule occasion de poser une base de coût).
-                TextFormField(
-                  controller: _pruCtrl,
-                  decoration: InputDecoration(
-                    labelText: l10n.averageBuyPriceLabel,
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                    helperText: l10n.optionalHint,
-                    suffixText:
-                        Formatters.formatCurrencySymbol(widget.currency),
-                  ),
-                  keyboardType:
-                      const TextInputType.numberWithOptions(decimal: true),
-                  validator: (v) {
-                    final t = (v ?? '').trim();
-                    if (t.isEmpty) return null; // PRU facultatif
-                    if (double.tryParse(t.replaceAll(',', '.')) == null) {
-                      return l10n.invalidValue;
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 12),
-
-                // Date éditable (une position initiale est souvent antidatée).
-                InkWell(
-                  onTap: _pickDate,
-                  borderRadius: BorderRadius.circular(4),
-                  child: InputDecorator(
-                    decoration: InputDecoration(
-                      labelText: l10n.transactionDate,
-                      isDense: true,
-                      border: const OutlineInputBorder(),
-                      suffixIcon: const Icon(Icons.calendar_today, size: 18),
-                    ),
-                    child: Text(_formatDate(_date)),
-                  ),
-                ),
-                const SizedBox(height: 12),
-
-                // Note optionnelle.
-                TextFormField(
-                  controller: _noteCtrl,
-                  decoration: InputDecoration(
-                    labelText: l10n.optionalNoteLabel,
-                    isDense: true,
-                    border: const OutlineInputBorder(),
-                  ),
-                  maxLines: 2,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: Text(l10n.cancel),
-        ),
-        FilledButton(
-          onPressed: _submit,
-          child: Text(l10n.validate),
         ),
       ],
     );

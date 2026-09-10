@@ -24,6 +24,7 @@ import 'package:portfolio_tracker/services/app_database.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
+import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 import 'package:portfolio_tracker/utils/chart_periods.dart';
 
 import '../helpers/test_database.dart';
@@ -922,6 +923,329 @@ void main() {
       // switch n'est donc pas proposé (évite une courbe plate à 0 trompeuse).
       expect(ctrl.hasRealCurve, isFalse);
       expect(ctrl.realChartValues, isEmpty);
+      // MAIS la liste des positions héritées reste renseignée (bug constaté à
+      // l'écran, doc privé) : faute de courbe réelle à montrer, c'est la
+      // SEULE indication de ce qu'il y a à déclarer — elle ne doit pas être
+      // vidée par le retour anticipé « rien à reconstruire ».
+      expect(ctrl.realExcludedLegacySymbols, ['TKR']);
+      expect(ctrl.realExcludedLegacyCount, 1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Couverture de la courbe réelle (garde de qualité du mode par défaut)
+  // -------------------------------------------------------------------------
+
+  group('realCurveCoverage', () {
+    test('sans courbe réelle : null (rien à mesurer, rien à accuser)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      // Position legacy seule : hasRealCurve faux (cf. groupe ci-dessus).
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasRealCurve, isFalse);
+      expect(ctrl.realCurveCoverage, isNull);
+    });
+
+    test(
+        'journal complet (une position, toute journalisée) : couverture ~1 '
+        '— le dernier cours historique et la cotation coïncident ici',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ledger = LedgerService(database: db);
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-cov-buy',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      // Valeur courante = 10 × 105 = 1050 (compte non ancré : aucun cash).
+      expect(ctrl.currentTotalValueEur, closeTo(1050.0, 1e-9));
+      expect(ctrl.realCurveCoverage, closeTo(1.0, 1e-9));
+      expect(isRealCurveIncomplete(ctrl.realCurveCoverage), isFalse);
+      expect(
+        resolveUseRealCurve(
+          persistedChoice: null,
+          hasRealCurve: ctrl.hasRealCurve,
+          coverage: ctrl.realCurveCoverage,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'position HÉRITÉE à côté d\'une position journalisée : couverture < 1 '
+        '(elle pèse dans la valeur du compte, jamais dans la courbe)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [
+          makeEurPosition(symbol: 'TKR', quantity: '10'),
+          // AUCUN mouvement journalisé : exclue de la reconstruction.
+          makeEurPosition(symbol: 'LEG', quantity: '5'),
+        ],
+      );
+      final ledger = LedgerService(database: db);
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-cov-buy2',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {
+          'TKR': quote('TKR', 105.0),
+          'LEG': quote('LEG', 100.0),
+        },
+        history: {
+          'TKR': historyData('TKR', [100.0, 102.0, 105.0]),
+          'LEG': historyData('LEG', [98.0, 99.0, 100.0]),
+        },
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.hasRealCurve, isTrue);
+      expect(ctrl.realExcludedLegacyCount, 1);
+      // NOMMÉE, pas seulement comptée : c'est cette liste que l'écran compte
+      // rend cliquable pour déclarer l'opération d'origine.
+      expect(ctrl.realExcludedLegacySymbols, ['LEG']);
+      // Le compteur est DÉRIVÉ de la liste — jamais un chiffre qui
+      // contredirait les noms affichés juste à côté.
+      expect(
+        ctrl.realExcludedLegacyCount,
+        ctrl.realExcludedLegacySymbols.length,
+      );
+      // Valeur courante = 1050 (TKR) + 500 (LEG) = 1550 ; courbe = 1050.
+      expect(ctrl.currentTotalValueEur, closeTo(1550.0, 1e-9));
+      expect(ctrl.realCurveCoverage, closeTo(1050.0 / 1550.0, 1e-9));
+      expect(isRealCurveIncomplete(ctrl.realCurveCoverage), isTrue);
+      // Sans choix de l'utilisateur, la politique bascule sur le mode 1.
+      expect(
+        resolveUseRealCurve(
+          persistedChoice: null,
+          hasRealCurve: ctrl.hasRealCurve,
+          coverage: ctrl.realCurveCoverage,
+        ),
+        isFalse,
+      );
+      // Mais un choix explicite « évolution réelle » reste souverain.
+      expect(
+        resolveUseRealCurve(
+          persistedChoice: true,
+          hasRealCurve: ctrl.hasRealCurve,
+          coverage: ctrl.realCurveCoverage,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+        'compte ANCRÉ : les espèces comptent des DEUX côtés du ratio '
+        '(couverture ~1, pas de fausse alerte)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ledger = LedgerService(database: db);
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-cov-dep',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-cov-buy3',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {'TKR': quote('TKR', 105.0)},
+        history: {'TKR': historyData('TKR', [100.0, 102.0, 105.0])},
+      );
+      await ctrl.initAccounts();
+
+      // Titres 1050 + cash dérivé 1100 des deux côtés.
+      expect(ctrl.currentTotalValueEur, closeTo(2150.0, 1e-9));
+      expect(ctrl.realCurveCoverage, closeTo(1.0, 1e-9));
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Déclaration de l'opération d'origine d'une position HÉRITÉE
+  // -------------------------------------------------------------------------
+
+  group('declareInitialPosition', () {
+    test(
+        'la quantité déclarée REMPLACE la quantité détenue (pas de double '
+        'comptage) et le solde espèces N\'EST PAS touché — la raison même de '
+        'préférer openingBalance à un achat',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [
+          makeEurPosition(symbol: 'TKR', quantity: '10'),
+          // HÉRITÉE : détenue, journal vide, PRU déjà saisi à la main.
+          makeEurPosition(symbol: 'LEG', quantity: '5', pru: 80.0),
+        ],
+      );
+      final ledger = LedgerService(database: db);
+      // ANCRAGE espèces : sans lui, le cash dérivé n'est pas mis en avant et
+      // le test ne prouverait rien sur ce qui compte ici.
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-decl-dep',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.deposit,
+        amount: '2000',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 5),
+      ));
+      await ledger.recordTransaction(AssetTransaction(
+        id: 'tx-decl-buy',
+        accountId: _accountId,
+        symbol: 'TKR',
+        kind: TransactionKind.buy,
+        quantity: '10',
+        unitPrice: '90',
+        amount: '-900',
+        currency: 'EUR',
+        date: DateTime(2024, 1, 10),
+      ));
+
+      final ctrl = makeCtrl(
+        db,
+        quotes: {
+          'TKR': quote('TKR', 105.0),
+          'LEG': quote('LEG', 100.0),
+        },
+        history: {
+          'TKR': historyData('TKR', [100.0, 102.0, 105.0]),
+          'LEG': historyData('LEG', [98.0, 99.0, 100.0]),
+        },
+      );
+      await ctrl.initAccounts();
+
+      expect(ctrl.realExcludedLegacySymbols, ['LEG']);
+      expect(ctrl.hasCashAnchor, isTrue);
+      final cashBefore = double.parse(ctrl.derivedCash!);
+      expect(cashBefore, closeTo(1100.0, 1e-9));
+
+      await ctrl.declareInitialPosition(
+        symbol: 'LEG',
+        quantity: '5',
+        unitPrice: '80',
+        date: DateTime(2024, 1, 3),
+      );
+
+      // 1. AUCUN DOUBLE COMPTAGE : reprojection = UPDATE de la quantité par le
+      //    rejeu du journal (ici un seul openingBalance de 5), pas un ajout.
+      final positions = await AccountStorage(database: db)
+          .getPositions(_accountId);
+      final leg = positions.firstWhere((p) => p.symbol == 'LEG');
+      expect(double.parse(leg.quantity), closeTo(5.0, 1e-9));
+      expect(leg.averageBuyPrice, closeTo(80.0, 1e-9));
+
+      // 2. SOLDE ESPÈCES INTACT — un `buy` aurait retranché 400 € d'un coup
+      //    (amount = -q×p), sans rien à l'écran pour l'expliquer. Un
+      //    openingBalance TITRE a `amount == null` par construction.
+      expect(double.parse(ctrl.derivedCash!), closeTo(cashBefore, 1e-9));
+
+      // 3. Le mouvement émis est bien la POSITION INITIALE DÉCLARATIVE.
+      final txs = await TransactionStorage(database: db)
+          .getBySymbol(_accountId, 'LEG');
+      expect(txs, hasLength(1));
+      expect(txs.single.kind, TransactionKind.openingBalance);
+      expect(txs.single.amount, isNull);
+      expect(txs.single.date, DateTime(2024, 1, 3));
+      expect(txs.single.meta?['declarative'], isTrue);
+
+      // 4. La position a quitté la liste des héritées : la courbe réelle la
+      //    prend désormais en compte, la note disparaît.
+      expect(ctrl.realExcludedLegacySymbols, isEmpty);
+      expect(ctrl.realExcludedLegacyCount, 0);
+    });
+
+    test('symbole absent du compte : no-op silencieux (aucun mouvement émis)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await seedStorage(
+        db,
+        positions: [makeEurPosition(symbol: 'TKR', quantity: '10')],
+      );
+      final ctrl = makeCtrl(db, quotes: {'TKR': quote('TKR', 105.0)});
+      await ctrl.initAccounts();
+
+      // Le lien de la note a pu être posé par un build précédent : entre-temps
+      // la position peut avoir disparu. On abandonne, on ne fabrique pas un
+      // mouvement orphelin (que reprojectSymbolWithin ne saurait pas projeter,
+      // faute de ligne positions).
+      await ctrl.declareInitialPosition(
+        symbol: 'GHOST',
+        quantity: '1',
+        date: DateTime(2024, 1, 3),
+      );
+
+      final txs = await TransactionStorage(database: db).getByAccount(_accountId);
+      expect(txs, isEmpty);
     });
   });
 

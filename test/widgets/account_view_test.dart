@@ -24,8 +24,13 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import 'package:portfolio_tracker/controllers/account_controller.dart';
+import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/widgets/charts/inline_links_caption.dart';
+import 'package:portfolio_tracker/widgets/initial_position_dialog.dart';
 import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
@@ -81,14 +86,32 @@ class _FakeMarketDataServiceWithHistory extends MarketDataService {
   final List<DateTime> dates;
   final List<num> prices;
 
+  /// Cotations COURANTES par symbole, pour les tests qui ont besoin d'une
+  /// valeur de compte non nulle (couverture de la courbe réelle : sans
+  /// cotation, `currentTotalValueEur` vaut 0 et le ratio est `null`). Vide
+  /// par défaut : les tests antérieurs gardent leur comportement.
+  final Map<String, double> quotePrices;
+
   _FakeMarketDataServiceWithHistory({
     required this.symbol,
     required this.dates,
     required this.prices,
+    this.quotePrices = const {},
   });
 
   @override
-  Future<AssetQuoteData?> getQuoteForAsset(Asset asset) async => null;
+  Future<AssetQuoteData?> getQuoteForAsset(Asset asset) async {
+    final price = quotePrices[asset.symbol];
+    if (price == null) return null;
+    return AssetQuoteData(
+      symbol: asset.symbol,
+      name: asset.symbol,
+      price: price,
+      change: 0,
+      changePercent: 0,
+      currency: asset.currency,
+    );
+  }
 
   @override
   Future<AssetQuoteData?> getQuoteWithMetadata(String symbol) async => null;
@@ -185,6 +208,19 @@ Future<AccountController> _setUpAccount(
 }
 
 void main() {
+  // Le mode de courbe est désormais une PRÉFÉRENCE D'APPAREIL persistée dans
+  // un singleton de PROCESS ([ChartModeController]) : sans cette remise à zéro
+  // entre chaque test, le premier qui bascule le sélecteur (« la puce reste
+  // visible en mode Vos positions… ») imposerait son choix à TOUS les suivants
+  // du fichier — constaté : la caption d'exclusion disparaissait trois tests
+  // plus loin, faute d'être encore en mode réel. Le mock SharedPreferences est
+  // posé en même temps : sans lui, la persistance déclenchée par un tap sur le
+  // sélecteur partirait sur le vrai plugin (absent en test).
+  setUp(() {
+    SharedPreferences.setMockInitialValues({});
+    ChartModeController.resetSharedForTest();
+  });
+
   group('AccountView — repli compte cash (B8 lot 3)', () {
     testWidgets(
       'masque « Mes positions » et son bouton d\'ajout sur un compte cash',
@@ -739,10 +775,160 @@ void main() {
         await tester.pumpAndSettle();
 
         final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        // La caption n'est plus seulement CHIFFRÉE : elle NOMME le titre
+        // exclu et le rend cliquable (l'ancienne « Une position saisie sans
+        // historique… » ne disait ni laquelle, ni quoi en faire).
+        final caption = tester.widget<InlineLinksCaption>(
+          find.byType(InlineLinksCaption),
+        );
+        expect(caption.prefix, l10n.chartRealExcludedLegacyNamedPrefix(1));
+        expect(caption.links.map((l) => l.label), ['BBB']);
+        expect(caption.suffix, l10n.chartRealExcludedLegacyDeclareHint);
+      },
+    );
+
+    testWidgets(
+      'toucher le symbole hérité ouvre la position initiale PRÉREMPLIE de la '
+      'quantité détenue et du PRU connu',
+      (tester) async {
+        final ctrl = await _setUpAccount(
+          tester,
+          seed: (db) async {
+            await _seedAccount(db, kind: AccountKind.cto);
+            final storage = AccountStorage(database: db);
+            await storage.savePosition(
+              _accountId,
+              Position(
+                accountId: _accountId,
+                asset: Asset(symbol: 'AAA', name: 'Asset AAA', currency: 'EUR'),
+                quantity: '10',
+              ),
+            );
+            await LedgerService(database: db).emitOpeningBalance(
+              accountId: _accountId,
+              symbol: 'AAA',
+              quantity: '10',
+              currency: 'EUR',
+              date: DateTime.now().subtract(const Duration(days: 30)),
+            );
+            // HÉRITÉE, avec un PRU déjà saisi à la main : c'est lui qu'il ne
+            // faut PAS perdre en déclarant l'opération d'origine (le mouvement
+            // déclaré devient la seule source du PRU projeté).
+            await storage.savePosition(
+              _accountId,
+              Position(
+                accountId: _accountId,
+                asset: Asset(symbol: 'BBB', name: 'Asset BBB', currency: 'EUR'),
+                quantity: '5',
+                averageBuyPrice: 42.0,
+              ),
+            );
+          },
+          marketService: historyFakeForAAA(),
+        );
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        expect(ctrl.realExcludedLegacySymbols, ['BBB']);
+
+        // Le lien vit DANS un Text.rich : on ne peut pas le taper par
+        // `find.text('BBB')` (le span n'est pas un widget). On déclenche donc
+        // le recognizer via le callback exposé par la caption — c'est
+        // exactement ce que fait le tap, et ça reste un test de CÂBLAGE.
+        final caption = tester.widget<InlineLinksCaption>(
+          find.byType(InlineLinksCaption),
+        );
+        caption.links.single.onTap();
+        await tester.pumpAndSettle();
+
+        final dialog = find.byType(InitialPositionDialog);
+        expect(dialog, findsOneWidget);
+        // Quantité DÉTENUE et PRU CONNU préremplis : déclarer l'opération
+        // d'origine, c'est reproduire l'état courant, pas le retaper.
         expect(
-          find.text(l10n.chartRealExcludedLegacyCaption(1)),
+          find.descendant(of: dialog, matching: find.text('5')),
           findsOneWidget,
         );
+        expect(
+          find.descendant(of: dialog, matching: find.text('42.0')),
+          findsOneWidget,
+        );
+        // Le symbole est dans le titre : on sait quelle ligne on déclare.
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(
+          find.descendant(
+            of: dialog,
+            matching: find.text(l10n.setInitialPositionTitleFor('BBB')),
+          ),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'compte 100 % hérité (aucun titre journalisé) : pas de sélecteur de '
+      'mode, la liste des positions héritées reste affichée avec le préfixe '
+      '« pas d\'évolution réelle à reconstruire », et le tap ouvre la '
+      'déclaration de position initiale (bug constaté à l\'écran)',
+      (tester) async {
+        final ctrl = await _setUpAccount(
+          tester,
+          seed: (db) async {
+            await _seedAccount(db, kind: AccountKind.cto);
+            final storage = AccountStorage(database: db);
+            // AUCUN mouvement de journal pour cette position : compte 100 %
+            // hérité — exactement le cas rapporté (plus rien de journalisé,
+            // toutes les positions étant héritées).
+            await storage.savePosition(
+              _accountId,
+              Position(
+                accountId: _accountId,
+                asset: Asset(symbol: 'BBB', name: 'Asset BBB', currency: 'EUR'),
+                quantity: '5',
+              ),
+            );
+          },
+          marketService: _FakeMarketDataServiceWithHistory(
+            symbol: 'BBB',
+            dates: [
+              DateTime.now().subtract(const Duration(days: 30)),
+              DateTime.now(),
+            ],
+            prices: const [100, 110],
+            quotePrices: {'BBB': 110},
+          ),
+        );
+
+        // Aucune courbe réelle (rien à reconstruire), mais le mode 1 reste
+        // intact et la liste héritée reste renseignée (cf.
+        // AccountController._computeAccountRealCurve).
+        expect(ctrl.hasRealCurve, isFalse);
+        expect(ctrl.chartValues, isNotEmpty);
+        expect(ctrl.realExcludedLegacySymbols, ['BBB']);
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        // Pas de sélecteur : aucune courbe réelle à proposer (mode 1 seul).
+        expect(find.byType(SegmentedButton<bool>), findsNothing);
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        // La liste NOMMÉE est bien affichée malgré l'absence de courbe
+        // réelle — avec le préfixe DÉDIÉ à ce cas (« … ne figure pas dans
+        // cette courbe » serait faux : il n'y a pas de courbe du tout).
+        final caption = tester.widget<InlineLinksCaption>(
+          find.byType(InlineLinksCaption),
+        );
+        expect(caption.prefix, l10n.chartRealExcludedLegacyNoCurvePrefix(1));
+        expect(caption.links.map((l) => l.label), ['BBB']);
+        expect(caption.suffix, l10n.chartRealExcludedLegacyDeclareHint);
+
+        // Le tap ouvre bien la déclaration de position initiale, comme en
+        // mode réel (même câblage, cf. test ci-dessus).
+        caption.links.single.onTap();
+        await tester.pumpAndSettle();
+        expect(find.byType(InitialPositionDialog), findsOneWidget);
       },
     );
 
@@ -1010,4 +1196,160 @@ void main() {
       );
     },
   );
+
+  // -------------------------------------------------------------------------
+  // Garde de qualité du mode par défaut (couverture de la courbe réelle)
+  // -------------------------------------------------------------------------
+
+  group('AccountView — mode par défaut sous garde de couverture', () {
+    /// Compte CTO avec UNE position journalisée (AAA, 10 × 105 = 1050) et UNE
+    /// position HÉRITÉE sans aucun mouvement (BBB, 5 × 100 = 500) : la courbe
+    /// réelle ne représente que 1050/1550 ≈ 68 % de la valeur du compte, sous
+    /// le seuil de la politique.
+    Future<AccountController> setUpLowCoverage(WidgetTester tester) =>
+        _setUpAccount(
+          tester,
+          seed: (db) async {
+            await _seedAccount(db, kind: AccountKind.cto);
+            final storage = AccountStorage(database: db);
+            await storage.savePosition(
+              _accountId,
+              Position(
+                accountId: _accountId,
+                asset: Asset(symbol: 'AAA', name: 'Asset AAA', currency: 'EUR'),
+                quantity: '10',
+              ),
+            );
+            await storage.savePosition(
+              _accountId,
+              Position(
+                accountId: _accountId,
+                asset: Asset(symbol: 'BBB', name: 'Asset BBB', currency: 'EUR'),
+                quantity: '5',
+              ),
+            );
+            final ledger = LedgerService(database: db);
+            await ledger.emitOpeningBalance(
+              accountId: _accountId,
+              symbol: 'AAA',
+              quantity: '10',
+              currency: 'EUR',
+              date: DateTime.now().subtract(const Duration(days: 30)),
+            );
+          },
+          marketService: _FakeMarketDataServiceWithHistory(
+            symbol: 'AAA',
+            dates: [
+              DateTime.now().subtract(const Duration(days: 30)),
+              DateTime.now(),
+            ],
+            prices: const [100, 105],
+            quotePrices: const {'AAA': 105.0, 'BBB': 100.0},
+          ),
+        );
+
+    testWidgets(
+      'couverture basse et AUCUN choix persisté : le sélecteur s\'ouvre sur '
+      '« Vos positions », avec la note chiffrée qui l\'explique',
+      (tester) async {
+        final ctrl = await setUpLowCoverage(tester);
+
+        expect(ctrl.hasRealCurve, isTrue);
+        expect(ctrl.realExcludedLegacyCount, 1);
+        expect(ctrl.realCurveCoverage, closeTo(1050.0 / 1550.0, 1e-9));
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        final selector = tester.widget<SegmentedButton<bool>>(
+          find.byType(SegmentedButton<bool>),
+        );
+        expect(selector.selected, {false});
+
+        // La bascule automatique est NOMMÉE, jamais silencieuse.
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(
+          find.text(l10n.chartRealCoverageFallbackCaption(68)),
+          findsOneWidget,
+        );
+        // Et la LISTE NOMMÉE est rendue en mode 1 aussi : c'est justement
+        // quand la courbe réelle a été écartée que savoir QUOI compléter
+        // compte le plus. Elle précède la note de bascule.
+        final caption = tester.widget<InlineLinksCaption>(
+          find.byType(InlineLinksCaption),
+        );
+        expect(caption.links.map((l) => l.label), ['BBB']);
+        // Courbe réelle DISPONIBLE (hasRealCurve) mais mode 1 affiché (repli
+        // automatique) : « … ne figure pas dans cette courbe » désignerait à
+        // tort la courbe à l'écran, qui INCLUT justement BBB. Le préfixe doit
+        // nommer l'évolution réelle, la seule dont BBB soit effectivement
+        // absente.
+        expect(caption.prefix, l10n.chartRealExcludedLegacyOtherModePrefix(1));
+      },
+    );
+
+    testWidgets(
+      'même couverture basse, mais choix « évolution réelle » persisté : le '
+      'choix de l\'utilisateur prime (avertissement chiffré à la place)',
+      (tester) async {
+        SharedPreferences.setMockInitialValues({
+          'chart_mode_real_account': true,
+        });
+        ChartModeController.resetSharedForTest();
+        await ChartModeController.shared().load();
+
+        final ctrl = await setUpLowCoverage(tester);
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        final selector = tester.widget<SegmentedButton<bool>>(
+          find.byType(SegmentedButton<bool>),
+        );
+        expect(selector.selected, {true});
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        // Mode réel affiché : avertissement chiffré, pas la note de repli.
+        //
+        // VARIANTE COURTE : la liste nommée juste au-dessus a déjà dit CE QUI
+        // manque (« BBB »). L'avertissement n'en garde que le chiffre — la
+        // formulation longue y répéterait « il y manque des positions sans
+        // historique » sous l'énumération de ces mêmes positions.
+        expect(find.text(l10n.chartRealCoverageWarningShort(68)), findsOneWidget);
+        expect(find.text(l10n.chartRealCoverageWarning(68)), findsNothing);
+        expect(
+          find.text(l10n.chartRealCoverageFallbackCaption(68)),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'basculer le sélecteur persiste le choix pour la portée « compte »',
+      (tester) async {
+        final ctrl = await setUpLowCoverage(tester);
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        await tester.tap(find.text(l10n.chartModeRealEvolution));
+        await tester.pumpAndSettle();
+
+        expect(
+          ChartModeController.shared().choiceFor(ChartModeScope.account),
+          isTrue,
+        );
+        // Les autres portées restent vierges.
+        expect(
+          ChartModeController.shared().choiceFor(ChartModeScope.wallet),
+          isNull,
+        );
+        final selector = tester.widget<SegmentedButton<bool>>(
+          find.byType(SegmentedButton<bool>),
+        );
+        expect(selector.selected, {true});
+      },
+    );
+  });
 }
