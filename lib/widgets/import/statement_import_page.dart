@@ -48,8 +48,10 @@ import 'package:intl/intl.dart';
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
+import 'package:portfolio_tracker/model/crypto_import_plan.dart';
 import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/isin_search_hit.dart';
@@ -60,16 +62,19 @@ import 'package:portfolio_tracker/services/statement_import_service.dart';
 import 'package:portfolio_tracker/utils/app_snackbar.dart';
 import 'package:portfolio_tracker/utils/error_text.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
+import 'package:portfolio_tracker/utils/localized_labels.dart';
 import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
 
 enum _ImportStep { pickFile, configureProfile, preview, resolveAssets, done }
 
-/// Choix de profil courtier proposé à l'étape 1 (segment, pas une étape à
-/// part entière) : « Bourse Direct » saute l'étape 2 (mapping manuel — le
-/// profil est déjà entièrement pré-rempli, cf. [BrokerProfile.bourseDirect])
-/// et va directement à la prévisualisation ; « Générique / manuel » conserve
-/// le parcours historique.
-enum _ImportProfileChoice { genericManual, bourseDirect }
+/// Choix de profil courtier proposé à l'étape 1 (segment, pas une étape à part
+/// entière) : « Bourse Direct » et « Kraken » sautent l'étape 2 (mapping manuel —
+/// le profil est déjà entièrement pré-rempli, cf.
+/// [BrokerProfile.bourseDirect]/[BrokerProfile.kraken]) et vont directement à la
+/// prévisualisation ; « Générique / manuel » conserve le parcours historique.
+/// Kraken (chantier B16, lot 1) est un profil CRYPTO (`profile.crypto != null`) :
+/// grand livre de jambes, pas un journal d'opérations — cf. la conception interne
+enum _ImportProfileChoice { genericManual, bourseDirect, kraken }
 
 class StatementImportPage extends StatefulWidget {
   /// Contrôleur DÉJÀ initialisé du compte ouvrant l'assistant (celui
@@ -167,6 +172,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// heure dans les relevés), la décision revient à l'utilisateur — on ne fait
   /// que la lui présenter avec les éléments pour trancher.
   bool _importProbableDuplicates = false;
+
+  /// Choix utilisateur sur le résidu des transferts internes crypto non
+  /// équilibrés (cf. [ImportPreview.unbalancedInternalTransfers], conception
+  /// interne) : `false` par défaut = ne PAS journaliser l'écart, le choix prudent
+  /// (jamais de correction silencieuse). Relayé tel quel à
+  /// [AccountController.confirmStatementImport].
+  bool _journalizeUnbalancedInternalTransfers = false;
 
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
   final Map<String, TextEditingController> _newAssetSymbolControllers = {};
@@ -287,11 +299,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return;
       case _ImportStep.preview:
         setState(() {
-          // Bourse Direct saute l'étape de mapping manuel (profil pré-rempli,
-          // cf. _pickFile) : retour direct à la sélection de fichier.
-          _step = _profileChoice == _ImportProfileChoice.bourseDirect
-              ? _ImportStep.pickFile
-              : _ImportStep.configureProfile;
+          // Bourse Direct ET Kraken sautent l'étape de mapping manuel (profil
+          // pré-rempli, cf. _pickFile) : retour direct à la sélection de fichier.
+          _step = _profileChoice == _ImportProfileChoice.genericManual
+              ? _ImportStep.configureProfile
+              : _ImportStep.pickFile;
           _preview = null;
         });
         return;
@@ -308,7 +320,64 @@ class _StatementImportPageState extends State<StatementImportPage> {
   // Étape 1 — sélection du fichier
   // ---------------------------------------------------------------------------
 
+  /// Compte visé par CET import — recherché par [StatementImportPage.
+  /// accountId] dans [AccountController.accounts] (même patron que
+  /// [_accountCurrency]), avec repli sur le compte actif du contrôleur.
+  Account? get _targetAccount {
+    for (final a in widget.controller.accounts) {
+      if (a.id == widget.accountId) return a;
+    }
+    return widget.controller.activeAccount;
+  }
+
+  /// Garde de nature de compte (chantier B16, conception interne) : un profil
+  /// CRYPTO choisi sur un compte dont la nature n'est PAS [AccountKind.crypto]
+  /// avertit — jamais bloquant, l'utilisateur reste libre de continuer (ex. un
+  /// compte « Autre » générique qu'il choisit d'utiliser pour sa crypto).
+  /// Retourne `true` s'il faut poursuivre (aucune garde à déclencher, ou
+  /// l'utilisateur a choisi « Continuer »).
+  ///
+  /// Vérifiée EN PREMIER dans [_pickFile], avant tout appel aux plugins de
+  /// sélection de fichier : c'est ce qui rend cette garde exerçable en test
+  /// widget (file_picker/file_selector n'ont pas d'implémentation dans cet
+  /// environnement) — et de toute façon, c'est bien « avant l'aperçu ».
+  Future<bool> _confirmCryptoAccountKindIfNeeded() async {
+    if (_profileChoice != _ImportProfileChoice.kraken) return true;
+    final kind = _targetAccount?.kind;
+    if (kind == null || kind == AccountKind.crypto) return true;
+
+    final l10n = AppLocalizations.of(context)!;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.importCryptoAccountKindWarningTitle),
+        content: Text(
+          l10n.importCryptoAccountKindWarningMessage(kind.localizedLabel(l10n)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l10n.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l10n.importContinueButton),
+          ),
+        ],
+      ),
+    );
+    return proceed ?? false;
+  }
+
   Future<void> _pickFile() async {
+    // Garde de nature de compte (B16, conception interne) : vérifiée EN PREMIER,
+    // avant tout appel aux plugins de sélection de fichier — c'est ce qui la rend
+    // exerçable en test widget (file_picker/file_selector n'ont pas
+    // d'implémentation dans cet environnement, cf. doc de tête de fichier), et de
+    // toute façon strictement « avant l'aperçu ».
+    if (!await _confirmCryptoAccountKindIfNeeded()) return;
+    if (!mounted) return;
+
     final l10n = AppLocalizations.of(context)!;
     Uint8List? bytes;
     String? name;
@@ -363,6 +432,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
       // (reste à l'étape 1 le temps du calcul — cf. _buildPickFileStep pour
       // l'indicateur de chargement/erreur).
       await _runPreviewWithProfile(BrokerProfile.bourseDirect());
+      return;
+    }
+    if (_profileChoice == _ImportProfileChoice.kraken) {
+      // Idem Bourse Direct : profil Kraken entièrement déclaratif (conception
+      // interne), aucun mapping manuel de colonnes.
+      await _runPreviewWithProfile(BrokerProfile.kraken());
       return;
     }
 
@@ -830,14 +905,16 @@ class _StatementImportPageState extends State<StatementImportPage> {
       );
     }).toList();
 
-    return ImportPreview(
+    // `copyWith` (I-3, revue adversariale) plutôt qu'un constructeur manuel :
+    // un constructeur `ImportPreview(...)` qui ne liste pas explicitement les
+    // champs crypto (`unvaluedExchanges`, `unbalancedInternalTransfers`…) les
+    // remet silencieusement à vide — sans effet tant que rien n'en dépendait
+    // après cette reconstruction, mais une régression prête à se déclencher
+    // dès que l'écran affichera ces groupes après résolution manuelle d'un
+    // symbole (lot 2).
+    return preview.copyWith(
       toCreate: patchedToCreate,
-      duplicates: preview.duplicates,
-      probableDuplicates: preview.probableDuplicates,
-      rejects: preview.rejects,
       newAssets: patchedNewAssets,
-      projectedDeltas: preview.projectedDeltas,
-      legacySymbols: preview.legacySymbols,
     );
   }
 
@@ -850,14 +927,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (!_importProbableDuplicates || preview.probableDuplicates.isEmpty) {
       return preview;
     }
-    return ImportPreview(
+    // `copyWith` (I-3, revue adversariale) — voir justification dans
+    // [_applyResolvedSymbols].
+    return preview.copyWith(
       toCreate: [...preview.toCreate, ...preview.probableDuplicates],
-      duplicates: preview.duplicates,
-      probableDuplicates: preview.probableDuplicates,
-      rejects: preview.rejects,
-      newAssets: preview.newAssets,
-      projectedDeltas: preview.projectedDeltas,
-      legacySymbols: preview.legacySymbols,
     );
   }
 
@@ -983,9 +1056,23 @@ class _StatementImportPageState extends State<StatementImportPage> {
     setState(() => _confirming = true);
 
     final resolvedPreview = _previewToWrite(_applyResolvedSymbols(preview));
+    // Remplacements d'agrégats mensuels (conception interne) : la seule décision
+    // utilisateur exposée à l'écran est la bascule des transferts internes ci-dessous
+    // — un remplacement affiché est TOUJOURS confirmé (c'est un rattrapage du même
+    // mois déjà en base, pas un choix à arbitrer). `LedgerService.importMovements`
+    // revérifie de toute façon la garde stricte (`meta.aggregation == 'monthly'`)
+    // avant toute suppression.
+    final replaceImportKeys = <String>{
+      for (final r in resolvedPreview.replacements)
+        if (r.movement.transaction?.meta?['importKey'] is String)
+          r.movement.transaction!.meta!['importKey'] as String,
+    };
     final erreur = await widget.controller.confirmStatementImport(
       resolvedPreview,
       accountId: widget.accountId,
+      replaceImportKeys: replaceImportKeys,
+      journalizeUnbalancedInternalTransfers:
+          _journalizeUnbalancedInternalTransfers,
     );
 
     if (!mounted) return;
@@ -1075,11 +1162,21 @@ class _StatementImportPageState extends State<StatementImportPage> {
         .map((d) => d.symbol!)
         .toList();
 
+    // Mois des agrégats de récompenses REMPLACÉS (conception interne) — TOUJOURS
+    // confirmés dès qu'affichés (cf. [_confirmImport]), donc leur seule présence
+    // ici suffit à documenter la limite d'annulation à l'écran « Terminé ». Ordre
+    // stable, doublons retirés (un même mois peut en théorie porter plusieurs
+    // actifs).
+    final replacedRewardMonths = <String>{
+      for (final r in resolvedPreview.replacements) _monthLabel(r.month),
+    }.toList();
+
     return _ImportSummaryData(
       movementsAdded: resolvedPreview.toCreate.length,
       positionsCreated: createdSymbols.length,
       reprojectedSymbols: reprojected,
       legacySymbols: resolvedPreview.legacySymbols,
+      replacedRewardMonths: replacedRewardMonths,
     );
   }
 
@@ -1203,6 +1300,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
               value: _ImportProfileChoice.bourseDirect,
               label: Text(l10n.importProfileBourseDirectLabel),
             ),
+            ButtonSegment(
+              value: _ImportProfileChoice.kraken,
+              label: Text(l10n.importProfileKrakenLabel),
+            ),
           ],
           selected: {_profileChoice},
           onSelectionChanged: _loadingPreview
@@ -1211,11 +1312,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
         ),
         const SizedBox(height: 16),
 
-        Text(
-          _profileChoice == _ImportProfileChoice.bourseDirect
-              ? l10n.importPickFileHintBourseDirect
-              : l10n.importPickFileHint,
-        ),
+        Text(_pickFileHint(l10n)),
+        // Carte d'information Kraken (conception interne) : posée AVANT l'aperçu, pour
+        // que le format/UTC/agrégation des récompenses soient connus avant même de
+        // choisir un fichier.
+        if (_profileChoice == _ImportProfileChoice.kraken) ...[
+          const SizedBox(height: 12),
+          _buildKrakenInfoCard(l10n),
+        ],
         const SizedBox(height: 24),
         if (_previewError != null) ...[
           Text(
@@ -1232,6 +1336,49 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 label: Text(l10n.importPickFileButton),
               ),
       ],
+    );
+  }
+
+  String _pickFileHint(AppLocalizations l10n) {
+    switch (_profileChoice) {
+      case _ImportProfileChoice.bourseDirect:
+        return l10n.importPickFileHintBourseDirect;
+      case _ImportProfileChoice.kraken:
+        return l10n.importPickFileHintKraken;
+      case _ImportProfileChoice.genericManual:
+        return l10n.importPickFileHint;
+    }
+  }
+
+  /// Carte d'information Kraken (conception interne) : format, traitement UTC et
+  /// agrégation mensuelle des récompenses — posée avant l'aperçu, sur le modèle
+  /// neutre de [_buildDeltaSection] (pas un avertissement).
+  Widget _buildKrakenInfoCard(AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 18,
+              color: theme.colorScheme.onSecondaryContainer,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                l10n.importKrakenInfoCardBody,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1497,9 +1644,58 @@ class _StatementImportPageState extends State<StatementImportPage> {
 
   // ---- Étape 3 ----
 
+  /// Écran d'ÉCHEC DÉDIÉ pour un refus GLOBAL motivé (conception interne : ancien
+  /// format Kraken sans `wallet`/`subclass`/`amountusd`) — PAS une liste de rejets
+  /// ligne à ligne comme le reste de l'aperçu : le fichier entier est refusé,
+  /// aucune ligne n'a été traitée. Seule sortie : revenir en arrière (aucune
+  /// écriture possible depuis cet écran).
+  Widget _buildGlobalRejectStep(AppLocalizations l10n, String reason) {
+    final theme = Theme.of(context);
+    final String title;
+    final String message;
+    switch (reason) {
+      case 'cryptoLegacyFormatUnsupported':
+        title = l10n.importCryptoLegacyFormatTitle;
+        message = l10n.importCryptoLegacyFormatMessage;
+        break;
+      default:
+        title = l10n.importCryptoLegacyFormatTitle;
+        message = l10n.importRejectGeneric;
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(Icons.error_outline, color: theme.colorScheme.error),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(title, style: theme.textTheme.titleMedium),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        Text(message),
+        const SizedBox(height: 24),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: Text(l10n.importCloseButton),
+        ),
+      ],
+    );
+  }
+
   Widget _buildPreviewStep(AppLocalizations l10n) {
     final preview = _preview;
     if (preview == null) return const SizedBox.shrink();
+
+    // Refus GLOBAL motivé (conception interne : ancien format Kraken sans
+    // wallet/subclass/amountusd) : écran dédié, PAS une liste de rejets — le
+    // fichier entier est refusé plutôt qu'importé en mode dégradé.
+    if (preview.globalRejectReason != null) {
+      return _buildGlobalRejectStep(l10n, preview.globalRejectReason!);
+    }
 
     if (preview.toCreate.isEmpty) {
       // Rien à créer, MAIS on ne masque pas les rejets/OST (P1) : un relevé
@@ -1537,6 +1733,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
           // restent signalés : c'est la SEULE occasion de les voir dans ce cas.
           ..._probableDuplicateGroup(l10n, preview),
           ..._mergedLegGroup(l10n, preview),
+          // Groupes crypto (chantier B16, conception interne) : un relevé peut
+          // n'apporter AUCUN mouvement neuf (tout doublon) tout en portant des échanges
+          // encore en attente de valorisation ou un bilan de cohérence à signaler — ils
+          // restent visibles ici aussi.
+          ..._cryptoGroups(l10n, preview),
           // Groupe des doublons rendu ICI AUSSI (replié, comme dans la branche
           // principale) : sans lui, un ré-import intégral n'offrait AUCUN moyen
           // de vérifier CE QUI avait été reconnu comme déjà présent — seul le
@@ -1585,6 +1786,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
         // Delta projeté « avant → après » : l'info la plus importante avant
         // d'écrire dans le journal, donc placée en tête.
         _buildDeltaSection(l10n, preview),
+
+        // Groupes crypto (chantier B16, conception interne), dans l'ordre
+        // d'importance du design : AVANT « à créer », no-op (listes vides) sur tout
+        // profil titres.
+        ..._cryptoGroups(l10n, preview),
 
         ExpansionTile(
           initiallyExpanded: true,
@@ -1706,6 +1912,345 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// en bas — cf. [_ostRejectGroup] / [_techRejectGroup].
   List<Widget> _rejectGroups(AppLocalizations l10n, ImportPreview preview) =>
       [..._ostRejectGroup(l10n, preview), ..._techRejectGroup(l10n, preview)];
+
+  // ---------------------------------------------------------------------------
+  // Groupes CRYPTO (chantier B16, lot 1 — conception interne). Tous no-op (listes
+  // vides côté ImportPreview) sur un profil titres : aucun changement visible pour
+  // Bourse Direct/générique. Ordre d'importance du design, rassemblés dans
+  // [_cryptoGroups].
+  // ---------------------------------------------------------------------------
+
+  /// « Échanges à valoriser (N) » — DÉPLIÉ. Échanges entre crypto-monnaies
+  /// (ou entrées en nature) exclus de `toCreate` faute de moteur de
+  /// valorisation (lot 2) : pas de champ de saisie ici, juste la trace
+  /// (ligne source, codes et quantités des deux parties).
+  List<Widget> _unvaluedExchangesGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = preview.unvaluedExchanges;
+    if (items.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        initiallyExpanded: true,
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupUnvaluedExchanges(items.length)),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              l10n.importUnvaluedExchangesExplain,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          for (final u in items.take(_groupDisplayCap))
+            _unvaluedExchangeTile(l10n, u),
+          if (items.length > _groupDisplayCap)
+            _moreRow(l10n, items.length - _groupDisplayCap),
+        ],
+      ),
+    ];
+  }
+
+  Widget _unvaluedExchangeTile(AppLocalizations l10n, UnvaluedExchange u) {
+    final lines = u.sourceLines.join(', ');
+    final codePaid = u.codePaid;
+    final quantityPaid = u.quantityPaid;
+    final line = (codePaid == null || quantityPaid == null)
+        ? l10n.importUnvaluedDepositLine(lines, u.quantityReceived, u.codeReceived)
+        : l10n.importUnvaluedExchangeLine(
+            lines, quantityPaid, codePaid, u.quantityReceived, u.codeReceived);
+    return ListTile(
+      dense: true,
+      title: Text(line),
+      subtitle: Text(_formatDate(u.date)),
+    );
+  }
+
+  /// « Mouvements internes (N) » — DÉPLIÉ SEULEMENT s'il y a un résidu (liste
+  /// vide ⇒ groupe absent). Bascule « Enregistrer l'écart » (défaut OFF)
+  /// reliée à [_journalizeUnbalancedInternalTransfers].
+  List<Widget> _unbalancedInternalTransfersGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = preview.unbalancedInternalTransfers;
+    if (items.isEmpty) return const [];
+    final theme = Theme.of(context);
+    return [
+      Card(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        color: theme.colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.importGroupUnbalancedInternalTransfers(items.length),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(color: theme.colorScheme.onErrorContainer),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                l10n.importUnbalancedInternalTransfersExplain,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onErrorContainer),
+              ),
+              for (final u in items.take(_groupDisplayCap))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    l10n.importUnbalancedInternalTransferLine(
+                        u.asset, u.residual, u.rowCount),
+                    style:
+                        TextStyle(color: theme.colorScheme.onErrorContainer),
+                  ),
+                ),
+              if (items.length > _groupDisplayCap)
+                _moreRow(l10n, items.length - _groupDisplayCap),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _journalizeUnbalancedInternalTransfers,
+                onChanged: (v) =>
+                    setState(() => _journalizeUnbalancedInternalTransfers = v),
+                title: Text(
+                  l10n.importUnbalancedInternalTransfersToggleLabel,
+                  style: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                ),
+                subtitle: Text(
+                  _journalizeUnbalancedInternalTransfers
+                      ? l10n.importUnbalancedInternalTransfersToggleOn
+                      : l10n.importUnbalancedInternalTransfersToggleOff,
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// « Relevé incomplet » (Kraken seul, oracle `balance`) — DÉPLIÉ. Jamais
+  /// bloquant : information, pas un gardien (conception interne).
+  List<Widget> _chainRupturesGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = preview.chainRuptures;
+    if (items.isEmpty) return const [];
+    final theme = Theme.of(context);
+    return [
+      Card(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        color: theme.colorScheme.errorContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.warning_amber_rounded,
+                      size: 18, color: theme.colorScheme.error),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      l10n.importGroupChainRuptures,
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.onErrorContainer,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              Text(
+                l10n.importChainRupturesExplain,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onErrorContainer),
+              ),
+              for (final r in items.take(_groupDisplayCap))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    l10n.importChainRuptureLine(
+                        _formatDate(r.date), r.asset, r.sourceLine),
+                    style:
+                        TextStyle(color: theme.colorScheme.onErrorContainer),
+                  ),
+                ),
+              if (items.length > _groupDisplayCap)
+                _moreRow(l10n, items.length - _groupDisplayCap),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// « Écart de quantité (N) » (Kraken seul, oracle `balance`) — DÉPLIÉ,
+  /// jamais bloquant ni corrective (conception interne) : le moteur soustrait
+  /// déjà les échanges non valorisés du calcul, ce groupe ne re-signale donc
+  /// jamais ceux-là.
+  List<Widget> _quantityGapsGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = preview.quantityGaps;
+    if (items.isEmpty) return const [];
+    final theme = Theme.of(context);
+    return [
+      Card(
+        margin: const EdgeInsets.symmetric(vertical: 8),
+        color: theme.colorScheme.secondaryContainer,
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.importGroupQuantityGaps(items.length),
+                style: theme.textTheme.titleSmall
+                    ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
+              ),
+              const SizedBox(height: 4),
+              for (final g in items.take(_groupDisplayCap))
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text(
+                    l10n.importQuantityGapLine(
+                        g.asset, g.reportedTotal, g.projectedTotal),
+                    style: TextStyle(
+                        color: theme.colorScheme.onSecondaryContainer),
+                  ),
+                ),
+              if (items.length > _groupDisplayCap)
+                _moreRow(l10n, items.length - _groupDisplayCap),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// Mouvements de `toCreate` produits par l'agrégation mensuelle des
+  /// récompenses (`meta['aggregation'] == 'monthly'`) — vue FILTRÉE de
+  /// `toCreate`, comme [_mergedLegGroup] : ces mouvements seront bel et bien
+  /// écrits, ce groupe replié n'en est qu'une présentation lisible
+  /// (« Juin 2024 — 9 lignes, +3,1 AAA ») plutôt qu'une exclusion.
+  List<ImportedMovement> _aggregatedRewardMovements(ImportPreview preview) => [
+        for (final m in preview.toCreate)
+          if (m.transaction?.meta?['aggregation'] == 'monthly') m,
+      ];
+
+  /// « Récompenses regroupées (N) » — REPLIÉ.
+  List<Widget> _aggregatedRewardsGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = _aggregatedRewardMovements(preview);
+    if (items.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupAggregatedRewards(items.length)),
+        children: [
+          for (final m in items.take(_groupDisplayCap))
+            _aggregatedRewardTile(l10n, m),
+          if (items.length > _groupDisplayCap)
+            _moreRow(l10n, items.length - _groupDisplayCap),
+        ],
+      ),
+    ];
+  }
+
+  Widget _aggregatedRewardTile(AppLocalizations l10n, ImportedMovement m) {
+    final meta = m.transaction!.meta ?? const {};
+    final month = _monthLabel((meta['aggregatedMonth'] as String?) ?? '');
+    final rows = (meta['aggregatedRows'] as num?)?.toInt() ?? 0;
+    final asset = m.ledgerCode ?? m.transaction!.symbol ?? '';
+    final delta = _signedQuantity(m.transaction!.quantity ?? '0');
+    return ListTile(
+      dense: true,
+      title: Text(l10n.importAggregatedRewardLine(month, rows, delta, asset)),
+    );
+  }
+
+  /// « Récompenses mises à jour (N) » (remplacements, conception interne) — REPLIÉ.
+  /// Ces mouvements ne sont PAS dans `toCreate` : leur écriture est conditionnée à
+  /// la confirmation ([_confirmImport] passe leurs `importKey` en
+  /// `replaceImportKeys`).
+  List<Widget> _replacementsGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = preview.replacements;
+    if (items.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupReplacements(items.length)),
+        children: [
+          for (final r in items.take(_groupDisplayCap))
+            _replacementTile(l10n, r),
+          if (items.length > _groupDisplayCap)
+            _moreRow(l10n, items.length - _groupDisplayCap),
+        ],
+      ),
+    ];
+  }
+
+  Widget _replacementTile(AppLocalizations l10n, AggregateReplacement r) {
+    final asset = r.movement.ledgerCode ?? r.movement.transaction!.symbol ?? '';
+    final delta = _signedQuantity(r.quantityDelta);
+    return ListTile(
+      dense: true,
+      title: Text(l10n.importReplacementLine(
+          _monthLabel(r.month), r.previousRowCount, r.newRowCount, delta, asset)),
+    );
+  }
+
+  /// Les six groupes crypto, dans l'ordre d'importance du design (conception
+  /// interne) — listes vides sur tout profil titres, donc AUCUN élément rendu
+  /// (`_cryptoGroups` retourne alors `[]`).
+  List<Widget> _cryptoGroups(AppLocalizations l10n, ImportPreview preview) => [
+        ..._unvaluedExchangesGroup(l10n, preview),
+        ..._unbalancedInternalTransfersGroup(l10n, preview),
+        ..._chainRupturesGroup(l10n, preview),
+        ..._quantityGapsGroup(l10n, preview),
+        ..._aggregatedRewardsGroup(l10n, preview),
+        ..._replacementsGroup(l10n, preview),
+      ];
+
+  /// Mois « AAAA-MM » → libellé localisé capitalisé (« Mars 2024 » /
+  /// « March 2024 ») — repli sur la chaîne brute si non parsable (defensive,
+  /// ne devrait jamais arriver sur un `meta` produit par le normaliseur).
+  String _monthLabel(String yyyyMm) {
+    final parts = yyyyMm.split('-');
+    if (parts.length != 2) return yyyyMm;
+    final year = int.tryParse(parts[0]);
+    final month = int.tryParse(parts[1]);
+    if (year == null || month == null) return yyyyMm;
+    final locale = Localizations.localeOf(context).languageCode;
+    final raw = DateFormat.yMMMM(locale).format(DateTime(year, month));
+    if (raw.isEmpty) return raw;
+    return raw[0].toUpperCase() + raw.substring(1);
+  }
+
+  /// Quantité brute (chaîne décimale, point) préfixée d'un `+` si positive ou
+  /// nulle — les valeurs négatives portent déjà leur signe (`Decimal.
+  /// toString()`). Repli sur la chaîne telle quelle si non parsable.
+  String _signedQuantity(String raw) {
+    final v = Decimal.tryParse(raw);
+    if (v == null) return raw;
+    return v >= Decimal.zero ? '+$raw' : raw;
+  }
 
   Widget _buildDeltaSection(AppLocalizations l10n, ImportPreview preview) {
     final theme = Theme.of(context);
@@ -2036,12 +2581,38 @@ class _StatementImportPageState extends State<StatementImportPage> {
     ];
   }
 
-  /// Groupe « Nouveaux actifs » de l'aperçu : ne présente QUE les positions
-  /// OUVERTES (net > 0). Les lignes soldées ([NewAssetCandidate.closedLine] :
-  /// titre clôturé, droit consommé) sont bien matérialisées pour l'intégrité du
-  /// journal mais n'apparaissent PAS ici — ce ne sont pas de nouvelles positions
-  /// détenues (cohérent avec le modèle de valorisation : seul le détenu est
-  /// valorisé). Groupe masqué s'il ne reste aucun actif ouvert.
+  /// Groupe « Nouveaux actifs » de l'aperçu : ne présente QUE les positions OUVERTES
+  /// (net > 0). Les lignes soldées ([NewAssetCandidate.closedLine] : titre clôturé,
+  /// droit consommé) sont bien matérialisées pour l'intégrité du journal mais
+  /// n'apparaissent PAS ici — ce ne sont pas de nouvelles positions détenues (cohérent
+  /// avec le modèle de valorisation : seul le détenu est valorisé). Groupe masqué s'il
+  /// ne reste aucun actif ouvert. Sous-titre d'une tuile « Nouvel actif » : l'ISIN
+  /// pour un candidat titre ; pour un candidat CRYPTO (`ledgerCode` non `null`, jamais
+  /// combiné à un ISIN), le code du relevé d'origine — la « provenance » du ticker
+  /// résolu affiché en fin de ligne (conception interne). Si le candidat n'est
+  /// finalement pas coté, une note DISTINGUE une PANNE RÉSEAU (jamais assimilée à une
+  /// invalidité, patron conception interne) d'un non-coté CONSTATÉ (même badge que le
+  /// repli ISIN titre). En pratique, seuls des candidats crypto atteignent cette
+  /// seconde branche ici : un titre non coté (repli ISIN) est toujours `closedLine`,
+  /// donc déjà filtré hors de ce groupe (cf. [_buildNewAssetsGroup]).
+  Widget _newAssetSubtitle(AppLocalizations l10n, NewAssetCandidate a) {
+    final theme = Theme.of(context);
+    final lines = <Widget>[];
+    final code = a.isin ?? a.ledgerCode;
+    if (code != null && code.isNotEmpty) lines.add(Text(code));
+    if (!a.quotable) {
+      lines.add(Text(
+        a.networkFailure
+            ? l10n.importNewAssetNetworkFailureNote
+            : l10n.positionNotQuotedBadge,
+        style: theme.textTheme.bodySmall
+            ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+      ));
+    }
+    if (lines.isEmpty) return const SizedBox.shrink();
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: lines);
+  }
+
   Widget _buildNewAssetsGroup(AppLocalizations l10n, ImportPreview preview) {
     final open = preview.newAssets.where((a) => !a.closedLine).toList();
     if (open.isEmpty) return const SizedBox.shrink();
@@ -2059,7 +2630,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
           ListTile(
             dense: true,
             title: Text(a.label),
-            subtitle: Text(a.isin ?? ''),
+            subtitle: _newAssetSubtitle(l10n, a),
             trailing: Text(a.proposedSymbol ?? l10n.importNewAssetPending),
           ),
         if (open.length > _groupDisplayCap)
@@ -2362,6 +2933,17 @@ class _StatementImportPageState extends State<StatementImportPage> {
           const SizedBox(height: 4),
           Text(l10n.importSummaryLegacyKept(summary.legacySymbols.join(', '))),
         ],
+        // Limite d'annulation des agrégats de récompenses REMPLACÉS (conception
+        // interne) : l'agrégat précédent est supprimé, un futur
+        // `undoStatementImport` de CET import ne le restaure pas.
+        if (summary.replacedRewardMonths.isNotEmpty) ...[
+          const SizedBox(height: 4),
+          Text(
+            l10n.importSummaryRewardsUpdated(
+              summary.replacedRewardMonths.join(', '),
+            ),
+          ),
+        ],
         if (_lastBatchId != null) ...[
           const SizedBox(height: 16),
           Text(
@@ -2483,10 +3065,17 @@ class _ImportSummaryData {
   final List<String> reprojectedSymbols;
   final List<String> legacySymbols;
 
+  /// Mois (libellés localisés) des agrégats mensuels de récompenses crypto
+  /// REMPLACÉS par cet import (conception interne) — vide hors crypto ou sans
+  /// remplacement. Pilote la mention de limite d'annulation à l'étape « Terminé
+  /// » (cf. [_StatementImportPageState._buildDoneStep]).
+  final List<String> replacedRewardMonths;
+
   const _ImportSummaryData({
     required this.movementsAdded,
     required this.positionsCreated,
     required this.reprojectedSymbols,
     required this.legacySymbols,
+    this.replacedRewardMonths = const [],
   });
 }

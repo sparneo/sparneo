@@ -32,7 +32,9 @@ import 'package:xml/xml.dart';
 
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
+import 'package:portfolio_tracker/model/crypto_import_plan.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
+import 'package:portfolio_tracker/services/crypto_ledger_normalizer.dart';
 
 /// Nature de mouvement selon la présence (ou non) d'une identité d'actif :
 /// distingue les deux variantes possibles des kinds `openingBalance` et
@@ -408,6 +410,24 @@ class StatementImportService {
   }) {
     if (rows.isEmpty) return const [];
 
+    // ---- Pipeline CRYPTO (chantier B16, conception interne) : point de greffe
+    // UNIQUE — un profil crypto ne traverse JAMAIS le chemin titres ci-dessous
+    // (grand livre de JAMBES, vocabulaire `CryptoLedgerAction` entièrement distinct
+    // de `kindLexicon`/`corporateActions`). `normalize` reste l'entrée unique pour
+    // les appelants existants (simples `List<ImportedMovement>`) ;
+    // [planCryptoImport] expose en plus, pour le contrôleur, les structures propres
+    // au grand livre (échanges à valoriser, bilan des transferts internes, garde
+    // `balance`…) qu'un simple `List<ImportedMovement>` ne peut pas porter.
+    if (profile.crypto != null) {
+      return CryptoLedgerNormalizer.planCryptoImport(
+        rows,
+        profile,
+        accountCurrency: accountCurrency,
+        accountId: accountId,
+        sourceLines: sourceLines,
+      ).movements;
+    }
+
     final header = profile.hasHeaderRow && rows.isNotEmpty ? rows.first : null;
     final headerOffset = profile.hasHeaderRow ? 1 : 0;
     final dataRows = profile.hasHeaderRow ? rows.skip(1).toList() : rows;
@@ -517,6 +537,30 @@ class StatementImportService {
     // traitement par ligne n'a aucune visibilité sur ses voisines). Ne touche
     // QUE les paires reconnues sans ambiguïté — cf. [_mergeSplitSettlementLegs].
     return _mergeSplitSettlementLegs(result);
+  }
+
+  /// Variante de [normalize] pour les PROFILS CRYPTO (`profile.crypto != null`) :
+  /// passthrough pur vers [CryptoLedgerNormalizer.planCryptoImport], qui expose —
+  /// au-delà des `ImportedMovement` déjà renvoyés par [normalize] — les structures
+  /// propres au grand livre (échanges en attente de valorisation, bilan des
+  /// transferts internes, garde `balance`) dont [AccountController] a besoin pour
+  /// construire l'`ImportPreview` étendu (conception interne). Appelant fautif si
+  /// `profile.crypto == null` : retourne un [CryptoImportPlan] vide (repli sûr, cf.
+  /// [CryptoLedgerNormalizer.planCryptoImport]).
+  static CryptoImportPlan planCryptoImport(
+    List<List<String>> rows,
+    BrokerProfile profile, {
+    required String accountCurrency,
+    String accountId = '',
+    List<int>? sourceLines,
+  }) {
+    return CryptoLedgerNormalizer.planCryptoImport(
+      rows,
+      profile,
+      accountCurrency: accountCurrency,
+      accountId: accountId,
+      sourceLines: sourceLines,
+    );
   }
 
   // ---------------------------------------------------------------------
@@ -1180,6 +1224,20 @@ class StatementImportService {
         // sous-jacent).
         return reject('corporateActionReview');
 
+      case CorporateActionKind.stakingReward:
+        // Récompense de staking/earn crypto : même effet que freeAttribution
+        // (+quantité à COÛT 0, aucun cash) — cf. sa doc dans broker_profile.dart.
+        // Cas MORT via CE chemin (aucun profil ne mappe de libellé dessus ;
+        // `CryptoLedgerNormalizer` écrit `meta['corporateAction']` DIRECTEMENT,
+        // sans passer par `BrokerProfile.corporateActions`) — le `switch`
+        // exhaustif l'exige néanmoins.
+        if (!hasAssetIdentity) return reject('missingAssetIdentity');
+        if (quantity == null) return reject('invalidQuantity');
+        return finishSecurity(
+          kind: TransactionKind.adjustment,
+          quantity: quantity.toString(),
+        );
+
       case CorporateActionKind.cashRegularization:
         // Mouvement de CASH PUR : un éventuel ISIN n'est qu'une RÉFÉRENCE (le
         // titre concerné — comme la TTF `ODTTF` porte l'ISIN du titre taxé), la
@@ -1369,16 +1427,16 @@ class StatementImportService {
   // Déduplication (voir doc de classe [normalize])
   // ---------------------------------------------------------------------
 
-  /// [timeOfDay] : réservé aux PROFILS CRYPTO (conception interne) — un relevé
-  /// de grand livre crypto fournit l'heure à la seconde (Binance : la
-  /// quasi-totalité des lignes porte un horodatage distinct), alors que cette
-  /// clé hache au JOUR seul pour un relevé titres. `null` (TOUS les appelants
-  /// actuels, profils titres) doit produire une chaîne BIT-IDENTIQUE au
-  /// comportement historique — rien n'est ajouté, pas même un séparateur vide :
-  /// les ~1 336 clés de dédup déjà en base chez l'auteur (import Bourse Direct)
-  /// ne doivent JAMAIS être invalidées par cette extension (cf. test de
-  /// figement, `bourse_direct_import_test.dart`). Renseigné, l'heure est
-  /// intégrée à la chaîne hachée via un suffixe `|$timeOfDay`.
+  /// [timeOfDay] : réservé aux PROFILS CRYPTO (conception interne) — un relevé de
+  /// grand livre crypto fournit l'heure à la seconde (Binance : la quasi-totalité
+  /// des lignes porte un horodatage distinct), alors que cette clé hache au JOUR
+  /// seul pour un relevé titres. `null` (TOUS les appelants actuels, profils
+  /// titres) doit produire une chaîne BIT-IDENTIQUE au comportement historique —
+  /// rien n'est ajouté, pas même un séparateur vide : les clés de dédup déjà en
+  /// base des utilisateurs (imports titres antérieurs) ne doivent JAMAIS être
+  /// invalidées par cette extension (cf. test de figement,
+  /// `bourse_direct_import_test.dart`). Renseigné, l'heure est intégrée à la chaîne
+  /// hachée via un suffixe `|$timeOfDay`.
   ///
   /// FORMAT EXIGÉ : un `HH:MM:SS` CANONIQUE (2 chiffres, séparateur `:`,
   /// zéro-paddé — ex. `09:05:00`), JAMAIS une cellule brute du relevé

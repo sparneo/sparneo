@@ -234,6 +234,8 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
           return l10n.corporateActionCashRegularization;
         case 'fractionalRedemption':
           return l10n.corporateActionFractionalRedemption;
+        case 'stakingReward':
+          return l10n.corporateActionStakingReward;
         case 'transferOut':
           break; // le kind transferOut est déjà explicite
       }

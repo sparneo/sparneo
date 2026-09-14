@@ -25,7 +25,9 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/model/account.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/crypto_import_plan.dart';
 import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/isin_search_hit.dart';
@@ -70,8 +72,47 @@ class _FakeVerifyController extends AccountController {
   Future<String?> confirmStatementImport(
     ImportPreview preview, {
     required String accountId,
+    Set<String> replaceImportKeys = const {},
+    bool journalizeUnbalancedInternalTransfers = false,
   }) async {
     confirmCalled = true;
+    return null;
+  }
+}
+
+/// Fake dont [accounts] renvoie une liste FIXÉE (chantier B16, garde de
+/// nature de compte) — aucun réseau ni base réelle, `confirmStatementImport`
+/// n'est pas exercé par ces tests-là (seule la garde AVANT l'aperçu l'est).
+class _FixedAccountsController extends AccountController {
+  _FixedAccountsController(this._fixedAccounts)
+      : super(initialAccountId: _accountId);
+
+  final List<Account> _fixedAccounts;
+
+  @override
+  List<Account> get accounts => _fixedAccounts;
+}
+
+/// Fake SANS RÉSEAU qui capture les paramètres crypto (`replaceImportKeys`/
+/// `journalizeUnbalancedInternalTransfers`) passés à `confirmStatementImport`
+/// (chantier B16, lot 1) — court-circuite l'écriture réelle, même motif que
+/// [_FakeVerifyController].
+class _FakeCryptoConfirmController extends AccountController {
+  _FakeCryptoConfirmController() : super(initialAccountId: _accountId);
+
+  Set<String> capturedReplaceImportKeys = const {};
+  bool capturedJournalizeUnbalancedInternalTransfers = false;
+
+  @override
+  Future<String?> confirmStatementImport(
+    ImportPreview preview, {
+    required String accountId,
+    Set<String> replaceImportKeys = const {},
+    bool journalizeUnbalancedInternalTransfers = false,
+  }) async {
+    capturedReplaceImportKeys = replaceImportKeys;
+    capturedJournalizeUnbalancedInternalTransfers =
+        journalizeUnbalancedInternalTransfers;
     return null;
   }
 }
@@ -248,6 +289,180 @@ ImportedMovement _rejectedTechMovement() => ImportedMovement.rejected(
       rejectReason: 'unknownKind',
       isin: null,
       label: 'Écriture',
+    );
+
+// ---------------------------------------------------------------------------
+// Fixtures crypto (chantier B16, lot 1, passe UX) — synthétiques, sans lien
+// avec les fixtures Kraken réelles de crypto_ledger_kraken_lot1_test.dart
+// (hors périmètre UI, non lues ici).
+// ---------------------------------------------------------------------------
+
+/// Un échange entre crypto-monnaies non valorisé (modèle (b) fichier-d'abord)
+/// — exclu de `toCreate`, groupe « Échanges à valoriser ».
+UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
+      kind: 'exchange',
+      date: DateTime(2024, 3, 5),
+      codePaid: 'ETH',
+      quantityPaid: '0.5',
+      codeReceived: 'ADA',
+      quantityReceived: '120',
+      sourceLines: const [10, 11],
+      importKey: 'ref:account-1:REFEXCH',
+    );
+
+/// Bilan de cohérence d'un actif dont les transferts internes ne nettent pas à
+/// zéro (conception interne) — ex. un airdrop livré directement en earn, sans
+/// jambe spot correspondante.
+final _unbalancedTransferFixture = UnbalancedInternalTransfer(
+  asset: 'ZZZ',
+  residual: '4.25',
+  rowCount: 2,
+  lastDate: DateTime(2024, 3, 5),
+);
+
+/// Rupture de la chaîne `balance` (oracle Kraken) — relevé incomplet.
+ChainRupture _chainRuptureFixture() => ChainRupture(
+      date: DateTime(2024, 1, 10),
+      asset: 'XETH',
+      wallet: 'spot',
+      sourceLine: 42,
+      expectedBalance: '1.5',
+      actualBalance: '1.2',
+    );
+
+/// Écart entre quantité projetée et `balance` finales déclarées — carte
+/// d'information, jamais un gardien.
+const _quantityGapFixture = QuantityGap(
+  asset: 'ADA',
+  reportedTotal: '120.5',
+  projectedTotal: '118.0',
+);
+
+/// Un mouvement de `toCreate` produit par l'agrégation mensuelle des
+/// récompenses (`meta['aggregation'] == 'monthly'`) — reflète un candidat
+/// crypto (ledgerCode, pas d'ISIN).
+ImportedMovement _aggregatedRewardMovement() => ImportedMovement.candidate(
+      sourceRow: const [],
+      sourceRowIndex: 200,
+      transaction: AssetTransaction(
+        id: 'tx-agg-jun',
+        accountId: _accountId,
+        symbol: null,
+        kind: TransactionKind.adjustment,
+        quantity: '3.1',
+        amount: '0',
+        currency: 'EUR',
+        date: DateTime(2024, 6, 30),
+        meta: const {
+          'importKey': 'agg:account-1:profil:AAA:2024-06',
+          'aggregation': 'monthly',
+          'aggregatedMonth': '2024-06',
+          'aggregatedRows': 9,
+        },
+      ),
+      isin: null,
+      label: 'AAA',
+      ledgerCode: 'AAA',
+      importKey: 'agg:account-1:profil:AAA:2024-06',
+    );
+
+/// Un candidat de remplacement d'agrégat mensuel (le mois s'est allongé à un
+/// ré-import, conception interne) : 12 lignes source → 30, +0,83 ADA.
+AggregateReplacement _replacementFixture() => AggregateReplacement(
+      movement: ImportedMovement.candidate(
+        sourceRow: const [],
+        sourceRowIndex: 201,
+        transaction: AssetTransaction(
+          id: 'tx-agg-sep',
+          accountId: _accountId,
+          symbol: null,
+          kind: TransactionKind.adjustment,
+          quantity: '30.83',
+          amount: '0',
+          currency: 'EUR',
+          date: DateTime(2026, 9, 30),
+          meta: const {
+            'importKey': 'agg:account-1:profil:ADA:2026-09',
+            'aggregation': 'monthly',
+          },
+        ),
+        isin: null,
+        label: 'ADA',
+        ledgerCode: 'ADA',
+        importKey: 'agg:account-1:profil:ADA:2026-09',
+      ),
+      month: '2026-09',
+      previousRowCount: 12,
+      newRowCount: 30,
+      quantityDelta: '0.83',
+    );
+
+/// Un candidat CRYPTO neuf coté (ticker résolu) — sert de contrôle aux tests
+/// de la note « panne réseau » (par opposition à un candidat non coté).
+const _resolvedCryptoAsset = NewAssetCandidate(
+  isin: null,
+  label: 'Cardano',
+  proposedSymbol: 'ADA-EUR',
+  ledgerCode: 'ADA',
+);
+
+/// Un candidat CRYPTO neuf non coté suite à une PANNE RÉSEAU rencontrée par
+/// la cascade de résolution ticker — à DISTINGUER d'un non-coté CONSTATÉ.
+const _networkFailureCryptoAsset = NewAssetCandidate(
+  isin: null,
+  label: 'Jeton Mystère',
+  proposedSymbol: 'MYST',
+  quotable: false,
+  ledgerCode: 'MYST',
+  networkFailure: true,
+);
+
+/// Un candidat CRYPTO neuf non coté CONSTATÉ (ticker introuvable après
+/// vérification réseau aboutie) — contrôle négatif de
+/// [_networkFailureCryptoAsset].
+const _confirmedNotListedCryptoAsset = NewAssetCandidate(
+  isin: null,
+  label: 'Jeton Inconnu',
+  proposedSymbol: 'UNK',
+  quotable: false,
+  ledgerCode: 'UNK',
+);
+
+/// Un mouvement crypto ordinaire candidat à `toCreate`, pour peupler la
+/// section « à créer » d'un aperçu crypto complet sans qu'elle interfère avec
+/// les groupes testés.
+ImportedMovement _cryptoBuyMovement() => ImportedMovement.candidate(
+      sourceRow: const [],
+      sourceRowIndex: 1,
+      transaction: AssetTransaction(
+        id: 'tx-crypto-buy',
+        accountId: _accountId,
+        symbol: 'BTC-EUR',
+        kind: TransactionKind.buy,
+        quantity: '0.01',
+        unitPrice: '50000',
+        amount: '-500',
+        currency: 'EUR',
+        date: DateTime(2024, 2, 1),
+        meta: const {'importKey': 'ref:account-1:REFBUY'},
+      ),
+      isin: null,
+      label: 'BTC',
+      ledgerCode: 'BTC',
+      resolvedSymbol: 'BTC-EUR',
+      importKey: 'ref:account-1:REFBUY',
+    );
+
+/// Aperçu crypto COMPLET rassemblant les six groupes (chantier B16, lot 1) —
+/// un seul mouvement ORDINAIRE dans `toCreate` pour que la branche principale
+/// (non « rien à créer ») de `_buildPreviewStep` soit exercée.
+ImportPreview _cryptoFullPreview() => ImportPreview(
+      toCreate: [_cryptoBuyMovement(), _aggregatedRewardMovement()],
+      unvaluedExchanges: [_unvaluedExchangeFixture()],
+      unbalancedInternalTransfers: [_unbalancedTransferFixture],
+      chainRuptures: [_chainRuptureFixture()],
+      quantityGaps: const [_quantityGapFixture],
+      replacements: [_replacementFixture()],
     );
 
 void main() {
@@ -952,6 +1167,454 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(controller.confirmCalled, isTrue);
+    });
+  });
+
+  group('StatementImportPage — profil Kraken (chantier B16, lot 1)', () {
+    testWidgets(
+        'sélectionner le profil Kraken affiche l\'indication dédiée et la '
+        'carte d\'information (conception interne)', (tester) async {
+      await tester.pumpWidget(_host(null));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Kraken'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          "Sélectionnez l'export CSV « Ledgers » de votre compte Kraken.",
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Relevé « Ledgers » de Kraken, format CSV. Les dates de ce relevé '
+          'sont en UTC et sont conservées telles quelles. Vos récompenses de '
+          'staking seront regroupées par mois.',
+        ),
+        findsOneWidget,
+      );
+      // Le bouton de sélection de fichier reste présent (aucun mapping
+      // manuel, comme Bourse Direct).
+      expect(find.text('Choisir un fichier'), findsOneWidget);
+    });
+
+    testWidgets(
+        'profil générique : AUCUNE carte d\'information Kraken (parcours '
+        'inchangé)', (tester) async {
+      await tester.pumpWidget(_host(null));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Relevé « Ledgers » de Kraken'),
+        findsNothing,
+      );
+    });
+  });
+
+  group('StatementImportPage — garde de nature de compte (chantier B16)', () {
+    testWidgets(
+        'profil Kraken choisi sur un compte non-crypto : avertissement '
+        'AVANT l\'aperçu, et « Annuler » referme sans exception',
+        (tester) async {
+      final controller = _FixedAccountsController([
+        Account(id: _accountId, walletId: 'w1', name: 'Compte test', kind: AccountKind.cto),
+      ]);
+
+      await tester.pumpWidget(_host(null, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Kraken'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choisir un fichier'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nature du compte'), findsOneWidget);
+      expect(
+        find.text(
+          'Ce relevé décrit un compte de crypto-monnaies ; le compte ouvert '
+          'est un Compte-titres (CTO). Continuer ?',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('Annuler'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Nature du compte'), findsNothing);
+    });
+
+    testWidgets(
+        'profil Kraken choisi sur un compte non-crypto : « Continuer » '
+        'referme l\'avertissement SANS EXCEPTION — jamais bloquant',
+        (tester) async {
+      final controller = _FixedAccountsController([
+        Account(id: _accountId, walletId: 'w1', name: 'Compte test', kind: AccountKind.cto),
+      ]);
+
+      await tester.pumpWidget(_host(null, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Kraken'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choisir un fichier'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Continuer'));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(find.text('Nature du compte'), findsNothing);
+    });
+
+    testWidgets(
+        'profil Kraken choisi sur un compte DÉJÀ crypto : aucun '
+        'avertissement', (tester) async {
+      final controller = _FixedAccountsController([
+        Account(id: _accountId, walletId: 'w1', name: 'Compte test', kind: AccountKind.crypto),
+      ]);
+
+      await tester.pumpWidget(_host(null, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Kraken'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choisir un fichier'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nature du compte'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets(
+        'profil Bourse Direct sur un compte non-crypto : AUCUN avertissement '
+        '(garde réservée aux profils crypto)', (tester) async {
+      final controller = _FixedAccountsController([
+        Account(id: _accountId, walletId: 'w1', name: 'Compte test', kind: AccountKind.cto),
+      ]);
+
+      await tester.pumpWidget(_host(null, controller: controller));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Bourse Direct'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Choisir un fichier'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Nature du compte'), findsNothing);
+      expect(tester.takeException(), isNull);
+    });
+  });
+
+  group('StatementImportPage — ancien format Kraken refusé globalement', () {
+    testWidgets(
+        'écran de refus DÉDIÉ (pas une liste de rejets) avec le message du '
+        'conception interne', (tester) async {
+      const preview = ImportPreview(
+        globalRejectReason: 'cryptoLegacyFormatUnsupported',
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.text("Format d'export non pris en charge"), findsOneWidget);
+      expect(
+        find.text(
+          "Cet export Kraken est d'un format antérieur : il ne contient ni "
+          "la valorisation en dollars ni le portefeuille d'origine. "
+          "Réexportez vos relevés « Ledgers » depuis Kraken.",
+        ),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(FilledButton, 'Fermer'), findsOneWidget);
+      // PAS une liste de rejets : aucun groupe de l'aperçu habituel.
+      expect(find.textContaining('Doublons'), findsNothing);
+      expect(find.textContaining('rejetée'), findsNothing);
+    });
+  });
+
+  group('StatementImportPage — six groupes crypto (chantier B16, lot 1)', () {
+    testWidgets(
+        'les six groupes sont rendus, dans l\'ordre, avec le bon état '
+        'déplié/replié par défaut', (tester) async {
+      final preview = _cryptoFullPreview();
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Titres des six groupes, tous présents.
+      expect(find.text('Échanges à valoriser (1)'), findsOneWidget);
+      expect(find.text('Mouvements internes (1)'), findsOneWidget);
+      expect(find.text('Relevé incomplet'), findsOneWidget);
+      expect(find.text('Écart de quantité (1)'), findsOneWidget);
+      expect(find.text('Récompenses regroupées (1)'), findsOneWidget);
+      expect(find.text('Récompenses mises à jour (1)'), findsOneWidget);
+
+      // Échanges à valoriser : DÉPLIÉ par défaut — la trace (ligne source,
+      // codes et quantités des deux parties) est visible sans interaction,
+      // et sans aucun champ de saisie (pas de valorisation en lot 1).
+      expect(find.text('Ligne(s) 10, 11 : 0.5 ETH → 120 ADA'), findsOneWidget);
+      expect(find.byType(TextField), findsNothing);
+
+      // Mouvements internes : le résidu et la bascule (défaut OFF) sont
+      // visibles sans interaction (pas un ExpansionTile replié).
+      expect(find.text('ZZZ : écart de 4.25 (2 lignes)'), findsOneWidget);
+      expect(
+        find.text('Les écarts ne seront pas journalisés (défaut).'),
+        findsOneWidget,
+      );
+
+      // Relevé incomplet : DÉPLIÉ.
+      expect(
+        find.text('Rupture le 10/01/2024 sur XETH (ligne 42).'),
+        findsOneWidget,
+      );
+
+      // Écart de quantité : DÉPLIÉ.
+      expect(
+        find.text('ADA : relevé 120.5, projection 118.0.'),
+        findsOneWidget,
+      );
+
+      // Récompenses regroupées / mises à jour : REPLIÉES par défaut — le
+      // contenu n'est PAS atteignable sans déplier.
+      expect(find.text('Juin 2024 — 9 lignes, +3.1 AAA'), findsNothing);
+      expect(
+        find.text('Septembre 2026 : 12 lignes → 30 lignes, +0.83 ADA'),
+        findsNothing,
+      );
+
+      await tester.ensureVisible(find.text('Récompenses regroupées (1)'));
+      await tester.tap(find.text('Récompenses regroupées (1)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Juin 2024 — 9 lignes, +3.1 AAA'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Récompenses mises à jour (1)'));
+      await tester.tap(find.text('Récompenses mises à jour (1)'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Septembre 2026 : 12 lignes → 30 lignes, +0.83 ADA'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'aperçu « rien à créer » (tout doublon) : les groupes crypto restent '
+        'visibles — seule occasion de les voir dans ce cas', (tester) async {
+      final preview = ImportPreview(
+        toCreate: const [],
+        duplicates: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Échanges à valoriser (1)'), findsOneWidget);
+      expect(find.text('Ligne(s) 10, 11 : 0.5 ETH → 120 ADA'), findsOneWidget);
+    });
+
+    testWidgets(
+        'mouvements internes : bascule ON → passe '
+        'journalizeUnbalancedInternalTransfers=true à la confirmation',
+        (tester) async {
+      final controller = _FakeCryptoConfirmController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unbalancedInternalTransfers: [_unbalancedTransferFixture],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.byType(Switch));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byType(Switch));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Les écarts seront journalisés comme des ajustements à coût nul.',
+        ),
+        findsOneWidget,
+      );
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(controller.capturedJournalizeUnbalancedInternalTransfers, isTrue);
+    });
+
+    testWidgets(
+        'mouvements internes : bascule laissée OFF → '
+        'journalizeUnbalancedInternalTransfers=false à la confirmation '
+        '(défaut prudent, jamais de correction silencieuse)',
+        (tester) async {
+      final controller = _FakeCryptoConfirmController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unbalancedInternalTransfers: [_unbalancedTransferFixture],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.capturedJournalizeUnbalancedInternalTransfers,
+        isFalse,
+      );
+    });
+
+    testWidgets(
+        'récompenses mises à jour : le remplacement affiché est TOUJOURS '
+        'confirmé (aucune bascule dédiée) — passe son importKey en '
+        'replaceImportKeys', (tester) async {
+      final controller = _FakeCryptoConfirmController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        replacements: [_replacementFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.capturedReplaceImportKeys,
+        {'agg:account-1:profil:ADA:2026-09'},
+      );
+    });
+  });
+
+  group(
+      'StatementImportPage — nouveaux actifs crypto : panne réseau vs non '
+      'coté constaté (chantier B16, lot 1)', () {
+    testWidgets(
+        'la note « panne réseau » est DISTINCTE du badge « Non coté » '
+        'constaté (patron conception interne : jamais assimiler une panne de '
+        'transport à une invalidité)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        newAssets: const [
+          _networkFailureCryptoAsset,
+          _confirmedNotListedCryptoAsset,
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      // Les deux candidats ont déjà un proposedSymbol : rien à résoudre,
+      // retour direct à l'aperçu.
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Vérification impossible (connexion indisponible) — actif ajouté '
+          'non coté ; à revérifier plus tard.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Non coté'), findsOneWidget);
+    });
+
+    testWidgets(
+        'un candidat crypto COTÉ (résolu) ne porte aucune des deux notes',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        newAssets: const [_resolvedCryptoAsset],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Vérification impossible'),
+        findsNothing,
+      );
+      expect(find.text('Non coté'), findsNothing);
+      // Le code du relevé d'origine (ledgerCode) reste affiché en
+      // provenance du ticker résolu.
+      expect(find.text('ADA'), findsOneWidget);
+    });
+  });
+
+  group('StatementImportPage — écran Terminé (chantier B16, lot 1)', () {
+    testWidgets(
+        'mention de la limite d\'annulation si l\'import a inclus un '
+        'remplacement de récompenses (l\'agrégat précédent est supprimé, un '
+        'futur "Annuler" ne le restaure pas)', (tester) async {
+      final controller = _FakeCryptoConfirmController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        replacements: [_replacementFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Les récompenses de Septembre 2026 ont été mises à jour ; annuler '
+          'cet import ne restaurera pas leur version précédente.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'AUCUN remplacement : aucune mention de limite d\'annulation liée '
+        'aux récompenses', (tester) async {
+      final controller = _FakeCryptoConfirmController();
+      final preview = ImportPreview(toCreate: [_cryptoBuyMovement()]);
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('ont été mises à jour'), findsNothing);
     });
   });
 }

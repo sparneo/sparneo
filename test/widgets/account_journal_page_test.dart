@@ -536,4 +536,33 @@ void main() {
       },
     );
   });
+
+  group('AccountJournalPage — libellé crypto (chantier B16, lot 1)', () {
+    testWidgets(
+      'une récompense de staking affiche « Récompense de staking », pas le '
+      'libellé générique « Ajustement » ni « qté × prix » (coût nul, '
+      'unitPrice absent — patron conception interne)',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-reward',
+          accountId: _accountId,
+          symbol: 'ADA-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '12.4',
+          currency: 'EUR',
+          date: DateTime(2024, 3, 31),
+          meta: const {'corporateAction': 'stakingReward'},
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Récompense de staking'), findsOneWidget);
+        expect(find.text('Ajustement'), findsNothing);
+        // Sous-titre : la nature l'emporte quand qté × prix n'informe pas
+        // (unitPrice absent ici) — pas de « × » affiché.
+        expect(find.textContaining('×'), findsNothing);
+      },
+    );
+  });
 }

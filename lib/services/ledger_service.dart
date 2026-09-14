@@ -453,11 +453,33 @@ class LedgerService {
   /// `meta['importKey']` ni de `meta['seq']`). Cette estampille identifie le LOT
   /// d'import et rend l'annulation ciblée possible ([removeImportBatch]) : elle
   /// n'a AUCUN autre effet (ni sur la projection titre, ni sur le cash).
+  ///
+  /// [replaceImportKeys] (OPTIONNEL, défaut vide → comportement historique
+  /// INCHANGÉ) : mécanisme de REMPLACEMENT CIBLÉ, chantier B16 — DEUX cas
+  /// d'usage désormais (I-2, revue adversariale, généralise §5.1.8b) : les
+  /// agrégats mensuels de récompenses crypto (le mois s'est allongé à un
+  /// ré-import, la clé `agg:…` est STABLE mais le contenu diffère) ET les
+  /// résidus de transferts internes non équilibrés (§5.1.5, la clé
+  /// `internalresidual:…` est STABLE, le résidu peut varier d'un ré-import à
+  /// l'autre). Dans LA MÊME transaction, AVANT tout écriture (étape 0) : les
+  /// mouvements du compte dont `meta['importKey']` figure dans cet ensemble
+  /// ET dont `meta['aggregation'] == 'monthly'` **OU** `meta['replaceable'] ==
+  /// true` sont supprimés — GARDE STRICTE revérifiée ICI (défense en
+  /// profondeur, ne fait PAS confiance à l'appelant) : un mouvement de même
+  /// clé mais SANS l'une de ces deux marques N'EST JAMAIS supprimé (il
+  /// resterait alors en doublon logique avec le nouveau mouvement entrant de
+  /// même `importKey` — c'est le SIGNE d'une anomalie que l'appelant doit
+  /// avoir écartée EN AMONT via un rejet motivé, jamais silencieusement ici).
+  /// La suppression précède la création de positions (étape 1) et l'upsert
+  /// (étape 2) : la reprojection habituelle (étape 3) voit alors le journal
+  /// déjà expurgé de l'ancien agrégat/résidu — atomicité totale (toute
+  /// exception plus bas ROLLBACK aussi cette suppression).
   Future<ImportResult> importMovements({
     required String accountId,
     required List<AssetTransaction> movements,
     required List<Asset> newAssets,
     String? importBatchId,
+    Set<String> replaceImportKeys = const {},
   }) async {
     final db = await _db.database;
 
@@ -467,6 +489,24 @@ class LedgerService {
     final leftLegacy = <String>[];
 
     await db.transaction((txn) async {
+      // 0. REMPLACEMENT CIBLÉ (agrégats mensuels crypto, conception interne) :
+      // suppression AVANT toute autre écriture, dans la MÊME transaction.
+      if (replaceImportKeys.isNotEmpty) {
+        final existing = await _txStorage.getByAccount(accountId, executor: txn);
+        for (final t in existing) {
+          final key = t.meta?['importKey'];
+          if (key is! String || !replaceImportKeys.contains(key)) continue;
+          // Garde stricte revérifiée : seul un agrégat mensuel OU un
+          // mouvement explicitement marqué `replaceable` (résidu de
+          // transfert interne, I-2) EST remplaçable.
+          if (t.meta?['aggregation'] != 'monthly' &&
+              t.meta?['replaceable'] != true) {
+            continue;
+          }
+          await _txStorage.deleteById(t.id, executor: txn);
+        }
+      }
+
       // Instantané PRÉ-IMPORT des positions du compte (symbol → état), lu UNE
       // fois et AVANT toute création/reprojection : c'est ce qui distingue sans
       // ambiguïté un symbole nouveau, un symbole déjà projeté (derived_at non

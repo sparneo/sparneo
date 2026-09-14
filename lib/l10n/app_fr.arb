@@ -290,6 +290,7 @@
   "corporateActionPlaceChange": "Changement de place de cotation",
   "corporateActionCashRegularization": "Régularisation en espèces",
   "corporateActionFractionalRedemption": "Rachat de rompus",
+  "corporateActionStakingReward": "Récompense de staking",
   "transactionKindInterest": "Intérêts",
   "transactionKindCharge": "Frais",
   "transactionKindTransferOut": "Transfert de titres (sortie)",
@@ -497,5 +498,44 @@
   "importUndoError": "Impossible d'annuler l'import. Réessayez.",
 
   "importSearchUnavailable": "Recherche indisponible — vérifiez votre connexion.",
-  "importSearchRetryButton": "Réessayer"
+  "importSearchRetryButton": "Réessayer",
+
+  "importProfileKrakenLabel": "Kraken",
+  "importPickFileHintKraken": "Sélectionnez l'export CSV « Ledgers » de votre compte Kraken.",
+  "importKrakenInfoCardBody": "Relevé « Ledgers » de Kraken, format CSV. Les dates de ce relevé sont en UTC et sont conservées telles quelles. Vos récompenses de staking seront regroupées par mois.",
+
+  "importCryptoAccountKindWarningTitle": "Nature du compte",
+  "importCryptoAccountKindWarningMessage": "Ce relevé décrit un compte de crypto-monnaies ; le compte ouvert est un {kind}. Continuer ?",
+
+  "importCryptoLegacyFormatTitle": "Format d'export non pris en charge",
+  "importCryptoLegacyFormatMessage": "Cet export Kraken est d'un format antérieur : il ne contient ni la valorisation en dollars ni le portefeuille d'origine. Réexportez vos relevés « Ledgers » depuis Kraken.",
+
+  "importGroupUnvaluedExchanges": "Échanges à valoriser ({count})",
+  "importUnvaluedExchangesExplain": "Ces échanges entre crypto-monnaies seront importables dans une prochaine version, ou après valorisation.",
+  "importUnvaluedExchangeLine": "Ligne(s) {lines} : {paidQuantity} {paidCode} → {receivedQuantity} {receivedCode}",
+  "importUnvaluedDepositLine": "Ligne(s) {lines} : reçu {receivedQuantity} {receivedCode}",
+
+  "importGroupUnbalancedInternalTransfers": "Mouvements internes ({count})",
+  "importUnbalancedInternalTransfersExplain": "Des mouvements internes ne reviennent pas à zéro pour ces actifs.",
+  "importUnbalancedInternalTransferLine": "{asset} : écart de {residual} ({rows} lignes)",
+  "importUnbalancedInternalTransfersToggleLabel": "Enregistrer l'écart",
+  "importUnbalancedInternalTransfersToggleOn": "Les écarts seront journalisés comme des ajustements à coût nul.",
+  "importUnbalancedInternalTransfersToggleOff": "Les écarts ne seront pas journalisés (défaut).",
+
+  "importGroupChainRuptures": "Relevé incomplet",
+  "importChainRupturesExplain": "Ce relevé semble incomplet. Le prix de revient calculé sera faux.",
+  "importChainRuptureLine": "Rupture le {date} sur {asset} (ligne {sourceLine}).",
+
+  "importGroupQuantityGaps": "Écart de quantité ({count})",
+  "importQuantityGapLine": "{asset} : relevé {reported}, projection {projected}.",
+
+  "importGroupAggregatedRewards": "Récompenses regroupées ({count})",
+  "importAggregatedRewardLine": "{month} — {rows} lignes, {delta} {asset}",
+
+  "importGroupReplacements": "Récompenses mises à jour ({count})",
+  "importReplacementLine": "{month} : {previousRows} lignes → {newRows} lignes, {delta} {asset}",
+
+  "importNewAssetNetworkFailureNote": "Vérification impossible (connexion indisponible) — actif ajouté non coté ; à revérifier plus tard.",
+
+  "importSummaryRewardsUpdated": "Les récompenses de {months} ont été mises à jour ; annuler cet import ne restaurera pas leur version précédente."
 }

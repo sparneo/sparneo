@@ -1684,6 +1684,10 @@
   "@corporateActionFractionalRedemption": {
     "description": "Journal line label for an imported cash redemption of fractional shares left over from an attribution or split"
   },
+  "corporateActionStakingReward": "Staking reward",
+  "@corporateActionStakingReward": {
+    "description": "Journal line label for an imported crypto staking/earn reward (monthly-aggregated or individual) — same underlying effect as a free share attribution (zero-cost adjustment) but labelled distinctly so the two economic realities are never conflated (B16 lot 1)."
+  },
 
   "transactionKindInterest": "Interest",
   "@transactionKindInterest": {
@@ -2562,5 +2566,189 @@
   "importSearchRetryButton": "Retry",
   "@importSearchRetryButton": {
     "description": "Button on the search-unavailable banner that re-runs failed ISIN searches"
+  },
+
+  "importProfileKrakenLabel": "Kraken",
+  "@importProfileKrakenLabel": {
+    "description": "Segmented button label for the Kraken broker profile (B16 lot 1) — skips the manual column-mapping step, like Bourse Direct"
+  },
+  "importPickFileHintKraken": "Select the CSV \"Ledgers\" export from your Kraken account.",
+  "@importPickFileHintKraken": {
+    "description": "Hint text on the file-pick step when the Kraken profile is selected"
+  },
+  "importKrakenInfoCardBody": "Kraken's \"Ledgers\" statement, CSV format. Dates in this statement are in UTC and are kept as written. Your staking rewards will be grouped by month.",
+  "@importKrakenInfoCardBody": {
+    "description": "Info card shown before the preview when the Kraken profile is selected (doc 20 §5.5.1) — sets expectations about the file format, date handling and reward aggregation before the user picks a file"
+  },
+
+  "importCryptoAccountKindWarningTitle": "Account type",
+  "@importCryptoAccountKindWarningTitle": {
+    "description": "Dialog title for the crypto-account-kind guard (B16 lot 1)"
+  },
+  "importCryptoAccountKindWarningMessage": "This statement describes a crypto-currency account; the account you have open is a {kind}. Continue?",
+  "@importCryptoAccountKindWarningMessage": {
+    "description": "Dialog message shown when a crypto broker profile is selected but the target account's kind isn't crypto — never blocking, just a heads-up before the preview (doc 20 §5.5.2)",
+    "placeholders": {
+      "kind": { "type": "String" }
+    }
+  },
+
+  "importCryptoLegacyFormatTitle": "Unsupported export format",
+  "@importCryptoLegacyFormatTitle": {
+    "description": "Heading of the dedicated failure screen for an old-format Kraken export (missing wallet/subclass/amountusd columns, doc 20 N1)"
+  },
+  "importCryptoLegacyFormatMessage": "This Kraken export is in an older format: it contains neither the dollar valuation nor the originating wallet. Re-export your \"Ledgers\" statements from Kraken.",
+  "@importCryptoLegacyFormatMessage": {
+    "description": "Body of the dedicated failure screen for the legacy Kraken export format — the whole file is refused rather than imported in a degraded form"
+  },
+
+  "importGroupUnvaluedExchanges": "Exchanges to value ({count})",
+  "@importGroupUnvaluedExchanges": {
+    "description": "Section title for crypto-to-crypto exchanges that cannot be journalled yet (no valuation engine in lot 1)",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUnvaluedExchangesExplain": "These crypto-to-crypto exchanges will be importable in a future version, or once valued.",
+  "@importUnvaluedExchangesExplain": {
+    "description": "Explanatory text under the 'exchanges to value' group title"
+  },
+  "importUnvaluedExchangeLine": "Row(s) {lines}: {paidQuantity} {paidCode} → {receivedQuantity} {receivedCode}",
+  "@importUnvaluedExchangeLine": {
+    "description": "One line per unvalued crypto exchange: source row(s), the sold side and the received side (never called 'legs' on screen)",
+    "placeholders": {
+      "lines": { "type": "String" },
+      "paidQuantity": { "type": "String" },
+      "paidCode": { "type": "String" },
+      "receivedQuantity": { "type": "String" },
+      "receivedCode": { "type": "String" }
+    }
+  },
+  "importUnvaluedDepositLine": "Row(s) {lines}: received {receivedQuantity} {receivedCode}",
+  "@importUnvaluedDepositLine": {
+    "description": "One line per unvalued in-kind deposit (no sold side, the asset comes from outside the platform) awaiting valuation",
+    "placeholders": {
+      "lines": { "type": "String" },
+      "receivedQuantity": { "type": "String" },
+      "receivedCode": { "type": "String" }
+    }
+  },
+
+  "importGroupUnbalancedInternalTransfers": "Internal movements ({count})",
+  "@importGroupUnbalancedInternalTransfers": {
+    "description": "Section title for crypto internal transfers (spot/staking/earn) whose account doesn't net back to zero for some assets (doc 20 §5.1.5)",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUnbalancedInternalTransfersExplain": "Internal movements don't net back to zero for these assets.",
+  "@importUnbalancedInternalTransfersExplain": {
+    "description": "Explanatory text under the 'internal movements' group title"
+  },
+  "importUnbalancedInternalTransferLine": "{asset}: gap of {residual} ({rows} rows)",
+  "@importUnbalancedInternalTransferLine": {
+    "description": "One line per asset with a non-zero internal-transfer residual",
+    "placeholders": {
+      "asset": { "type": "String" },
+      "residual": { "type": "String" },
+      "rows": { "type": "int" }
+    }
+  },
+  "importUnbalancedInternalTransfersToggleLabel": "Record the gap",
+  "@importUnbalancedInternalTransfersToggleLabel": {
+    "description": "Switch label to journal the internal-transfer residual as a zero-cost adjustment — OFF by default (cautious default, doc 20 §5.1.5)"
+  },
+  "importUnbalancedInternalTransfersToggleOn": "The gaps will be journalled as zero-cost adjustments.",
+  "@importUnbalancedInternalTransfersToggleOn": {
+    "description": "Switch subtitle when ON"
+  },
+  "importUnbalancedInternalTransfersToggleOff": "The gaps will not be journalled (default).",
+  "@importUnbalancedInternalTransfersToggleOff": {
+    "description": "Switch subtitle when OFF (the cautious default)"
+  },
+
+  "importGroupChainRuptures": "Incomplete statement",
+  "@importGroupChainRuptures": {
+    "description": "Section title for the Kraken balance-chain completeness guard (doc 20 §5.1.10) — a light, never-blocking information card"
+  },
+  "importChainRupturesExplain": "This statement seems incomplete. The cost basis computed from it will be wrong.",
+  "@importChainRupturesExplain": {
+    "description": "Explanatory text under the 'incomplete statement' group title"
+  },
+  "importChainRuptureLine": "Break on {date} on {asset} (row {sourceLine}).",
+  "@importChainRuptureLine": {
+    "description": "One line per detected balance-chain break (Kraken oracle)",
+    "placeholders": {
+      "date": { "type": "String" },
+      "asset": { "type": "String" },
+      "sourceLine": { "type": "int" }
+    }
+  },
+
+  "importGroupQuantityGaps": "Quantity gap ({count})",
+  "@importGroupQuantityGaps": {
+    "description": "Section title for the Kraken quantity-vs-balance guard (doc 20 §5.1.10) — informational, never corrective",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importQuantityGapLine": "{asset}: statement {reported}, projection {projected}.",
+  "@importQuantityGapLine": {
+    "description": "One line per asset whose projected quantity differs from the statement's declared balance (the engine already excludes unvalued exchanges from this comparison)",
+    "placeholders": {
+      "asset": { "type": "String" },
+      "reported": { "type": "String" },
+      "projected": { "type": "String" }
+    }
+  },
+
+  "importGroupAggregatedRewards": "Rewards grouped by month ({count})",
+  "@importGroupAggregatedRewards": {
+    "description": "Section title (collapsed by default) listing the monthly reward aggregates produced by the import — a filtered view of the movements already in the 'to create' group, for readability (doc 20 §5.1.8)",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importAggregatedRewardLine": "{month} — {rows} rows, {delta} {asset}",
+  "@importAggregatedRewardLine": {
+    "description": "One line per monthly reward aggregate",
+    "placeholders": {
+      "month": { "type": "String" },
+      "rows": { "type": "int" },
+      "delta": { "type": "String" },
+      "asset": { "type": "String" }
+    }
+  },
+
+  "importGroupReplacements": "Rewards updated ({count})",
+  "@importGroupReplacements": {
+    "description": "Section title (collapsed by default) for monthly reward aggregates already in the journal whose content changed on re-import (the month grew longer, doc 20 §5.1.8b) — confirming the import replaces them",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importReplacementLine": "{month}: {previousRows} rows → {newRows} rows, {delta} {asset}",
+  "@importReplacementLine": {
+    "description": "One line per replaced monthly reward aggregate",
+    "placeholders": {
+      "month": { "type": "String" },
+      "previousRows": { "type": "int" },
+      "newRows": { "type": "int" },
+      "delta": { "type": "String" },
+      "asset": { "type": "String" }
+    }
+  },
+
+  "importNewAssetNetworkFailureNote": "Could not verify (connection unavailable) — asset added as not listed; check again later.",
+  "@importNewAssetNetworkFailureNote": {
+    "description": "Note on a new crypto asset candidate whose ticker resolution stopped on a network failure rather than a confirmed absence of listing (doc 20 §5.1.6, pattern doc 17 §14.5) — never conflated with 'not listed'"
+  },
+
+  "importSummaryRewardsUpdated": "Rewards for {months} were updated; undoing this import will not restore their previous version.",
+  "@importSummaryRewardsUpdated": {
+    "description": "Note on the done screen when the confirmed import included monthly reward-aggregate replacements (doc 20 §5.1.8b limit) — the replaced aggregate is gone, a later undo of THIS import won't bring it back",
+    "placeholders": {
+      "months": { "type": "String" }
+    }
   }
 }

@@ -36,6 +36,15 @@ class ImportedMovement {
   /// Libellé de l'instrument lu sur la ligne, s'il est mappé et non vide.
   final String? label;
 
+  /// Code d'actif du RELEVÉ CRYPTO d'origine APRÈS alias d'identité (ex. `BTC`),
+  /// produit UNIQUEMENT par `CryptoLedgerNormalizer` (chantier B16, conception
+  /// interne) — `null` pour tout mouvement issu d'un profil titres. Joue le même
+  /// rôle que [isin] pour la résolution d'actif, mais via la CASCADE ledgerCode →
+  /// ticker (étages 1-5, `AccountController`) plutôt que la résolution ISIN →
+  /// symbole : un profil crypto n'a pas d'ISIN, son identité de journal est ce
+  /// code.
+  final String? ledgerCode;
+
   /// `true` si le mouvement porte un instrument (buy/sell/dividend…) dont le
   /// symbole n'est pas encore résolu : une couche supérieure doit faire
   /// correspondre [isin]/[label] à un symbole (ou créer un actif sans
@@ -63,6 +72,7 @@ class ImportedMovement {
     required AssetTransaction this.transaction,
     this.isin,
     this.label,
+    this.ledgerCode,
     this.needsAssetResolution = false,
     this.resolvedSymbol,
     required String this.importKey,
@@ -74,6 +84,7 @@ class ImportedMovement {
     required String this.rejectReason,
     this.isin,
     this.label,
+    this.ledgerCode,
   })  : transaction = null,
         needsAssetResolution = false,
         resolvedSymbol = null,

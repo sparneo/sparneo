@@ -184,6 +184,20 @@ enum CorporateActionKind {
   /// dérive de [MovementField.cashDirection] (`SensEsp` : `D` → −, `C`/défaut →
   /// +).
   cashRegularization,
+
+  /// Récompense de STAKING/EARN crypto (chantier B16, conception interne) — effet
+  /// identique à [freeAttribution] (`adjustment` TITRE, `unitPrice` FORCÉ nul, aucun
+  /// cash), mais affiché sous un libellé distinct (« Récompense de staking » plutôt
+  /// que « Attribution gratuite »), exactement la leçon de la conception interne : ne
+  /// jamais faire porter à un libellé générique deux réalités économiques différentes.
+  /// Persisté UNIQUEMENT comme `meta['corporateAction'] = 'stakingReward'` (String),
+  /// écrit DIRECTEMENT par `CryptoLedgerNormalizer` (agrégation mensuelle, §5.1.8) —
+  /// ce code n'est JAMAIS atteint via un [BrokerProfile.corporateActions] (aucun
+  /// profil ne mappe de libellé dessus) : le cas existe ici pour que le `switch`
+  /// EXHAUSTIF de `StatementImportService._normalizeCorporateAction` reste exhaustif
+  /// ET documente l'effet attendu, au cas où un futur profil titres voudrait un jour
+  /// l'utiliser directement.
+  stakingReward,
 }
 
 /// Profil de relevé courtier : délimiteur, encodage, formats numérique/date,
@@ -358,6 +372,122 @@ class BrokerProfile {
         'PEAMI': CorporateActionKind.cashRegularization,
         'ODOST': CorporateActionKind.cashRegularization,
       },
+    );
+  }
+
+  /// Profil « Kraken » (export « Ledgers » CSV, lot 1 du chantier B16 — conception
+  /// interne). Grand livre de JAMBES (une ligne = un mouvement d'UN actif) : le
+  /// [crypto] greffé fait toute la différence avec [bourseDirect] — le
+  /// [kindLexicon]/[corporateActions] de la classe TITRE restent vides,
+  /// `CryptoLedgerNormalizer` résout les 22 natures via [CryptoLedgerSpec.actions]
+  /// (clé composite `'type/subtype'`, repli `'type'`).
+  ///
+  /// REFUS DE L'ANCIEN FORMAT (conception interne) : un export Kraken antérieur (10
+  /// colonnes, sans `wallet`/`subclass`/`amountusd`) a une sémantique incompatible
+  /// avec le modèle de valorisation (b) — `requiredColumns` déclenche un refus
+  /// GLOBAL motivé dans `CryptoLedgerNormalizer`, jamais un import dégradé.
+  factory BrokerProfile.kraken() {
+    return BrokerProfile(
+      id: 'kraken-ledgers',
+      label: 'Kraken',
+      delimiter: ',',
+      encoding: utf8,
+      hasHeaderRow: true,
+      dateFormat: const DateFormatSpec(separator: '-', yearFirst: true),
+      decimalSeparator: DecimalSeparator.dot,
+      columns: const ColumnMapping(byName: {
+        MovementField.date: 'time',
+        MovementField.kindLabel: 'type',
+        MovementField.symbol: 'asset',
+        MovementField.quantity: 'amount',
+        MovementField.fee: 'fee',
+        MovementField.operationReference: 'refid',
+      }),
+      kindLexicon: const {},
+      crypto: CryptoLedgerSpec(
+        grouping: LegGroupingStrategy.operationReference,
+        groupKeyColumn: MovementField.operationReference,
+        subKindColumn: 'subtype',
+        walletColumn: 'wallet',
+        balanceColumn: 'balance',
+        // Colonnes DISCRIMINANTES : leur absence signe l'ancien format Kraken
+        // (N1) → refus global motivé, jamais d'import dégradé.
+        requiredColumns: const {'wallet', 'subclass', 'amountusd'},
+        // Classifieur FOURNI par le fichier (N13) — jamais une liste en dur.
+        assetClassColumn: 'subclass',
+        stakedSuffixes: const {'.S'},
+        // Alias d'IDENTITÉ (journal), appliqués AVANT le groupage (§5.1.5) :
+        // ETH2→ETH (migration earn), MATIC→POL (rebranding Polygon),
+        // UST→USTC / LUNA→LUNC (séquelles Terra, délistages convertis).
+        identityAliases: const {
+          'ETH2': 'ETH',
+          'MATIC': 'POL',
+          'UST': 'USTC',
+          'LUNA': 'LUNC',
+        },
+        // Alias de COTATION, table DISTINCTE (N12) : ces identités ne cotent
+        // qu'en USD chez Yahoo (`<CODE>-EUR` répond 404).
+        quoteAliases: const {
+          'POL': 'POL-USD',
+          'FLR': 'FLR-USD',
+          'SGB': 'SGB-USD',
+          'STRK': 'STRK-USD',
+          'MOVR': 'MOVR-USD',
+          'GLMR': 'GLMR-USD',
+          'ETHW': 'ETHW-USD',
+        },
+        valuationAmountColumn: 'amountusd',
+        valuationCurrency: 'USD',
+        rewards: RewardAggregation.monthly,
+        maxLegValuationSpread: 0.10,
+        // Table de mapping complète (conception interne). `spend`/`receive` SANS
+        // sous-type (42 paires crypto↔fiat + 3 crypto↔crypto) atteignent le REPLI
+        // `'type'` seul (clé composite absente faute de sous-type sur ces lignes) —
+        // seule la variante `dustsweeping` porte un sous-type explicite.
+        //
+        // NOTE (assumption documentée) : les 4 sous-types `transfer` spot↔staking et les
+        // libellés exacts `dustsweeping`/`spotfromfutures` sont NOMMÉS d'après le
+        // vocabulaire de la conception interne — l'export réel n'a pas pu être relu pour
+        // figer l'orthographe exacte des `subtype` (fixtures 100 % synthétiques,
+        // politique du chantier). Si un futur export porte une graphie différente pour un
+        // de ces sous-types, la clé composite `type/subtype` correspondante ne matche
+        // AUCUNE entrée de cette table : la ligne part en rejet motivé
+        // `unknownCryptoAction` (B4, jamais de coercition) — `_resolveAction`
+        // (crypto_ledger_normalizer.dart) réserve le repli sur le type nu aux seules
+        // lignes SANS sous-type renseigné, jamais à un sous-type présent mais méconnu
+        // (B-1, revue adversariale : un repli aveugle aurait silencieusement réinterprété
+        // un sous-type inconnu comme le sens du type nu — position détruite sans alerte).
+        actions: const {
+          'trade/tradespot': CryptoLedgerAction.exchangeLeg,
+          'spend': CryptoLedgerAction.exchangeLeg,
+          'receive': CryptoLedgerAction.exchangeLeg,
+          'spend/dustsweeping': CryptoLedgerAction.exchangeLeg,
+          'receive/dustsweeping': CryptoLedgerAction.exchangeLeg,
+          'staking': CryptoLedgerAction.reward,
+          'earn/reward': CryptoLedgerAction.reward,
+          'earn/airdrop': CryptoLedgerAction.reward,
+          'earn/migration': CryptoLedgerAction.assetMigration,
+          'earn/allocation': CryptoLedgerAction.internalTransfer,
+          'earn/deallocation': CryptoLedgerAction.internalTransfer,
+          'earn/autoallocation': CryptoLedgerAction.internalTransfer,
+          'earn/delistingconversion': CryptoLedgerAction.assetMigration,
+          'transfer/spottostaking': CryptoLedgerAction.internalTransfer,
+          'transfer/stakingtospot': CryptoLedgerAction.internalTransfer,
+          'transfer/spotfromstaking': CryptoLedgerAction.internalTransfer,
+          'transfer/stakingfromspot': CryptoLedgerAction.internalTransfer,
+          // `depositIn` posé ici par convention : le sens EFFECTIF de ces trois codes
+          // ambigus (« 3 entrées + 3 sorties réelles » / poussières de délistage, conception
+          // interne) est redérivé du SIGNE net par `CryptoLedgerNormalizer` (redirection
+          // depositIn↔withdrawalOut selon le signe, §C) — contrairement à
+          // `deposit`/`withdrawal` (Kraken) dont le TYPE fixe déjà la direction sans
+          // ambiguïté.
+          'transfer/spotfromfutures': CryptoLedgerAction.depositIn,
+          'transfer': CryptoLedgerAction.depositIn,
+          'transfer/delistingconversion': CryptoLedgerAction.depositIn,
+          'deposit': CryptoLedgerAction.depositIn,
+          'withdrawal': CryptoLedgerAction.withdrawalOut,
+        },
+      ),
     );
   }
 

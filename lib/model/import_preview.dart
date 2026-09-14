@@ -5,7 +5,46 @@
 // nouveaux à résoudre. AUCUNE écriture n'est faite ici — c'est le
 // contrôleur qui décide de la confirmation.
 
+import 'package:portfolio_tracker/model/crypto_import_plan.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
+
+/// Candidat de REMPLACEMENT d'un agrégat mensuel de récompenses crypto déjà en
+/// base (chantier B16, conception interne) : même `importKey` `agg:…` que
+/// [ImportedMovement.importKey], mais CONTENU différent (le mois s'est allongé à
+/// un ré-import — ex. 12 lignes source → 30) ET le mouvement en base porte
+/// `meta['aggregation'] == 'monthly'` (garde stricte, §5.1.8b) — sans cette
+/// garde un mouvement NON-agrégat de même clé serait une anomalie (`rejects`),
+/// jamais un candidat de remplacement. Le mouvement de remplacement lui-même vit
+/// dans [ImportedMovement.transaction] (même objet que celui qu'on aurait
+/// autrement mis dans `toCreate`) — cette classe ne fait qu'exposer le DELTA
+/// pour l'aperçu.
+class AggregateReplacement {
+  /// Mouvement de remplacement (nouvel agrégat), prêt à être écrit — c'est
+  /// son `meta['importKey']` qui doit figurer dans
+  /// `LedgerService.importMovements(replaceImportKeys:)` à la confirmation.
+  final ImportedMovement movement;
+
+  /// Mois du bucket (`AAAA-MM`), pour l'affichage.
+  final String month;
+
+  /// Nombre de lignes source de l'agrégat EN BASE (avant remplacement).
+  final int previousRowCount;
+
+  /// Nombre de lignes source du NOUVEL agrégat (après remplacement).
+  final int newRowCount;
+
+  /// Delta de quantité (nouveau − ancien), signé, pour l'affichage
+  /// (« +0,83 ADA »).
+  final String quantityDelta;
+
+  const AggregateReplacement({
+    required this.movement,
+    required this.month,
+    required this.previousRowCount,
+    required this.newRowCount,
+    required this.quantityDelta,
+  });
+}
 
 /// Actif introduit par l'import et pas encore résolu à un symbole existant.
 /// La résolution (mapper à une position existante par ISIN, chercher un
@@ -35,12 +74,28 @@ class NewAssetCandidate {
   /// détenues). Toujours créé avec [proposedSymbol] = ISIN et [quotable] = false.
   final bool closedLine;
 
+  /// Code d'actif du RELEVÉ CRYPTO d'origine (`ledgerCode`, APRÈS alias
+  /// d'identité) — `null` pour tout candidat issu d'un profil titres. Transmis tel
+  /// quel à `Asset.ledgerCode` à la création (conception interne) : c'est la clé
+  /// de la cascade de résolution ticker, DISTINCTE de [isin].
+  final String? ledgerCode;
+
+  /// `true` si [quotable] == `false` à cause d'une PANNE RÉSEAU (timeout, 429…)
+  /// rencontrée par la cascade de résolution ticker (`AccountController.
+  /// _resolveCryptoTicker`, conception interne), plutôt qu'une non-existence
+  /// CONSTATÉE (404 sur les deux étages réseau) — distinction à faire à l'écran
+  /// (patron conception interne : une panne de transport n'est jamais assimilée à
+  /// une invalidité). Toujours `false` pour un candidat titre.
+  final bool networkFailure;
+
   const NewAssetCandidate({
     this.isin,
     required this.label,
     this.proposedSymbol,
     this.quotable = true,
     this.closedLine = false,
+    this.ledgerCode,
+    this.networkFailure = false,
   });
 }
 
@@ -74,6 +129,14 @@ class ProjectedDelta {
 /// Résultat agrégé de la normalisation d'un relevé, prêt pour la
 /// prévisualisation utilisateur.
 class ImportPreview {
+  /// Refus GLOBAL motivé (ex. N1 : ancien format Kraken sans `wallet`/
+  /// `subclass`/`amountusd`, conception interne) — `null` dans l'immense majorité
+  /// des cas. Non-null ⇒ tous les autres champs restent vides : AUCUN mouvement
+  /// n'est proposé, le fichier entier est refusé plutôt que d'importer un journal
+  /// dégradé. Clé stable i18n-able (comme [ImportedMovement.rejectReason]),
+  /// jamais un message déjà traduit — la traduction vient avec la passe UX.
+  final String? globalRejectReason;
+
   /// Mouvements normalisés à créer (candidats non dupliqués, non rejetés).
   final List<ImportedMovement> toCreate;
 
@@ -121,7 +184,41 @@ class ImportPreview {
   /// X ») avant confirmation.
   final List<String> legacySymbols;
 
+  // -------------------------------------------------------------------------
+  // Extensions crypto (chantier B16, lot 1 — conception interne). Champs à défaut
+  // VIDE : n'importe quel appelant existant (profils titres) reste bit-identique.
+  // Alimentés UNIQUEMENT par `AccountController` quand `profile.crypto != null`.
+  // -------------------------------------------------------------------------
+
+  /// Échanges/entrées en nature sans valorisation disponible (modèle (b),
+  /// conception interne) — EXCLUS de [toCreate], groupe « Échanges à valoriser »
+  /// à l'écran. La valorisation elle-même (lot 2) n'est PAS faite ici.
+  final List<UnvaluedExchange> unvaluedExchanges;
+
+  /// Actifs de base dont les transferts internes ne nettent pas à zéro
+  /// (conception interne) — groupe « Transferts internes non équilibrés ».
+  final List<UnbalancedInternalTransfer> unbalancedInternalTransfers;
+
+  /// Ruptures de la chaîne `balance` (oracle Kraken, conception interne) — carte «
+  /// Relevé incomplet », JAMAIS bloquante.
+  final List<ChainRupture> chainRuptures;
+
+  /// Écarts entre quantité projetée et `balance` finales déclarées (conception
+  /// interne) — carte « Écart de quantité », JAMAIS bloquante ni corrective.
+  final List<QuantityGap> quantityGaps;
+
+  /// Agrégats mensuels de récompenses dont la CLÉ existe déjà en base mais le
+  /// CONTENU diffère (mois allongé à un ré-import, conception interne) : ni doublon
+  /// (exclu de [duplicates]), ni mouvement neuf (exclu de [toCreate]) — nécessite
+  /// `replaceImportKeys` à la confirmation.
+  final List<AggregateReplacement> replacements;
+
+  /// Nombre de lignes source consommées par l'agrégation mensuelle des
+  /// récompenses crypto (conception interne) — pour l'affichage seul.
+  final int aggregatedRewardSourceRows;
+
   const ImportPreview({
+    this.globalRejectReason,
     this.toCreate = const [],
     this.duplicates = const [],
     this.probableDuplicates = const [],
@@ -129,5 +226,56 @@ class ImportPreview {
     this.newAssets = const [],
     this.projectedDeltas = const [],
     this.legacySymbols = const [],
+    this.unvaluedExchanges = const [],
+    this.unbalancedInternalTransfers = const [],
+    this.chainRuptures = const [],
+    this.quantityGaps = const [],
+    this.replacements = const [],
+    this.aggregatedRewardSourceRows = 0,
   });
+
+  /// Reconstruction PARTIELLE — I-3 (revue adversariale) : les points d'appel
+  /// qui ne modifient QU'UN sous-ensemble de champs (ex.
+  /// `_applyResolvedSymbols`/`_previewToWrite`, statement_import_page.dart)
+  /// doivent passer par CETTE méthode plutôt que par un constructeur
+  /// `ImportPreview(...)` manuel — un tel constructeur manuel omet
+  /// silencieusement tout champ non listé (ex. les 7 champs crypto du lot
+  /// B16), un risque resté sans conséquence tant qu'aucun appelant ne
+  /// dépendait de ces champs après reconstruction, mais une bombe à
+  /// retardement dès le lot 2.
+  ImportPreview copyWith({
+    String? globalRejectReason,
+    List<ImportedMovement>? toCreate,
+    List<ImportedMovement>? duplicates,
+    List<ImportedMovement>? probableDuplicates,
+    List<ImportedMovement>? rejects,
+    List<NewAssetCandidate>? newAssets,
+    List<ProjectedDelta>? projectedDeltas,
+    List<String>? legacySymbols,
+    List<UnvaluedExchange>? unvaluedExchanges,
+    List<UnbalancedInternalTransfer>? unbalancedInternalTransfers,
+    List<ChainRupture>? chainRuptures,
+    List<QuantityGap>? quantityGaps,
+    List<AggregateReplacement>? replacements,
+    int? aggregatedRewardSourceRows,
+  }) {
+    return ImportPreview(
+      globalRejectReason: globalRejectReason ?? this.globalRejectReason,
+      toCreate: toCreate ?? this.toCreate,
+      duplicates: duplicates ?? this.duplicates,
+      probableDuplicates: probableDuplicates ?? this.probableDuplicates,
+      rejects: rejects ?? this.rejects,
+      newAssets: newAssets ?? this.newAssets,
+      projectedDeltas: projectedDeltas ?? this.projectedDeltas,
+      legacySymbols: legacySymbols ?? this.legacySymbols,
+      unvaluedExchanges: unvaluedExchanges ?? this.unvaluedExchanges,
+      unbalancedInternalTransfers:
+          unbalancedInternalTransfers ?? this.unbalancedInternalTransfers,
+      chainRuptures: chainRuptures ?? this.chainRuptures,
+      quantityGaps: quantityGaps ?? this.quantityGaps,
+      replacements: replacements ?? this.replacements,
+      aggregatedRewardSourceRows:
+          aggregatedRewardSourceRows ?? this.aggregatedRewardSourceRows,
+    );
+  }
 }

@@ -19,6 +19,7 @@ import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
+import 'package:portfolio_tracker/model/crypto_import_plan.dart';
 import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/position.dart';
@@ -251,12 +252,26 @@ class AccountController extends ChangeNotifier {
   /// proposer « Annuler cet import » ([undoStatementImport]).
   String? _lastImportBatchId;
 
+  /// Nombre de résidus de transferts internes non équilibrés (§5.1.5) dont la
+  /// cascade de résolution [_resolveCryptoTicker] n'a, MALGRÉ TOUT, pas pu
+  /// produire de symbole lors du DERNIER aperçu crypto — posé par
+  /// [_previewCryptoImport] (I-2, revue adversariale). En pratique la cascade
+  /// ne renvoie jamais de symbole vide (repli ultime `'crypto:<code>'` non
+  /// coté) : ce compteur reste `0` dans tous les cas observés, mais existe
+  /// pour honorer la garde « jamais ignoré en silence » plutôt que de
+  /// dépendre d'une propriété non prouvée du code appelé. L'UI (hors
+  /// périmètre de ce lot) peut l'afficher via
+  /// [lastUnresolvedInternalTransferResidualCount].
+  int _lastUnresolvedInternalTransferResidualCount = 0;
+
   // ---------------------------------------------------------------------------
   // Getters publics
   // ---------------------------------------------------------------------------
 
   List<PositionWithMarketData> get positionsData => _positionsData;
   String? get globalError => _globalError;
+  int get lastUnresolvedInternalTransferResidualCount =>
+      _lastUnresolvedInternalTransferResidualCount;
   List<Account> get accounts => _accounts;
   Account? get activeAccount => _activeAccount;
   Wallet? get activeWallet => _activeWallet;
@@ -1654,6 +1669,16 @@ class AccountController extends ChangeNotifier {
     account ??= _activeAccount;
     if (account == null) return const ImportPreview();
 
+    // ---- Pipeline CRYPTO (chantier B16, lot 1 — conception interne) : branche
+    // DÉDIÉE, isolée du chemin titres ci-dessous. La cascade de résolution
+    // ledgerCode→ticker fait de l'I/O réseau (`symbolExists`) que le chemin titres
+    // (résolution ISIN, purement locale) n'a jamais eu à faire — d'où un contrôleur
+    // qui apprend ICI, une fois, la distinction `profile.crypto`, plutôt que de la
+    // disperser dans la logique existante.
+    if (profile.crypto != null) {
+      return _previewCryptoImport(bytes, profile, account: account, accountId: accountId);
+    }
+
     final parsed = StatementImportService.parseWithLineNumbers(bytes, profile);
     final movements = StatementImportService.normalize(
       parsed.rows,
@@ -1922,6 +1947,360 @@ class AccountController extends ChangeNotifier {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Import de relevés CRYPTO (chantier B16, lot 1 — conception interne)
+  //
+  // Branche dédiée de `previewStatementImport`/`confirmStatementImport` :
+  // un grand livre crypto n'a ni ISIN ni « doublon probable d'espèces » (sa
+  // dédup est PAR CONSTRUCTION fiable, cf. `CryptoLedgerNormalizer`/doc
+  // §5.1.9), mais introduit deux besoins absents du chemin titres —
+  //   - une cascade de résolution ledgerCode→ticker faisant de l'I/O RÉSEAU
+  //     (`MarketDataProvider.symbolExists`), mémoïsée PAR CODE pour la durée de CET
+  //     appel (M-5, conception interne) ;
+  //   - un mécanisme de REMPLACEMENT ciblé des agrégats mensuels de
+  //     récompenses (§5.1.8b), orthogonal à la dédup par `importKey` normale.
+  // ---------------------------------------------------------------------------
+
+  /// Résolution d'un ticker de marché pour [code] (`ledgerCode`), mémoïsée dans
+  /// [cache] par l'appelant — cascade à 5 étages (conception interne) : ① position
+  /// existante du compte portant `asset.ledgerCode == code` ; ②
+  /// [CryptoLedgerSpec.quoteAliases] du profil ; ③ `<code>-<devise du compte>`
+  /// vérifié en réseau ; ④ `<code>-USD` vérifié, devise forcée USD ; ⑤ repli non
+  /// coté (`quotable = false`, `symbol = 'crypto:<code>'`). `symbolExists` → `null`
+  /// (panne réseau/inconnu) : les étages RÉSEAU suivants ne sont PAS tentés,
+  /// l'actif part en non coté avec [_CryptoTickerResolution.networkFailure] =
+  /// `true` — jamais assimilé à une invalidité constatée (conception interne).
+  Future<_CryptoTickerResolution> _resolveCryptoTicker(
+    String code, {
+    required Map<String, String> quoteAliases,
+    required Map<String, Position> positionByLedgerCode,
+    required String accountCurrency,
+    required Map<String, _CryptoTickerResolution> cache,
+  }) async {
+    final cached = cache[code];
+    if (cached != null) return cached;
+
+    _CryptoTickerResolution result;
+    final existingPosition = positionByLedgerCode[code];
+    if (existingPosition != null) {
+      result = _CryptoTickerResolution(symbol: existingPosition.symbol);
+    } else {
+      final alias = quoteAliases[code];
+      if (alias != null) {
+        // B-3 (revue adversariale) : l'alias porte sa propre devise dans son
+        // SUFFIXE (`<code>-<devise>`, ex. `FLR-USD`) — jusqu'ici cette
+        // devise n'était JAMAIS reportée sur l'actif créé, qui héritait
+        // silencieusement de la devise du COMPTE (étage 4 seul forçait
+        // `currency`). Résultat : les 7 alias actuels se terminant en `-USD`
+        // créaient un actif `currency:'EUR'` sur un compte EUR alors que sa
+        // cotation Yahoo est en USD — sous-évaluation systématique et
+        // permanente (~13 % au taux courant). Même correction que l'étage 4 :
+        // ne forcer [currency] QUE si elle diffère de la devise du compte
+        // (sinon `null`, pour ne rien changer au comportement quand
+        // l'alias est déjà dans la devise du compte).
+        final dash = alias.lastIndexOf('-');
+        final aliasCurrency = dash > 0 ? alias.substring(dash + 1) : null;
+        result = _CryptoTickerResolution(
+          symbol: alias,
+          currency: aliasCurrency != null &&
+                  aliasCurrency.toUpperCase() != accountCurrency.toUpperCase()
+              ? aliasCurrency
+              : null,
+        );
+      } else {
+        final candidateAccountCcy = '$code-$accountCurrency';
+        final existsAccountCcy = await _marketService.symbolExists(candidateAccountCcy);
+        if (existsAccountCcy == true) {
+          result = _CryptoTickerResolution(symbol: candidateAccountCcy);
+        } else if (existsAccountCcy == false) {
+          final candidateUsd = '$code-USD';
+          final existsUsd = await _marketService.symbolExists(candidateUsd);
+          if (existsUsd == true) {
+            result = _CryptoTickerResolution(symbol: candidateUsd, currency: 'USD');
+          } else if (existsUsd == false) {
+            result = _CryptoTickerResolution(
+              symbol: 'crypto:$code',
+              quotable: false,
+            );
+          } else {
+            result = _CryptoTickerResolution(
+              symbol: 'crypto:$code',
+              quotable: false,
+              networkFailure: true,
+            );
+          }
+        } else {
+          // Panne réseau au premier étage réseau : étages suivants NON
+          // tentés (on ne conclut jamais « invalide » sur une panne).
+          result = _CryptoTickerResolution(
+            symbol: 'crypto:$code',
+            quotable: false,
+            networkFailure: true,
+          );
+        }
+      }
+    }
+    cache[code] = result;
+    return result;
+  }
+
+  /// `true` si deux contenus de mouvement crypto sont ÉQUIVALENTS (même
+  /// `kind`/`quantity`/`unitPrice`/`amount`/`fee`/jour) — sert à distinguer un
+  /// DOUBLON franc (même `importKey`, même contenu) d'une COLLISION à examiner (même
+  /// `importKey`, contenu différent, conception interne).
+  static bool _sameCryptoContent(AssetTransaction a, AssetTransaction b) {
+    return a.kind == b.kind &&
+        a.quantity == b.quantity &&
+        a.unitPrice == b.unitPrice &&
+        a.amount == b.amount &&
+        a.fee == b.fee &&
+        a.date.year == b.date.year &&
+        a.date.month == b.date.month &&
+        a.date.day == b.date.day &&
+        // Un agrégat mensuel de récompenses peut voir son NOMBRE de lignes
+        // source s'allonger à un ré-import (mois complété) sans que la
+        // quantité NETTE change (arrondis qui s'annulent) — sans cette
+        // comparaison, un tel ré-import serait à tort classé DOUBLON franc
+        // (contenu jugé identique) plutôt que remplacement (revue
+        // adversariale, mineur).
+        a.meta?['aggregatedRows'] == b.meta?['aggregatedRows'];
+  }
+
+  Future<ImportPreview> _previewCryptoImport(
+    Uint8List bytes,
+    BrokerProfile profile, {
+    required Account account,
+    required String accountId,
+  }) async {
+    final parsed = StatementImportService.parseWithLineNumbers(bytes, profile);
+    final plan = StatementImportService.planCryptoImport(
+      parsed.rows,
+      profile,
+      accountCurrency: account.currency,
+      accountId: accountId,
+      sourceLines: parsed.sourceLines,
+    );
+
+    if (plan.globalRejectReason != null) {
+      return ImportPreview(globalRejectReason: plan.globalRejectReason);
+    }
+
+    final rejects = <ImportedMovement>[];
+    final candidates = <ImportedMovement>[];
+    for (final m in plan.movements) {
+      (m.isRejected ? rejects : candidates).add(m);
+    }
+
+    // ---- Dédup PAR importKey + détection des remplacements d'agrégats ----
+    final existingJournal = await _txStorage.getByAccount(accountId);
+    final existingByImportKey = <String, AssetTransaction>{};
+    for (final t in existingJournal) {
+      final key = t.meta?['importKey'];
+      if (key is String) existingByImportKey[key] = t;
+    }
+
+    final duplicates = <ImportedMovement>[];
+    final toCreateCandidates = <ImportedMovement>[];
+    final replacements = <AggregateReplacement>[];
+    for (final m in candidates) {
+      final key = m.importKey;
+      final existing = key != null ? existingByImportKey[key] : null;
+      if (existing == null) {
+        toCreateCandidates.add(m);
+        continue;
+      }
+      if (_sameCryptoContent(existing, m.transaction!)) {
+        duplicates.add(m);
+        continue;
+      }
+      // Même clé, contenu DIFFÉRENT : remplacement d'agrégat SI ET SEULEMENT
+      // SI le mouvement en base porte déjà `aggregation:'monthly'` (garde
+      // stricte §5.1.8b) — sinon, anomalie : REJET motivé, jamais d'écrasement.
+      if (existing.meta?['aggregation'] == 'monthly') {
+        final prevRows = (existing.meta?['aggregatedRows'] as num?)?.toInt() ?? 0;
+        final newMeta = m.transaction!.meta;
+        final newRows = (newMeta?['aggregatedRows'] as num?)?.toInt() ?? 0;
+        final prevQty = Decimal.tryParse(existing.quantity ?? '0') ?? Decimal.zero;
+        final newQty =
+            Decimal.tryParse(m.transaction!.quantity ?? '0') ?? Decimal.zero;
+        replacements.add(AggregateReplacement(
+          movement: m,
+          month: (newMeta?['aggregatedMonth'] as String?) ?? '',
+          previousRowCount: prevRows,
+          newRowCount: newRows,
+          quantityDelta: (newQty - prevQty).toString(),
+        ));
+      } else {
+        rejects.add(ImportedMovement.rejected(
+          sourceRow: m.sourceRow,
+          sourceRowIndex: m.sourceRowIndex,
+          rejectReason: 'cryptoImportKeyCollision',
+        ));
+      }
+    }
+
+    // ---- Cascade de résolution ledgerCode → ticker (§5.1.6) ----
+    final existingPositions = await _storage.getPositions(accountId);
+    final positionByLedgerCode = <String, Position>{};
+    final existingSymbols = <String>{};
+    for (final p in existingPositions) {
+      existingSymbols.add(p.symbol);
+      final code = p.asset.ledgerCode;
+      if (code != null) positionByLedgerCode[code] = p;
+    }
+    final quoteAliases = profile.crypto?.quoteAliases ?? const {};
+    final resolutionCache = <String, _CryptoTickerResolution>{};
+
+    final newAssets = <NewAssetCandidate>[];
+    final newAssetCodesSeen = <String>{};
+    final resolved = <ImportedMovement>[];
+
+    for (final m in toCreateCandidates) {
+      final code = m.ledgerCode;
+      final tx = m.transaction!;
+      if (code == null) {
+        // Mouvement cash pur (deposit/withdrawal fiat) : aucun actif à résoudre.
+        resolved.add(m);
+        continue;
+      }
+      final r = await _resolveCryptoTicker(
+        code,
+        quoteAliases: quoteAliases,
+        positionByLedgerCode: positionByLedgerCode,
+        accountCurrency: account.currency,
+        cache: resolutionCache,
+      );
+      if (!existingSymbols.contains(r.symbol) && newAssetCodesSeen.add(code)) {
+        newAssets.add(NewAssetCandidate(
+          label: code,
+          proposedSymbol: r.symbol,
+          quotable: r.quotable,
+          ledgerCode: code,
+          networkFailure: r.networkFailure,
+        ));
+      }
+      resolved.add(ImportedMovement.candidate(
+        sourceRow: m.sourceRow,
+        sourceRowIndex: m.sourceRowIndex,
+        transaction: tx.copyWith(
+          symbol: r.symbol,
+          currency: r.currency ?? tx.currency,
+        ),
+        ledgerCode: code,
+        resolvedSymbol: r.symbol,
+        importKey: m.importKey!,
+      ));
+    }
+
+    // ---- Résolution cascade des résidus de transferts internes non
+    // équilibrés (I-2, revue adversariale, §5.1.5) — RÉUTILISE la même
+    // cascade/mémoïsation que les mouvements normaux ci-dessus, à
+    // L'APERÇU (zéro réseau à la confirmation, cf. doc de
+    // [confirmStatementImport]). AVANT ce correctif, la résolution n'était
+    // tentée qu'à la confirmation et se limitait à l'étage 1 (position
+    // PRÉEXISTANTE) : un actif dont le SEUL mouvement crypto est ce résidu
+    // (ex. un airdrop livré directement en earn, sans jambe spot) n'avait
+    // jamais de position existante — silencieusement ignoré au premier
+    // import, alors que c'est justement le cas NOMINAL. La cascade complète
+    // (position existante → alias de cotation → réseau → repli non coté)
+    // s'applique maintenant ici, avec création d'un [NewAssetCandidate] au
+    // besoin (dédupliqué via [newAssetCodesSeen], comme pour les mouvements
+    // normaux) — le résidu représente une position réellement détenue,
+    // jamais une simple ligne de journal.
+    var unresolvedInternalTransferResidualCount = 0;
+    final resolvedUnbalancedInternalTransfers = <UnbalancedInternalTransfer>[];
+    for (final u in plan.unbalancedInternalTransfers) {
+      final r = await _resolveCryptoTicker(
+        u.asset,
+        quoteAliases: quoteAliases,
+        positionByLedgerCode: positionByLedgerCode,
+        accountCurrency: account.currency,
+        cache: resolutionCache,
+      );
+      // Clé de REMPLACEMENT stable (compte + PROFIL + actif, conception interne
+      // généralisé, alignée sur la clé `agg:$accountId:${profile.id}:…` des agrégats
+      // de récompenses) — un ré-import qui retrouve le MÊME résidu remplace
+      // l'ajustement déjà en base au lieu de l'empiler (I-2 : idempotence). Le
+      // profil DOIT figurer dans la clé (contre- vérification, R-... ②) : deux
+      // profils crypto distincts importés sur le MÊME compte ne doivent jamais se
+      // voler la clé de remplacement d'un résidu portant le même code d'actif.
+      final replaceImportKey =
+          'internalresidual:$accountId:${profile.id}:${u.asset}';
+      resolvedUnbalancedInternalTransfers.add(u.copyWith(
+        resolvedSymbol: r.symbol,
+        replaceImportKey: replaceImportKey,
+      ));
+      if (!existingSymbols.contains(r.symbol) && newAssetCodesSeen.add(u.asset)) {
+        newAssets.add(NewAssetCandidate(
+          label: u.asset,
+          proposedSymbol: r.symbol,
+          quotable: r.quotable,
+          ledgerCode: u.asset,
+          networkFailure: r.networkFailure,
+        ));
+      }
+      // `_resolveCryptoTicker` ne renvoie, dans l'état actuel de la cascade,
+      // JAMAIS de symbole vide (repli ultime `'crypto:<code>'` non coté) —
+      // branche DÉFENSIVE : « compter et exposer », jamais « ignorer en
+      // silence », si un futur étage de la cascade venait à y déroger.
+      if (r.symbol.trim().isEmpty) {
+        unresolvedInternalTransferResidualCount++;
+      }
+    }
+    _lastUnresolvedInternalTransferResidualCount =
+        unresolvedInternalTransferResidualCount;
+
+    // ---- Delta projeté (rejeu en mémoire, lecture seule — même mécanisme
+    // que le chemin titres) ----
+    final projectedDeltas = <ProjectedDelta>[];
+    final touchedSymbols = <String>{
+      for (final m in resolved)
+        if (m.transaction!.symbol != null) m.transaction!.symbol!,
+    };
+    for (final symbol in touchedSymbols) {
+      final before = existingJournal.where((t) => t.symbol == symbol).toList();
+      final incoming = resolved
+          .where((m) => m.transaction!.symbol == symbol)
+          .map((m) => m.transaction!)
+          .toList();
+      final beforeProj = projectPosition(before);
+      final afterProj = projectPosition([...before, ...incoming]);
+      projectedDeltas.add(ProjectedDelta(
+        symbol: symbol,
+        quantityBefore: beforeProj.quantity.toString(),
+        quantityAfter: afterProj.quantity.toString(),
+        averageBuyPriceBefore: beforeProj.averagePrice,
+        averageBuyPriceAfter: afterProj.averagePrice,
+      ));
+    }
+    final cashCurrency = account.currency;
+    final incomingAll = resolved.map((m) => m.transaction!).toList();
+    final cashBefore =
+        replayLedger(existingJournal).cashByCurrency[cashCurrency] ??
+            Decimal.zero;
+    final cashAfter = replayLedger([...existingJournal, ...incomingAll])
+            .cashByCurrency[cashCurrency] ??
+        Decimal.zero;
+    projectedDeltas.add(ProjectedDelta(
+      cashBefore: cashBefore.toDouble(),
+      cashAfter: cashAfter.toDouble(),
+    ));
+
+    return ImportPreview(
+      toCreate: resolved,
+      duplicates: duplicates,
+      rejects: rejects,
+      newAssets: newAssets,
+      projectedDeltas: projectedDeltas,
+      unvaluedExchanges: plan.unvaluedExchanges,
+      unbalancedInternalTransfers: resolvedUnbalancedInternalTransfers,
+      chainRuptures: plan.chainRuptures,
+      quantityGaps: plan.quantityGaps,
+      replacements: replacements,
+      aggregatedRewardSourceRows: plan.aggregatedRewardSourceRows,
+    );
+  }
+
   /// Vrai si un mouvement relève du rapprochement « doublon probable
   /// d'espèces » (cf. [ImportPreview.probableDuplicates]) : un mouvement de
   /// TRÉSORERIE PURE, dont l'identité de dédup se réduit au libellé.
@@ -1973,9 +2352,38 @@ class AccountController extends ChangeNotifier {
   ///
   /// Retourne null en cas de succès, ou un code d'erreur :
   ///   - 'noActiveAccount' : pas de compte actif
+  ///
+  /// [replaceImportKeys] (OPTIONNEL, défaut vide → comportement historique INCHANGÉ
+  /// pour les profils titres) : sous-ensemble des `importKey` de
+  /// [preview.replacements] (chantier B16, conception interne) que l'appelant
+  /// CONFIRME vouloir remplacer — un agrégat mensuel de [preview.replacements] dont
+  /// la clé n'apparaît PAS ici reste silencieusement IGNORÉ (ni écrit, ni l'ancien
+  /// supprimé), symétrique de [preview.newAssets] non résolus. Relayé tel quel à
+  /// [LedgerService.importMovements], qui applique la suppression ciblée dans LA
+  /// MÊME transaction que l'écriture.
+  ///
+  /// [journalizeUnbalancedInternalTransfers] (défaut `false`, doc §5.1.5) :
+  /// journalise le résidu de chaque [preview.unbalancedInternalTransfers] en
+  /// `adjustment` TITRE à coût 0, sur le symbole [UnbalancedInternalTransfer.
+  /// resolvedSymbol] — résolu par la cascade COMPLÈTE (réseau inclus) à
+  /// l'APERÇU ([_previewCryptoImport]), jamais ici (I-2, revue
+  /// adversariale : zéro I/O à la confirmation, symétrique de
+  /// [preview.newAssets] déjà résolus). Un actif SANS position préexistante
+  /// dans le compte reçoit désormais ce résidu comme n'importe quel autre —
+  /// l'ancien comportement (restreint à l'étage 1 de la cascade, résidu
+  /// silencieusement ignoré si l'actif n'existait pas déjà) ratait
+  /// précisément le cas NOMINAL d'un PREMIER import. Idempotent : la clé
+  /// [UnbalancedInternalTransfer.replaceImportKey] (stable, compte+profil+
+  /// actif) est unie À `replaceImportKeys` en interne — un ré-import qui
+  /// retrouve le même résidu REMPLACE l'ajustement déjà en base au lieu de
+  /// l'empiler, sans que l'appelant (l'écran) n'ait à connaître ce
+  /// mécanisme : la SEULE décision qui reste à l'écran est le bouton
+  /// bascule [journalizeUnbalancedInternalTransfers] lui-même.
   Future<String?> confirmStatementImport(
     ImportPreview preview, {
     required String accountId,
+    Set<String> replaceImportKeys = const {},
+    bool journalizeUnbalancedInternalTransfers = false,
   }) async {
     if (_activeAccount == null) return 'noActiveAccount';
 
@@ -1983,6 +2391,72 @@ class AccountController extends ChangeNotifier {
         .where((m) => !m.isRejected)
         .map((m) => m.transaction!)
         .toList();
+
+    // Remplacements d'agrégats CONFIRMÉS (§5.1.8b) : mouvements EXCLUS de
+    // `preview.toCreate` par construction, ajoutés ici UNIQUEMENT pour les
+    // clés que l'appelant a explicitement retenues.
+    for (final r in preview.replacements) {
+      if (replaceImportKeys.contains(r.movement.transaction!.meta?['importKey'])) {
+        movements.add(r.movement.transaction!);
+      }
+    }
+
+    // Résidus de transferts internes non équilibrés (§5.1.5), option
+    // EXPLICITE — symbole ET clé de remplacement CONSOMMÉS tels quels depuis
+    // l'aperçu (I-2, revue adversariale), zéro I/O ici.
+    final residualReplaceKeys = <String>{};
+    if (journalizeUnbalancedInternalTransfers) {
+      for (final u in preview.unbalancedInternalTransfers) {
+        final symbol = u.resolvedSymbol;
+        // Résolution manquante : déjà comptée/exposée à l'aperçu
+        // (`lastUnresolvedInternalTransferResidualCount`) — pas de coup de
+        // force ici (B4), la ligne est simplement omise de ce lot.
+        if (symbol == null) continue;
+        // Clé de remplacement ABSENTE de l'aperçu : PAS de repli recalculé
+        // ici (contre-vérification, ②) — un recalcul divergerait de la clé
+        // posée à l'aperçu (ex. si un futur appelant construit un
+        // [ImportPreview] à la main sans passer par [_previewCryptoImport])
+        // et CASSERAIT l'idempotence au lieu de la garantir : mieux vaut
+        // omettre la ligne (B4, jamais de coup de force) que d'écrire sous
+        // une clé qui ne sera jamais retrouvée au ré-import suivant.
+        final key = u.replaceImportKey;
+        if (key == null) continue;
+        movements.add(AssetTransaction(
+          id: AssetTransaction.generateId(),
+          accountId: accountId,
+          symbol: symbol,
+          kind: TransactionKind.adjustment,
+          quantity: u.residual,
+          currency: _activeAccount!.currency,
+          // Date du relevé (dernière jambe du groupe non équilibré),
+          // tronquée au jour — jamais `DateTime.now()` (I-2 : daterait le
+          // geste d'IMPORT, pas le relevé).
+          date: DateTime(u.lastDate.year, u.lastDate.month, u.lastDate.day),
+          meta: {
+            'internalTransferResidual': true,
+            'replaceable': true,
+            'importKey': key,
+          },
+        ));
+        residualReplaceKeys.add(key);
+      }
+    }
+
+    // I-2 × UX (choix explicite, revue adversariale) : les clés de
+    // remplacement des résidus sont unies ICI, en interne, plutôt que de
+    // demander à l'écran de les calculer — la seule décision qui reste
+    // visible à l'écran est le bouton bascule
+    // `journalizeUnbalancedInternalTransfers` ; `_confirmImport`
+    // (statement_import_page.dart) continue de calculer son
+    // `replaceImportKeys` uniquement depuis `preview.replacements`
+    // (agrégats de récompenses) sans rien connaître de ce mécanisme — un
+    // ré-import remplace silencieusement la même ligne de résidu plutôt que
+    // de l'empiler, ce qui EST le comportement honnête attendu (« mon
+    // résidu est à jour », jamais « mon résidu est dupliqué »).
+    final effectiveReplaceImportKeys = {
+      ...replaceImportKeys,
+      ...residualReplaceKeys,
+    };
 
     final assetsToCreate = <String, Asset>{};
     for (final candidate in preview.newAssets) {
@@ -2011,6 +2485,10 @@ class AccountController extends ChangeNotifier {
         // Repli « non coté » (symbole == ISIN, titre délisté) : marqué non
         // interrogeable pour ne jamais déclencher d'appel réseau au refresh.
         quotable: candidate.quotable,
+        // Code du RELEVÉ CRYPTO d'origine (conception interne) — `null` pour tout
+        // candidat issu d'un profil titres (round-trip inchangé).
+        ledgerCode: candidate.ledgerCode,
+        type: candidate.ledgerCode != null ? AssetType.crypto : AssetType.other,
       );
     }
 
@@ -2025,6 +2503,7 @@ class AccountController extends ChangeNotifier {
       movements: movements,
       newAssets: assetsToCreate.values.toList(),
       importBatchId: batchId,
+      replaceImportKeys: effectiveReplaceImportKeys,
     );
     // Mémorisé seulement APRÈS le succès de l'écriture (une exception ci-dessus
     // remonte sans laisser un batchId pointant sur un import qui n'a pas eu lieu).
@@ -2094,4 +2573,27 @@ class AccountController extends ChangeNotifier {
     (name: 'American Eagle 1 oz', weight: 31.1035),
     (name: 'Lingotin 10 g', weight: 10.0),
   ];
+}
+
+/// Résultat de [AccountController._resolveCryptoTicker] — cascade
+/// ledgerCode→ticker (chantier B16, conception interne).
+class _CryptoTickerResolution {
+  final String symbol;
+
+  /// Devise à forcer sur l'actif créé (`'USD'` à l'étage 4), `null` = ne pas
+  /// modifier la devise déjà portée par les mouvements résolus.
+  final String? currency;
+  final bool quotable;
+
+  /// `true` si la résolution s'est arrêtée sur une PANNE RÉSEAU (timeout, 429…)
+  /// plutôt qu'une non-existence CONSTATÉE (404) — jamais assimilée à une
+  /// invalidité (conception interne).
+  final bool networkFailure;
+
+  const _CryptoTickerResolution({
+    required this.symbol,
+    this.currency,
+    this.quotable = true,
+    this.networkFailure = false,
+  });
 }

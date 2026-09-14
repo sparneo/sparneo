@@ -337,10 +337,10 @@ void main() {
     // PORTE DU LOT 0 du chantier B16 (import crypto, conception interne) :
     // `_contentKey`/`_stableHash` sont étendus pour le pipeline crypto, mais un profil
     // titres (Bourse Direct) doit produire des `importKey` BIT-IDENTIQUES avant/après
-    // — sinon les ~1 336 clés de dédup déjà en base chez l'auteur sont invalidées et
-    // tout son journal Bourse Direct ressort en neuf au prochain import. Valeurs
-    // capturées AVANT le lot 0 (voir la conception interne) sur la fixture ci-dessus
-    // (aucun `operationReference` mappé pour ce profil → toutes les clés passent par
+    // — sinon les clés de dédup déjà en base d'un utilisateur sont invalidées et tout
+    // son journal Bourse Direct ressort en neuf au prochain import. Valeurs capturées
+    // AVANT le lot 0 (voir la conception interne) sur la fixture ci-dessus (aucun
+    // `operationReference` mappé pour ce profil → toutes les clés passent par
     // `hash:<FNV>`, le chemin qui dépend directement de `_contentKey`).
     test('les importKey de la fixture Bourse Direct sont inchangées', () {
       final rows = StatementImportService.parse(
