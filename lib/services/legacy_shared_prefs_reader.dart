@@ -8,10 +8,10 @@
 // CRITIQUE : ce lecteur NE dépend PAS du nouvel `AccountStorage.exportRawData`
 // (qui lit la base SQLite, VIDE au moment de la migration). Il réplique la
 // logique de lecture SharedPreferences de l'ancien code :
-//   - clé 'wallets'                      → JSON encodé d'une liste de Wallet.toJson()
-//   - clé 'accounts'                     → JSON encodé d'une liste de Account.toJson()
-//   - préfixe 'positions_<accountId>'    → JSON encodé d'une liste de Position.toJson()
-//   - préfixe 'allocation_targets_<wid>' → JSON encodé d'un AllocationTarget.toJson()
+//   - clé 'wallets' → JSON encodé d'une liste de Wallet.toJson() - clé 'accounts' → JSON
+//   encodé d'une liste de Account.toJson() - préfixe 'positions_<accountId>' → JSON encodé
+//   d'une liste de Position.toJson() - préfixe 'allocation_targets_<wid>' → JSON encodé d'un
+//   AllocationTarget.toJson()
 //
 // La map produite a exactement la forme attendue par
 // `AccountStorage.importRawData` :

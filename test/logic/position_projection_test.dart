@@ -586,7 +586,8 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // LedgerStep / onStep / timelines en escalier (B7 — design doc 18, Lot 1)
+  // LedgerStep / onStep / timelines en escalier (B7 — design conception interne, Lot
+  // 1)
   //
   // Le cœur (replayLedger + onStep) reste l'UNIQUE rejeu du journal ; ces
   // tests couvrent l'émission des breakpoints et les deux constructeurs de

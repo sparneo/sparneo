@@ -22,8 +22,8 @@ class CashOpeningBalanceOutcome {
 /// Dialogue de saisie / édition d'un `openingBalance` ESPÈCES (solde initial
 /// cash) : montant signé, date (souvent antidatée) et note optionnelle.
 ///
-/// EXTRAIT de `account_view.dart` (B18, doc 19 §3bis) pour être PARTAGÉ entre
-/// deux appelants :
+/// EXTRAIT de `account_view.dart` (B18, conception interne) pour être PARTAGÉ
+/// entre deux appelants :
 ///  - CRÉATION (`existing` null) : « Définir le solde espèces initial… » sur
 ///    un compte titres ([account_view.dart]), formulaire vierge, date par
 ///    défaut aujourd'hui.

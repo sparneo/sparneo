@@ -152,10 +152,9 @@ WalletController _makeController({
       // Isolation stricte sur la db de test (sinon lecture par défaut sur le
       // singleton de production — cf. lot cash-ledger, dérivation du cash).
       transactionStorage: TransactionStorage(database: db),
-      // Idem pour LedgerService (B8/doc 19 lot 4, createAccount émet
-      // désormais un openingBalance ESPÈCES) : sans cette injection, il
-      // viserait AppDatabase.shared() (la prod) au lieu de la db in-memory
-      // isolée du test.
+      // Idem pour LedgerService (B8/conception interne lot 4, createAccount émet
+      // désormais un openingBalance ESPÈCES) : sans cette injection, il viserait
+      // AppDatabase.shared() (la prod) au lieu de la db in-memory isolée du test.
       ledgerService: LedgerService(database: db),
       defaultWalletName: defaultWalletName,
     );
@@ -530,10 +529,10 @@ void main() {
       expect(controller.accounts.length, 1);
     });
 
-    // =======================================================================
-    // Lot 4 (doc 19 §3bis) — fermeture de la seconde source de vérité :
-    // le solde initial d'un compte cash créé via createAccount doit naître
-    // ANCRÉ (openingBalance ESPÈCES), `cash_balance` restant NULL en base.
+    // ======================================================================= Lot 4
+    // (conception interne) — fermeture de la seconde source de vérité : le solde
+    // initial d'un compte cash créé via createAccount doit naître ANCRÉ
+    // (openingBalance ESPÈCES), `cash_balance` restant NULL en base.
     // =======================================================================
 
     test(
@@ -600,7 +599,7 @@ void main() {
     });
 
     // =======================================================================
-    // B18/doc 19 §3bis — le solde initial ESPÈCES doit être DATABLE (défaut
+    // B18/conception interne — le solde initial ESPÈCES doit être DATABLE (défaut
     // aujourd'hui, modifiable) à la création : `openingBalanceDate`.
     // =======================================================================
 
@@ -1250,16 +1249,16 @@ void main() {
     });
   });
 
-  // =========================================================================
-  // B8 (doc 19) — comptes cash JOURNALISÉS : la partition de régime passe de
-  // `account.type` à `journalHasCashAnchor`, identique pour les deux familles
+  // ========================================================================= B8
+  // (conception interne) — comptes cash JOURNALISÉS : la partition de régime passe
+  // de `account.type` à `journalHasCashAnchor`, identique pour les deux familles
   // de comptes.
   // =========================================================================
 
   group('WalletController – comptes cash journalisés (B8 lot 2)', () {
-    // -----------------------------------------------------------------------
-    // LE test de non-régression : décision (b) « aucune migration » (doc 19
-    // §3) — un compte cash SANS ancrage espèces reste bit-identique à avant B8.
+    // ----------------------------------------------------------------------- LE test
+    // de non-régression : décision (b) « aucune migration » (conception interne) — un
+    // compte cash SANS ancrage espèces reste bit-identique à avant B8.
     // -----------------------------------------------------------------------
     test(
         'RÉGIME LEGACY [invariant 9] : compte cash sans ancrage → valeur, '
@@ -1537,8 +1536,8 @@ void main() {
       expect(controller.realTotalGainCharges!, closeTo(-10.0, 1e-9));
     });
 
-    // -----------------------------------------------------------------------
-    // Le risque n°1 du lot (doc 19 §8.1) — au niveau CONTRÔLEUR.
+    // ----------------------------------------------------------------------- Le
+    // risque n°1 du lot (conception interne) — au niveau CONTRÔLEUR.
     // -----------------------------------------------------------------------
     test(
         'ANTI-DOUBLE-COMPTAGE [invariant 5] : un compte cash ancré ne '
@@ -1950,10 +1949,10 @@ void main() {
 
       expect(controller.hasRealCurve, isFalse);
       expect(controller.realCurveCoverage, isNull);
-      // MAIS la liste des positions héritées reste renseignée (bug constaté à
-      // l'écran, doc privé) : faute de courbe réelle à montrer, c'est la
-      // SEULE indication de ce qu'il y a à déclarer — elle ne doit pas être
-      // vidée par le retour anticipé « rien à reconstruire ».
+      // MAIS la liste des positions héritées reste renseignée (bug constaté à l'écran,
+      // conception interne) : faute de courbe réelle à montrer, c'est la SEULE
+      // indication de ce qu'il y a à déclarer — elle ne doit pas être vidée par le
+      // retour anticipé « rien à reconstruire ».
       expect(controller.realExcludedLegacyCount, 1);
       expect(controller.realExcludedLegacyGroups, hasLength(1));
       expect(

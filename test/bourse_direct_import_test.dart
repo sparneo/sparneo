@@ -332,4 +332,59 @@ void main() {
       expect(movements.where((m) => !m.isRejected), hasLength(6));
     });
   });
+
+  group('Figement du hash importKey (porte du lot B16-0)', () {
+    // PORTE DU LOT 0 du chantier B16 (import crypto, conception interne) :
+    // `_contentKey`/`_stableHash` sont étendus pour le pipeline crypto, mais un profil
+    // titres (Bourse Direct) doit produire des `importKey` BIT-IDENTIQUES avant/après
+    // — sinon les ~1 336 clés de dédup déjà en base chez l'auteur sont invalidées et
+    // tout son journal Bourse Direct ressort en neuf au prochain import. Valeurs
+    // capturées AVANT le lot 0 (voir la conception interne) sur la fixture ci-dessus
+    // (aucun `operationReference` mappé pour ce profil → toutes les clés passent par
+    // `hash:<FNV>`, le chemin qui dépend directement de `_contentKey`).
+    test('les importKey de la fixture Bourse Direct sont inchangées', () {
+      final rows = StatementImportService.parse(
+        _sampleWorkbookBytes(),
+        BrokerProfile.bourseDirect(),
+      );
+      final movements = StatementImportService.normalize(
+        rows,
+        BrokerProfile.bourseDirect(),
+        accountCurrency: 'EUR',
+      );
+      expect(movements, hasLength(6));
+
+      // Assertion EXPLICITE de non-rejet AVANT toute lecture de
+      // `m.importKey`/`m.transaction!` : un `!` nu, s'il claquait sur un
+      // mouvement rejeté, produirait une exception opaque plutôt qu'un
+      // message de test lisible (revue adversariale).
+      for (var i = 0; i < movements.length; i++) {
+        final m = movements[i];
+        expect(
+          m.isRejected,
+          isFalse,
+          reason: 'mouvement $i (ligne ${m.sourceRowIndex}) REJETÉ '
+              '(${m.rejectReason}) — la fixture de la porte du lot ne doit '
+              'produire AUCUN rejet',
+        );
+      }
+
+      // LISTE ORDONNÉE (ordre des lignes de la fixture : AC, VCPT, CO,
+      // PEAIE, ODTTF, ATTRI), PAS une map indexée par `kind.name` : une map
+      // écraserait SILENCIEUSEMENT deux mouvements de même kind (aucun ici,
+      // mais la forme du test ne doit pas dépendre de cette coïncidence).
+      final keys = [for (final m in movements) m.importKey];
+      expect(
+        keys,
+        equals(const [
+          'hash:eb963d147767f98', // AC → buy
+          'hash:da9f3e6563abcf9', // VCPT → sell
+          'hash:53820f14e609f6f', // CO → dividend
+          'hash:4ce7fefda57e220', // PEAIE → deposit
+          'hash:55739cb86e074e3', // ODTTF → charge
+          'hash:028b8299617343f', // ATTRI → adjustment
+        ]),
+      );
+    });
+  });
 }

@@ -152,7 +152,7 @@ class StatementImportService {
   }
 
   static ParsedStatement _parseCsv(Uint8List bytes, BrokerProfile profile) {
-    final String text;
+    String text;
     try {
       text = profile.encoding.decode(bytes);
     } on FormatException {
@@ -164,22 +164,39 @@ class StatementImportService {
 
     if (text.trim().isEmpty) return ParsedStatement.empty;
 
+    // BOM UTF-8 (`﻿`) en tête de fichier : STRIP INCONDITIONNEL, jamais un
+    // champ de profil (conception interne). Un BOM n'est jamais une donnée ;
+    // laissé en place, il se colle au premier nom de colonne (`﻿User ID`) et
+    // fait échouer TOUT mapping par nom en silence (export Binance). Aucun
+    // `Encoding` de `dart:convert` ne le retire.
+    if (text.startsWith('﻿')) text = text.substring(1);
+
     final csv = Csv(
       fieldDelimiter: profile.delimiter,
       autoDetect: false,
       dynamicTyping: false,
+      // Lignes vides écartées ICI, pas par le décodeur : sinon leur disparition
+      // décale TOUS les n° de ligne cités à l'utilisateur (« Ligne N » à l'écran de
+      // rejet/aperçu) — conception interne, piège qui a déjà coûté deux bugs de
+      // repérage.
+      skipEmptyLines: false,
     );
 
     final decoded = csv.decode(text);
     final rows = <List<String>>[];
     final sourceLines = <int>[];
     for (var i = 0; i < decoded.length; i++) {
-      rows.add(
-        decoded[i].map((field) => field?.toString().trim() ?? '').toList(),
-      );
-      // Repère PHYSIQUE approché : index (1-based) dans les lignes décodées.
-      // Si le décodeur CSV a fusionné/éliminé des lignes vides, ce n° peut
-      // différer du n° réel du fichier — contrairement au chemin xlsx, exact.
+      final raw = decoded[i];
+      // MÊME prédicat que `CsvDecoder._finalizeRow` (package csv 8.0.0) : une ligne
+      // est écartée si TOUS ses champs sont vides — évalué AVANT trim (une ligne `" ;
+      // "` est conservée par le décodeur ; la trimer d'abord divergerait de son
+      // comportement). Appliqué ICI, sur les lignes DÉCODÉES avec leur index
+      // d'origine, pour que [sourceLines] porte le n° PHYSIQUE EXACT de celles qu'on
+      // garde — plus l'à-peu-près antérieur (l'élimination par le décodeur lui-même
+      // décalait tout ce qui suit une ligne vide en tête de fichier, ex. export
+      // Coinbase).
+      if (!raw.any((f) => (f?.toString() ?? '') != '')) continue;
+      rows.add(raw.map((f) => f?.toString().trim() ?? '').toList());
       sourceLines.add(i + 1);
     }
     return ParsedStatement(rows, sourceLines);
@@ -779,13 +796,29 @@ class StatementImportService {
 
       final a = int.tryParse(parts[0]);
       final b = int.tryParse(parts[1]);
-      var y = int.tryParse(parts[2]);
-      if (a == null || b == null || y == null) return null;
+      final c = int.tryParse(parts[2]);
+      if (a == null || b == null || c == null) return null;
 
-      day = spec.dayFirst ? a : b;
-      month = spec.dayFirst ? b : a;
-      if (!spec.fourDigitYear && y < 100) y += 2000;
-      year = y;
+      if (spec.yearFirst) {
+        // Format « année d'abord » AAAA<sep>MM<sep>JJ (Kraken/Coinbase/ Binance,
+        // conception interne) : précédence compactYmd > yearFirst > dayFirst — cette
+        // branche n'est atteinte que si compactYmd est faux. L'année, déjà premier champ
+        // à 4 chiffres sur ces relevés, n'a pas de repli fourDigitYear (réservé au
+        // format jour/mois) — GARDE (revue adversariale) : un premier champ à MOINS de 4
+        // chiffres (`24-03-12`) n'est JAMAIS une année plausible sur ces formats, c'est
+        // un fichier illisible/mal profilé → rejet explicite plutôt qu'une date
+        // fantaisiste (an 24).
+        if (a < 1000) return null;
+        year = a;
+        month = b;
+        day = c;
+      } else {
+        var y = c;
+        day = spec.dayFirst ? a : b;
+        month = spec.dayFirst ? b : a;
+        if (!spec.fourDigitYear && y < 100) y += 2000;
+        year = y;
+      }
     }
 
     if (month < 1 || month > 12 || day < 1 || day > 31) return null;
@@ -800,13 +833,17 @@ class StatementImportService {
   }
 
   /// Heure accolée à une date : espace (ou `T` ISO) suivi de `HH:MM`(`:SS`)
-  /// éventuellement décimal, d'un `AM`/`PM`, et/ou d'un fuseau (`Z`, `+02:00`).
-  /// Ancrée en FIN de chaîne pour ne jamais amputer une date : sans heure
-  /// reconnaissable derrière, rien n'est retiré (une chaîne douteuse continue
-  /// d'être rejetée par le parsing au lieu d'être tronquée en silence).
+  /// éventuellement décimal, d'un `AM`/`PM`, et/ou d'un fuseau (`Z`, `UTC`,
+  /// `GMT`, `+02:00`). Ancrée en FIN de chaîne pour ne jamais amputer une date :
+  /// sans heure reconnaissable derrière, rien n'est retiré (une chaîne douteuse
+  /// continue d'être rejetée par le parsing au lieu d'être tronquée en silence) —
+  /// en particulier, `UTC`/`GMT` seul (sans `HH:MM` devant) n'est JAMAIS amputé.
+  /// Alternative `UTC|GMT` ajoutée pour l'horodatage Coinbase `AAAA-MM-JJ
+  /// HH:MM:SS UTC` (conception interne), INSENSIBLE À LA CASSE (` utc`/` Utc`… —
+  /// un export peut varier).
   static final RegExp _timeSuffix = RegExp(
     r'[\sT]+\d{1,2}[:hH]\d{2}(?::\d{2})?(?:[.,]\d+)?\s*'
-    r'(?:[AaPp]\.?[Mm]\.?)?\s*(?:Z|[+-]\d{2}:?\d{2})?$',
+    r'(?:[AaPp]\.?[Mm]\.?)?\s*(?:[Zz]|[Uu][Tt][Cc]|[Gg][Mm][Tt]|[+-]\d{2}:?\d{2})?$',
   );
 
   /// Retire l'éventuelle partie horaire d'une date de relevé (cf. [_parseDate])
@@ -1293,9 +1330,31 @@ class StatementImportService {
   // (espace normal ou insécable, ex. « 1 234,56 »).
   // ---------------------------------------------------------------------
 
+  /// Symbole monétaire éventuel (`$`/`€`/`£`), toléré en tête ou en queue, avant
+  /// ou après le signe (ex. `-$1234.56`, `12,34 €`) — conception interne (export
+  /// Coinbase, préfixe `$` INCONSTANT au sein du même fichier, cf. N8 : jamais
+  /// un champ de profil, aucun symbole monétaire n'étant ambigu avec un chiffre
+  /// ou un signe). Retiré AVANT le traitement du séparateur décimal ; ne touche
+  /// à rien d'autre.
+  ///
+  /// ANCRÉ en tête (signe optionnel + symbole) OU en queue (symbole seul) —
+  /// jamais au MILIEU : un symbole égaré dans le corps du nombre (`12€50`,
+  /// `12$34` — mapping de colonne erroné, pas une valorisation légitime)
+  /// n'est PAS retiré, et reste donc rejeté par `Decimal.tryParse` en aval
+  /// (`invalidAmount`), au lieu d'être accepté en silence avec un facteur
+  /// 100 (revue adversariale — un retrait non ancré aurait transformé
+  /// `12€50` en `1250`).
+  static final RegExp _currencySymbol = RegExp(r'^([+-]?)[\$€£]|[\$€£]$');
+
   static Decimal? _parseAmount(String? raw, DecimalSeparator sep) {
     if (raw == null) return null;
     var s = raw.trim().replaceAll(RegExp(r'[\s ]'), '');
+    if (s.isEmpty) return null;
+
+    // `replaceAllMapped` (et non `replaceAll`) : la branche « tête » capture
+    // le signe éventuel (groupe 1) pour le RESTITUER — seul le symbole doit
+    // disparaître, jamais le signe qui le précède.
+    s = s.replaceAllMapped(_currencySymbol, (m) => m.group(1) ?? '');
     if (s.isEmpty) return null;
 
     if (sep == DecimalSeparator.comma) {
@@ -1310,6 +1369,25 @@ class StatementImportService {
   // Déduplication (voir doc de classe [normalize])
   // ---------------------------------------------------------------------
 
+  /// [timeOfDay] : réservé aux PROFILS CRYPTO (conception interne) — un relevé
+  /// de grand livre crypto fournit l'heure à la seconde (Binance : la
+  /// quasi-totalité des lignes porte un horodatage distinct), alors que cette
+  /// clé hache au JOUR seul pour un relevé titres. `null` (TOUS les appelants
+  /// actuels, profils titres) doit produire une chaîne BIT-IDENTIQUE au
+  /// comportement historique — rien n'est ajouté, pas même un séparateur vide :
+  /// les ~1 336 clés de dédup déjà en base chez l'auteur (import Bourse Direct)
+  /// ne doivent JAMAIS être invalidées par cette extension (cf. test de
+  /// figement, `bourse_direct_import_test.dart`). Renseigné, l'heure est
+  /// intégrée à la chaîne hachée via un suffixe `|$timeOfDay`.
+  ///
+  /// FORMAT EXIGÉ : un `HH:MM:SS` CANONIQUE (2 chiffres, séparateur `:`,
+  /// zéro-paddé — ex. `09:05:00`), JAMAIS une cellule brute du relevé
+  /// (`10:5:0`, `9h05`…) : la chaîne pré-hachage utilise `|` comme séparateur
+  /// de champs, une valeur non canonique pourrait y introduire une ambiguïté
+  /// (ou, plus insidieusement, deux représentations différentes de la même
+  /// heure produiraient deux clés distinctes pour la même ligne source).
+  /// Cette normalisation est à la charge de l'APPELANT (futur lot 1) — cette
+  /// méthode ne la vérifie ni ne la corrige.
   static String _contentKey({
     required String accountId,
     required DateTime date,
@@ -1317,11 +1395,13 @@ class StatementImportService {
     required String identity,
     required String? quantity,
     required String? amount,
+    String? timeOfDay,
   }) {
     final day = '${date.year.toString().padLeft(4, '0')}-'
         '${date.month.toString().padLeft(2, '0')}-'
         '${date.day.toString().padLeft(2, '0')}';
-    return '$accountId|$day|${kind.wire}|$identity|${quantity ?? ''}|${amount ?? ''}';
+    final base = '$accountId|$day|${kind.wire}|$identity|${quantity ?? ''}|${amount ?? ''}';
+    return timeOfDay == null ? base : '$base|$timeOfDay';
   }
 
   /// Hash déterministe maison (FNV-1a 64 bits) — pas de dépendance

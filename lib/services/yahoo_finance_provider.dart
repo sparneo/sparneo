@@ -213,6 +213,52 @@ class YahooFinanceProvider implements MarketDataProvider {
   }
 
   @override
+  Future<bool?> symbolExists(String symbol) async {
+    // Même endpoint que [getQuoteWithMetadata], mais lu au niveau du CODE DE
+    // STATUT (cf. doc de [MarketDataProvider.symbolExists]) : `404` → le
+    // symbole n'existe pas, `200` avec résultat → il existe, tout le reste
+    // → inconnu. Ne PAS réutiliser retryWithBackoff en laissant l'exception
+    // `invalidSymbol` (404) remonter : ici un 404 est une RÉPONSE valide
+    // (`false`), pas un échec.
+    final url = Uri.parse(
+      'https://query1.finance.yahoo.com/v8/finance/chart/$symbol',
+    );
+
+    try {
+      return await retryWithBackoff<bool?>(
+        context: 'symbolExists($symbol)',
+        () async {
+          final response = await http
+              .get(url, headers: _headers)
+              .timeout(const Duration(seconds: 10));
+
+          if (response.statusCode == 404) {
+            return false;
+          }
+          if (response.statusCode != 200) {
+            // 429/5xx (réessayables) ou autre 4xx : laisse retryWithBackoff
+            // décider (backoff puis abandon → catch externe → null).
+            throw ApiError.fromStatusCode(response.statusCode);
+          }
+
+          final data = jsonDecode(response.body);
+          final result = data['chart']?['result'];
+          // `200` sans résultat exploitable (cas non rencontré en pratique
+          // mais non exclu par l'API) : ni confirmé ni infirmé → inconnu,
+          // jamais assimilé à `false` (seul le 404 l'est).
+          return (result is List && result.isNotEmpty) ? true : null;
+        },
+      );
+    } catch (e) {
+      // Échec de TRANSPORT après retries (timeout, socket, 429/5xx épuisés,
+      // autre 4xx) : inconnu, jamais « symbole inexistant ».
+      final apiError = ApiError.fromException(e);
+      AppLogger.error('Erreur vérification symbole $symbol: $apiError');
+      return null;
+    }
+  }
+
+  @override
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async {
     // Endpoint public non officiel `v1/finance/search` (mêmes en-têtes /
     // retry que les cotations). `newsCount=0` : on ne veut que les titres.

@@ -109,6 +109,59 @@ void main() {
     });
   });
 
+  group('Asset.ledgerCode (sérialisation — lot 0 chantier B16)', () {
+    test('défaut null ; omis de toJson pour ne pas alourdir le round-trip', () {
+      final asset = Asset(symbol: 'BTC-EUR', type: AssetType.crypto);
+      expect(asset.ledgerCode, isNull);
+      expect(asset.toJson().containsKey('ledgerCode'), isFalse);
+    });
+
+    test('présent → conservé dans toJson et round-trip via fromJson', () {
+      final asset = Asset(
+        symbol: 'BTC-EUR',
+        type: AssetType.crypto,
+        ledgerCode: 'BTC',
+      );
+      final json = asset.toJson();
+      expect(json['ledgerCode'], equals('BTC'));
+
+      final restored = Asset.fromJson(json);
+      expect(restored.symbol, equals('BTC-EUR'));
+      expect(restored.ledgerCode, equals('BTC'));
+    });
+
+    test('fromJson sans la clé → ledgerCode null (rétro-compat schémas '
+        'antérieurs au champ, comme isin/refSymbol)', () {
+      final restored = Asset.fromJson({
+        'symbol': 'AAPL',
+        'type': 'stock',
+        'currency': 'USD',
+      });
+      expect(restored.ledgerCode, isNull);
+    });
+
+    test('copyWith(ledgerCode:) modifie le champ sans toucher au reste', () {
+      final base = Asset(symbol: 'BTC-EUR', type: AssetType.crypto);
+      final withCode = base.copyWith(ledgerCode: 'BTC');
+      expect(withCode.ledgerCode, equals('BTC'));
+      expect(withCode.symbol, equals('BTC-EUR'));
+      // L'original reste inchangé (immutabilité).
+      expect(base.ledgerCode, isNull);
+    });
+
+    test('distinct de isin : les deux round-trippent indépendamment', () {
+      final asset = Asset(
+        symbol: 'BTC-EUR',
+        type: AssetType.crypto,
+        isin: null,
+        ledgerCode: 'BTC',
+      );
+      final restored = Asset.fromJson(asset.toJson());
+      expect(restored.isin, isNull);
+      expect(restored.ledgerCode, equals('BTC'));
+    });
+  });
+
   group('Asset.hasMetalPricing (bucket vs modèle de pricing)', () {
     test('type non-métal → false', () {
       expect(Asset(symbol: 'AAPL', type: AssetType.stock).hasMetalPricing,

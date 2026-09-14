@@ -912,7 +912,7 @@ void main() {
   });
 
   // =========================================================================
-  // buildDateGrid (design B8, doc 19 §4.3/§7 Lot 1) : grille synthétique pour
+  // buildDateGrid (design B8, conception interne Lot 1) : grille synthétique pour
   // un patrimoine (ou compte) SANS AUCUN titre — pas de série de prix pour en
   // dériver une grille. PUR, sans I/O.
   // =========================================================================
@@ -935,7 +935,7 @@ void main() {
     });
 
     test('date-only UTC : heure/minute ignorées (normalisation cohérente avec '
-        '_dateOnlyUtc de position_projection.dart, doc 19 §4.3 règle 1)', () {
+        '_dateOnlyUtc de position_projection.dart, conception interne, règle 1)', () {
       final grid = HistoryAggregator.buildDateGrid(
         from: DateTime(2024, 1, 1, 23, 59),
         to: DateTime(2024, 1, 2, 0, 1),
@@ -952,7 +952,7 @@ void main() {
     });
 
     test('borne gauche = from (déjà résolu par l\'appelant comme max(période, '
-        'premier mouvement), doc 19 §4.3 règle 2) : AUCUN point avant', () {
+        'premier mouvement), conception interne, règle 2) : AUCUN point avant', () {
       // Simule un appelant qui a résolu from = max(début de période demandé,
       // premier mouvement du journal) — ici le journal ne remonte qu'au
       // 10 mars 2024, bien après le début de période réclamé (2020).
@@ -1039,11 +1039,11 @@ void main() {
   });
 
   // =========================================================================
-  // Escalier de cash d'un compte cash ANCRÉ (design B8, doc 19 §4.3) —
-  // buildCashTimeline/cashAt/journalHasCashAnchor de position_projection.dart,
-  // DÉJÀ testés unitairement ailleurs (real_net_worth_test.dart) : ici on
-  // vérifie le scénario du lot B8, un livret avec openingBalance + deposit +
-  // withdrawal + interest datés.
+  // Escalier de cash d'un compte cash ANCRÉ (design B8, conception interne) —
+  // buildCashTimeline/cashAt/journalHasCashAnchor de position_projection.dart, DÉJÀ
+  // testés unitairement ailleurs (real_net_worth_test.dart) : ici on vérifie le
+  // scénario du lot B8, un livret avec openingBalance + deposit + withdrawal +
+  // interest datés.
   // =========================================================================
 
   group('Escalier de cash d\'un compte cash ancré (livret)', () {
@@ -1107,11 +1107,11 @@ void main() {
   });
 
   // =========================================================================
-  // reconstructRealNetWorth avec un compte cash ANCRÉ dans txsByAccount
-  // (design B8, doc 19 §4.3 : « aucune signature à changer — élargir
-  // simplement txsByAccount aux comptes cash côté appelant »). Non-régression
-  // sur le cas titres seuls (déjà couvert en détail par real_net_worth_test.
-  // dart) ET nouveau cas : un livret ancré SEUL, aucun titre.
+  // reconstructRealNetWorth avec un compte cash ANCRÉ dans txsByAccount (design
+  // B8, conception interne : « aucune signature à changer — élargir simplement
+  // txsByAccount aux comptes cash côté appelant »). Non-régression sur le cas
+  // titres seuls (déjà couvert en détail par real_net_worth_test. dart) ET nouveau
+  // cas : un livret ancré SEUL, aucun titre.
   // =========================================================================
 
   group('HistoryAggregator.reconstructRealNetWorth — compte cash ancré '
@@ -1151,7 +1151,7 @@ void main() {
 
     test('NOUVEAU : un livret ancré SEUL (zéro titre) contribue via le '
         'journal, comme un escalier réel — PAS comme une constante '
-        'rétroprojetée (cas d\'usage central de B8, doc 19 §0.3)', () {
+        'rétroprojetée (cas d\'usage central de B8, conception interne)', () {
       final opening = AssetTransaction(
         id: 'ob1',
         accountId: 'livret1',
@@ -1206,12 +1206,12 @@ void main() {
   });
 
   // =========================================================================
-  // ANTI-DOUBLE-COMPTAGE DU CASH — piège n°1 [BLOQUANT], doc 19 §6.5/§8.1 :
-  // un compte cash ANCRÉ ne doit contribuer QUE via txsByAccount
-  // (reconstructRealNetWorth), JAMAIS aussi via addConstantPureCash. Ce test
-  // doit échouer clairement si un futur lot régresse sur cet invariant (ex.
-  // un contrôleur qui recommencerait à sommer TOUS les comptes cash dans
-  // pureCashEur sans filtrer par journalHasCashAnchor).
+  // ANTI-DOUBLE-COMPTAGE DU CASH — piège n°1 [BLOQUANT], conception interne : un
+  // compte cash ANCRÉ ne doit contribuer QUE via txsByAccount
+  // (reconstructRealNetWorth), JAMAIS aussi via addConstantPureCash. Ce test doit
+  // échouer clairement si un futur lot régresse sur cet invariant (ex. un
+  // contrôleur qui recommencerait à sommer TOUS les comptes cash dans pureCashEur
+  // sans filtrer par journalHasCashAnchor).
   // =========================================================================
 
   group('Anti-double-comptage du cash (invariant §6.5, PIÈGE N°1 [BLOQUANT])', () {

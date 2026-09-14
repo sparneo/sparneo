@@ -192,9 +192,9 @@ void main() {
 
     test('DRONE VOLT : DS rejeté, SOUSC → transferOut, droit soldé à 0', () {
       // Les 3 jambes de QUANTITÉ du droit, sur le MÊME ISIN :
-      //   DS    +3568 (réception des droits)   → rejeté (manualReview)
-      //   SOUSC  3560 (exercice, droits SORTENT) → reclassé transferOut (−3560)
-      //   RTFIS     8 (retrait du reliquat)      → transferOut (−8)
+      //   DS +3568 (réception des droits) → rejeté (manualReview) SOUSC 3560 (exercice,
+      //   droits SORTENT) → reclassé transferOut (−3560) RTFIS 8 (retrait du reliquat) →
+      //   transferOut (−8)
       // Réel : 3568 − 3560 − 8 = 0. Le droit se solde à ≤ 0.
       final movements = _normalize([
         ['20200601', 'DS', 'DRONE VOLT DS', rightsIsin, '3568', '', '', ''],

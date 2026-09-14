@@ -1,7 +1,7 @@
 // lib/logic/chart_mode_policy.dart
 //
 // Politique PURE de résolution du mode de courbe par défaut (mode 1 « Vos
-// positions » / mode 2 « Évolution réelle », design doc 18 §7.2/§11.6).
+// positions » / mode 2 « Évolution réelle », design conception interne).
 //
 // POURQUOI une politique plutôt qu'un `bool` en dur dans chaque vue : le mode
 // réel est le défaut depuis le 29/07 (il montre ce qui s'est VRAIMENT passé),

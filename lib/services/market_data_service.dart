@@ -106,6 +106,14 @@ class MarketDataService {
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) =>
       _provider.searchByIsin(isin, quotesCount: quotesCount);
 
+  /// Vérifie l'existence d'un [symbol] auprès de la source de marché (voir
+  /// [MarketDataProvider.symbolExists]) — `false` = symbole inexistant (404),
+  /// `true` = existant/coté, `null` = inconnu (panne réseau, timeout…), jamais
+  /// assimilable à `false`. Utilisée par la cascade de résolution ticker de
+  /// l'import crypto (conception interne) ; profite aussi à la vérification des
+  /// symboles titres saisis à la main.
+  Future<bool?> symbolExists(String symbol) => _provider.symbolExists(symbol);
+
   // ==================== COTATIONS ORIENTÉES ACTIF ====================
   // Ces variantes prennent un [Asset] plutôt qu'un symbole brut. Pour un actif
   // classique elles délèguent simplement aux méthodes par symbole. Pour un

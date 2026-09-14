@@ -7,10 +7,10 @@ import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
 import 'package:portfolio_tracker/logic/chart_mode_policy.dart';
 // [isHeldPosition] vit désormais dans `logic/position_projection.dart`
-// (réutilisée par [HistoryAggregator.computeRealTotalGain], doc 19) —
-// importée ci-dessous pour l'usage local de ce fichier, RÉ-EXPORTÉE pour ne
-// rien casser côté appelants existants
-// (`import '.../account_view.dart' show isHeldPosition`, cf.
+// (réutilisée par [HistoryAggregator.computeRealTotalGain], conception
+// interne) — importée ci-dessous pour l'usage local de ce fichier, RÉ-EXPORTÉE
+// pour ne rien casser côté appelants existants (`import
+// '.../account_view.dart' show isHeldPosition`, cf.
 // test/corporate_actions_import_test.dart).
 import 'package:portfolio_tracker/logic/position_projection.dart'
     show isHeldPosition;
@@ -89,8 +89,8 @@ class _AccountViewState extends State<AccountView> {
   /// (même base que le contrôleur).
   final TransactionStorage _txStorage = TransactionStorage();
 
-  /// Mode de courbe affiché par le sélecteur (performance / évolution réelle
-  /// B7, design doc 18, MÊME motif que wallet_view Lot 3a).
+  /// Mode de courbe affiché par le sélecteur (performance / évolution réelle B7,
+  /// design conception interne, MÊME motif que wallet_view Lot 3a).
   ///
   /// N'est PLUS un champ initialisé à `true` : le défaut reste le mode réel
   /// (retour manuel du 29/07 — il reflète ce qui s'est VRAIMENT passé,
@@ -208,9 +208,9 @@ class _AccountViewState extends State<AccountView> {
   bool get _useRealCurve =>
       _showRealCurve || (_isCashAccount && _ctrl.hasRealCurve);
 
-  /// Vrai pour un compte de type [AccountType.cash] (livret, compte courant) :
-  /// repli « compte sans titre » (B8, doc 19 §4.5) — pas de positions à
-  /// afficher, le solde espèces devient la valeur mise en avant de l'écran.
+  /// Vrai pour un compte de type [AccountType.cash] (livret, compte courant) : repli
+  /// « compte sans titre » (B8, conception interne) — pas de positions à afficher,
+  /// le solde espèces devient la valeur mise en avant de l'écran.
   bool get _isCashAccount => _ctrl.activeAccount?.type == AccountType.cash;
 
   @override
@@ -1280,18 +1280,18 @@ class _AccountViewState extends State<AccountView> {
                   ),
                 ],
 
-                // Section graphique : positions (mode 1) OU grille synthétique
-                // d'un compte cash ancré (B8, doc 19 §4.3/4.4 — chartDates naît
-                // alors du journal, pas des séries de prix).
+                // Section graphique : positions (mode 1) OU grille synthétique d'un compte cash
+                // ancré (B8, conception interne/4.4 — chartDates naît alors du journal, pas des
+                // séries de prix).
                 if (_ctrl.positionsData.isNotEmpty ||
                     _ctrl.chartDates.isNotEmpty) ...[
                   const SizedBox(height: 16),
                   _buildAccountChartSection(),
                 ],
 
-                // « Mes positions » (en-tête + liste + état vide) : un compte
-                // cash (livret, compte courant) n'a aucune position à afficher
-                // ni à ajouter — repli « compte sans titre » (B8, doc 19 §4.5).
+                // « Mes positions » (en-tête + liste + état vide) : un compte cash (livret, compte
+                // courant) n'a aucune position à afficher ni à ajouter — repli « compte sans titre
+                // » (B8, conception interne).
                 if (!_isCashAccount) ...[
                   // Header "Mes positions" avec bouton + et tooltip
                   Padding(
@@ -1512,13 +1512,13 @@ class _AccountViewState extends State<AccountView> {
     );
   }
 
-  /// Ligne « Espèces » d'un COMPTE CASH (livret, compte courant) — B8, doc 19
-  /// §4.5 : le solde espèces y EST toute la valeur du compte (pas une donnée
-  /// accessoire sous des positions), donc traitée en premier plan — icône
-  /// 24, texte `titleMedium`, bouton d'action plein (`FilledButton.
-  /// tonalIcon`). N'affiche un solde dérivé que si le journal contient un
-  /// ancrage cash explicite ([AccountController.hasCashAnchor]) ; sinon,
-  /// wording discret « Espèces non suivies ».
+  /// Ligne « Espèces » d'un COMPTE CASH (livret, compte courant) — B8, conception
+  /// interne : le solde espèces y EST toute la valeur du compte (pas une donnée
+  /// accessoire sous des positions), donc traitée en premier plan — icône 24, texte
+  /// `titleMedium`, bouton d'action plein (`FilledButton. tonalIcon`). N'affiche un
+  /// solde dérivé que si le journal contient un ancrage cash explicite
+  /// ([AccountController.hasCashAnchor]) ; sinon, wording discret « Espèces non
+  /// suivies ».
   ///
   /// RESTREINTE à ce régime depuis l'épuration UI (lot 3) : sur un
   /// compte-titres, le cash n'est plus qu'une donnée accessoire — sa valeur a
@@ -1605,14 +1605,13 @@ class _AccountViewState extends State<AccountView> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildPeriodSelector(),
-            // Sélecteur de mode courbe (performance / évolution réelle, B7
-            // design doc 18), MÊME motif que wallet_view Lot 3a : n'apparaît
-            // que si une courbe réelle est disponible pour ce compte ET que le
-            // choix a un sens. Masqué sur un compte CASH (B8) : le mode
-            // « Vos positions » y est TOUJOURS une droite plate au solde
-            // actuel (aucune position, donc rien à faire varier) — offrir un
-            // sélecteur dont une branche est tautologiquement inutile n'a pas
-            // de sens, cf. [_useRealCurve] qui force alors le mode réel.
+            // Sélecteur de mode courbe (performance / évolution réelle, B7 design conception
+            // interne), MÊME motif que wallet_view Lot 3a : n'apparaît que si une courbe
+            // réelle est disponible pour ce compte ET que le choix a un sens. Masqué sur un
+            // compte CASH (B8) : le mode « Vos positions » y est TOUJOURS une droite plate au
+            // solde actuel (aucune position, donc rien à faire varier) — offrir un sélecteur
+            // dont une branche est tautologiquement inutile n'a pas de sens, cf.
+            // [_useRealCurve] qui force alors le mode réel.
             if (_ctrl.hasRealCurve && !_isCashAccount) ...[
               const SizedBox(height: 8),
               Align(
@@ -1771,11 +1770,10 @@ class _AccountViewState extends State<AccountView> {
                     // rechargement d'historique, le ratio croise l'ANCIENNE
                     // courbe et le NOUVEAU total.
                     suppressCoverageNotes: _ctrl.isLoadingHistory,
-                    // Compte 100 % hérité (bug constaté à l'écran, doc privé) :
-                    // aucune courbe réelle à proposer — la note des positions
-                    // héritées change alors de préfixe (« pas d'évolution
-                    // réelle à reconstruire », pas « ne figure pas dans cette
-                    // courbe »).
+                    // Compte 100 % hérité (bug constaté à l'écran, conception interne) : aucune courbe
+                    // réelle à proposer — la note des positions héritées change alors de préfixe («
+                    // pas d'évolution réelle à reconstruire », pas « ne figure pas dans cette courbe
+                    // »).
                     realCurveAvailable: _ctrl.hasRealCurve,
                   ),
                 ],

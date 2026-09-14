@@ -13,9 +13,8 @@ import 'package:portfolio_tracker/utils/formatters.dart';
 /// contact du graphique ([PeriodGainLine]) — l'afficher ici, loin de ce qui
 /// la pilote, la faisait passer pour une caractéristique du compte.
 ///
-/// Paramètres :
-/// - [totalValue]         : valeur totale en EUR.
-/// - [title]              : titre de la carte (l10n.totalValue ou
+/// Paramètres : - [totalValue] : valeur totale en EUR. - [title] :
+/// titre de la carte (l10n.totalValue ou
 ///                          l10n.totalValueAccount selon la vue).
 /// - [gainAmount]/[gainPercent] : gain TOTAL depuis l'origine (base coût,
 ///                          frais inclus — cf.
@@ -24,9 +23,9 @@ import 'package:portfolio_tracker/utils/formatters.dart';
 ///                          prioritaire de l'utilisateur (« ai-je gagné de
 ///                          l'argent, au final ? »), d'où sa place en premier
 ///                          plan. `null` = pas de ligne de gain.
-/// - [onGainInfoPressed]  : ouvre la popup pédagogique via une icône ⓘ.
+/// - [onGainInfoPressed] : ouvre la popup pédagogique via une icône ⓘ.
 ///                          `null` = pas d'icône.
-/// - [gainExcludedCount]  : nombre de titres EXCLUS de [gainAmount] faute de
+/// - [gainExcludedCount] : nombre de titres EXCLUS de [gainAmount] faute de
 ///                          base de coût connue (cf. [HistoryAggregator.
 ///                          computeRealTotalGain], exposé par les
 ///                          contrôleurs via `realNoBasisSymbols.length`).

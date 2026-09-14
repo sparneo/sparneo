@@ -877,9 +877,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// échec de TRANSPORT, exactement la distinction qu'il faut ici.
   ///
   /// Retourne :
-  ///  - `true`  : un hit porte EXACTEMENT ce symbole → accepté.
-  ///  - `false` : recherche aboutie mais aucun hit exact → REJETÉ.
-  ///  - `null`  : échec de transport OU erreur inattendue — AUCUNE info sur
+  ///  - `true` : un hit porte EXACTEMENT ce symbole → accepté. - `false` :
+  ///  recherche aboutie mais aucun hit exact → REJETÉ. - `null` : échec de
+  ///  transport OU erreur inattendue — AUCUNE info sur
   ///    l'existence du titre, donc PAS de rejet (même raisonnement que pour
   ///    la recherche ISIN, cf. doc de fichier / [_resolveOneNewAsset]).
   Future<bool?> _verifySymbolExists(String symbol) async {
@@ -2007,17 +2007,16 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// `toCreate.isEmpty`). Sans ce groupe, la ligne repliée disparaissait donc
   /// de l'aperçu exactement comme avant le marqueur.
   ///
-  /// Balaie UNIQUEMENT les mouvements qui seront RÉELLEMENT ÉCRITS (`toCreate`,
-  /// plus les doublons probables si l'utilisateur a choisi de les importer).
-  /// Les DOUBLONS en sont exclus délibérément (retour auteur) : pour eux rien
-  /// n'est écrit, la ligne repliée n'a donc aucune conséquence — l'annoncer est
-  /// du bruit sur un écran qui dit « rien à importer », et surtout c'est
-  /// TROMPEUR : ça suggère qu'on vient de réunir deux lignes du journal alors
-  /// qu'il n'a pas bougé. Cas le plus perfide : une opération importée AVANT
-  /// le correctif de fusion laisse la paire scindée en base, et l'écran
-  /// affirmerait « ces deux lignes ont été réunies » pendant qu'elles y sont
-  /// toujours toutes les deux (cf. la limite « ne répare pas un journal
-  /// existant », doc 17 §14.8).
+  /// Balaie UNIQUEMENT les mouvements qui seront RÉELLEMENT ÉCRITS (`toCreate`, plus
+  /// les doublons probables si l'utilisateur a choisi de les importer). Les DOUBLONS
+  /// en sont exclus délibérément (retour auteur) : pour eux rien n'est écrit, la
+  /// ligne repliée n'a donc aucune conséquence — l'annoncer est du bruit sur un écran
+  /// qui dit « rien à importer », et surtout c'est TROMPEUR : ça suggère qu'on vient
+  /// de réunir deux lignes du journal alors qu'il n'a pas bougé. Cas le plus perfide
+  /// : une opération importée AVANT le correctif de fusion laisse la paire scindée en
+  /// base, et l'écran affirmerait « ces deux lignes ont été réunies » pendant
+  /// qu'elles y sont toujours toutes les deux (cf. la limite « ne répare pas un
+  /// journal existant », conception interne).
   ///
   /// Déplié par défaut (une ligne du relevé a disparu de la liste des
   /// mouvements à créer : ça se signale, ça ne se cherche pas).

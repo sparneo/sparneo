@@ -11,6 +11,7 @@
 import 'dart:convert';
 
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/crypto_ledger_spec.dart';
 
 /// Spécification du format de date d'un relevé (ordre jour/mois/année et
 /// séparateur). Les relevés français utilisent très majoritairement
@@ -29,11 +30,21 @@ class DateFormatSpec {
   /// ignorés par le parsing (cf. `StatementImportService._parseDate`).
   final bool compactYmd;
 
+  /// `true` : date SÉPARÉE « année d'abord » `AAAA<sep>MM<sep>JJ` (ex. `2024-03-12`,
+  /// format des trois relevés crypto Kraken/Coinbase/Binance — conception interne).
+  /// Défaut `false` (comportement historique jour/mois inchangé). PRÉCÉDENCE :
+  /// `compactYmd` > [yearFirst] > [dayFirst] — un format compact ignore ce champ
+  /// (aucun séparateur à ordonner) ; sans [compactYmd], [yearFirst] prime sur
+  /// [dayFirst] quand les deux sont renseignés (ne devrait pas arriver en pratique,
+  /// mais lève l'ambiguïté).
+  final bool yearFirst;
+
   const DateFormatSpec({
     this.separator = '/',
     this.dayFirst = true,
     this.fourDigitYear = true,
     this.compactYmd = false,
+    this.yearFirst = false,
   });
 }
 
@@ -216,6 +227,15 @@ class BrokerProfile {
   /// selon son effet ; un code absent des DEUX reste REJETÉ (jamais coercé).
   final Map<String, CorporateActionKind> corporateActions;
 
+  /// Spécification du GRAND LIVRE crypto (chantier B16, conception interne) —
+  /// `null` (défaut, TOUS les profils actuels) = profil titres, le pipeline crypto
+  /// de `StatementImportService` est un NO-OP STRICT. Squelette DORMANT au lot 0 :
+  /// aucune stratégie de [CryptoLedgerSpec] n'est encore implémentée. `RegExp`
+  /// n'étant pas `const`, [CryptoLedgerSpec] n'a pas de constructeur `const` — sans
+  /// effet sur les profils `const` existants (ex. [bourseDirect]) puisque ce champ
+  /// garde sa valeur par défaut `null`, elle-même constante.
+  final CryptoLedgerSpec? crypto;
+
   const BrokerProfile({
     required this.id,
     required this.label,
@@ -229,6 +249,7 @@ class BrokerProfile {
     required this.columns,
     required this.kindLexicon,
     this.corporateActions = const {},
+    this.crypto,
   });
 
   /// Profil « Générique / manuel » (MVP, seul profil livré) : l'utilisateur
@@ -351,6 +372,7 @@ class BrokerProfile {
     ColumnMapping? columns,
     Map<String, TransactionKind>? kindLexicon,
     Map<String, CorporateActionKind>? corporateActions,
+    CryptoLedgerSpec? crypto,
   }) {
     return BrokerProfile(
       id: id,
@@ -365,6 +387,7 @@ class BrokerProfile {
       columns: columns ?? this.columns,
       kindLexicon: kindLexicon ?? this.kindLexicon,
       corporateActions: corporateActions ?? this.corporateActions,
+      crypto: crypto ?? this.crypto,
     );
   }
 }

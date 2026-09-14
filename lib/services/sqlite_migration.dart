@@ -10,10 +10,10 @@
 // retry au prochain lancement.
 //
 // Ordre des gardes (méthode [runIfNeeded]) :
-//   1. Flag déjà posé              → no-op.
-//   2. DB déjà peuplée sans flag   → récupération après crash : poser le flag,
+//   1. Flag déjà posé → no-op. 2. DB déjà peuplée sans flag → récupération après
+//   crash : poser le flag,
 //      pas de ré-import (évite doublon/écrasement).
-//   3. Aucune donnée legacy        → utilisateur neuf : poser le flag, rien à
+//   3. Aucune donnée legacy → utilisateur neuf : poser le flag, rien à
 //      migrer.
 //   4. Assainissement des orphelins référentiels (décision d'orchestration) :
 //      retirer les entrées qui violeraient une contrainte FK à l'import

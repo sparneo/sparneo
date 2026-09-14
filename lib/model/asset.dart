@@ -45,9 +45,9 @@ enum AssetType {
   }
 }
 
-/// Unité de cotation d'un cours de métal précieux de référence.
-/// - [ounce] : prix par once troy (ex. future `GC=F` en USD/once).
-/// - [gram]  : prix par gramme (ex. ETC physique `4GLD.DE` en EUR/g).
+/// Unité de cotation d'un cours de métal précieux de référence. - [ounce]
+/// : prix par once troy (ex. future `GC=F` en USD/once). - [gram] : prix
+/// par gramme (ex. ETC physique `4GLD.DE` en EUR/g).
 enum MetalQuoteUnit { ounce, gram }
 
 class Asset {
@@ -97,6 +97,16 @@ class Asset {
   /// (métaux, cash, actifs saisis avant l'introduction du champ).
   final String? isin;
 
+  /// Code d'actif du RELEVÉ CRYPTO d'origine (ex. `BTC`), distinct du
+  /// [symbol] de COTATION (ex. `BTC-EUR`) — le modèle impose `Asset.symbol
+  /// == quoteSymbol` (hors métaux), donc l'identité du grand livre source
+  /// doit vivre ailleurs. MÉTADONNÉE OPTIONNELLE, jamais clé ni contrainte
+  /// d'unicité, même politique que [isin] : `null` pour tout actif non issu
+  /// d'un import crypto (aucune migration requise, clé omise à l'export).
+  /// NE PAS réutiliser [isin] : l'export fiscal en dérive un pays d'émetteur,
+  /// y loger un code crypto (« BTC ») produirait une donnée fiscale fausse.
+  final String? ledgerCode;
+
   /// `true` (défaut) = l'actif est coté et doit être interrogé auprès de la
   /// source de marché pour obtenir un cours. `false` = actif NON COTÉ : il ne
   /// doit JAMAIS être interrogé sur la source de marché (aucun appel réseau,
@@ -122,6 +132,7 @@ class Asset {
     this.fineWeightGrams,
     this.premiumPercent,
     this.isin,
+    this.ledgerCode,
     this.quotable = true,
   });
 
@@ -191,6 +202,9 @@ class Asset {
       // `asset_json` étant une colonne TEXT opaque qui ignore déjà les clés
       // inconnues côté lecture.
       isin: json['isin'] as String?,
+      // TOLÉRANT à l'absence, même politique que `isin` (positions/backups
+      // antérieurs au champ, ou actifs non issus d'un import crypto).
+      ledgerCode: json['ledgerCode'] as String?,
       // TOLÉRANT à l'absence, même politique que `isin` : clé manquante →
       // `true` (défaut coté), aucune migration. Seul un `false` explicite
       // (écrit par le repli ISIN) rend l'actif non coté.
@@ -217,6 +231,9 @@ class Asset {
       // Omis si absent (défaut) : les positions/backups sans ISIN restent
       // bit-identiques au round-trip (même politique que refSymbol ci-dessus).
       if (isin != null) 'isin': isin,
+      // Omis si absent (défaut) : même politique que isin/refSymbol — les
+      // positions non crypto restent bit-identiques au round-trip.
+      if (ledgerCode != null) 'ledgerCode': ledgerCode,
       // Omis quand `true` (défaut) : les positions/backups d'actifs cotés
       // restent bit-identiques au round-trip (même politique que `isin`).
       if (!quotable) 'quotable': false,
@@ -236,6 +253,7 @@ class Asset {
     double? fineWeightGrams,
     double? premiumPercent,
     String? isin,
+    String? ledgerCode,
     bool? quotable,
   }) {
     return Asset(
@@ -251,6 +269,7 @@ class Asset {
       fineWeightGrams: fineWeightGrams ?? this.fineWeightGrams,
       premiumPercent: premiumPercent ?? this.premiumPercent,
       isin: isin ?? this.isin,
+      ledgerCode: ledgerCode ?? this.ledgerCode,
       quotable: quotable ?? this.quotable,
     );
   }

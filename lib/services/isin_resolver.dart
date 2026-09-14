@@ -7,9 +7,8 @@
 //
 // Ordre de préférence (orienté patrimoine local EUR / PEA — actions & ETF
 // FR/UE) :
-//   0. Euronext Paris        (`.PA`, place PAR/Paris)
-//   1. Autres Euronext EUR   (`.AS` Amsterdam, `.BR` Bruxelles, `.LS` Lisbonne)
-//   2. Xetra / Francfort     (`.DE`, `.F`)
+//   0. Euronext Paris (`.PA`, place PAR/Paris) 1. Autres Euronext EUR (`.AS`
+//   Amsterdam, `.BR` Bruxelles, `.LS` Lisbonne) 2. Xetra / Francfort (`.DE`, `.F`)
 //   3. tout le reste
 // À rang de préférence ÉGAL, on départage par le meilleur `score`. Le rang
 // DOMINE toujours le score : un `.PA` est préféré à un `.DE` mieux scoré. Ne

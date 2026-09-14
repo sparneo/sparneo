@@ -110,6 +110,13 @@ class CachingMarketDataProvider implements MarketDataProvider {
   @override
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) =>
       _delegate.searchByIsin(isin, quotesCount: quotesCount);
+
+  // Vérification d'existence de symbole (import crypto B16, conception
+  // interne) : pure délégation, PAS de cache au lot 0 (passthrough — la
+  // volumétrie d'un assistant d'import reste faible, contrairement aux séries
+  // historiques rejouées à chaque switch de période).
+  @override
+  Future<bool?> symbolExists(String symbol) => _delegate.symbolExists(symbol);
 }
 
 /// Entrée du cache mémoire des séries historiques ([CachingMarketDataProvider._historyCache]).

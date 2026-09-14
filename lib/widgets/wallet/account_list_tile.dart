@@ -13,14 +13,12 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 /// [confirmDismiss], conformément au risque R4 du design (dialogs restent en
 /// vue).
 ///
-/// Paramètres :
-/// - [account]           : compte à afficher.
-/// - [value]             : valeur en EUR du compte.
-/// - [periodChange]      : variation absolue de la période.
-/// - [periodChangePercent]: variation relative de la période.
-/// - [onTap]             : action au tap (navigation ou édition solde cash).
-/// - [confirmDismiss]    : async callback demandant confirmation de suppression.
-/// - [onDismissed]       : action après confirmation et suppression effective.
+/// Paramètres : - [account] : compte à afficher. - [value] : valeur en EUR du
+/// compte. - [periodChange] : variation absolue de la période. -
+/// [periodChangePercent]: variation relative de la période. - [onTap] : action au
+/// tap (navigation ou édition solde cash). - [confirmDismiss] : async callback
+/// demandant confirmation de suppression. - [onDismissed] : action après
+/// confirmation et suppression effective.
 class AccountListTile extends StatelessWidget {
   /// Échelle de police système au-delà de laquelle le nom du compte et ses
   /// montants passent l'un SOUS l'autre au lieu de se partager la ligne.

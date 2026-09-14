@@ -547,10 +547,10 @@ void main() {
         'accueil fusionné qui est un DOUBLON : AUCUNE annonce de repli — rien '
         'n\'est écrit, et le journal peut même contenir encore la paire scindée',
         (tester) async {
-      // Décision produit (retour auteur) : sur un ré-import, annoncer « ces deux
-      // lignes ont été réunies » est du bruit — le journal n'a pas bougé — et
-      // trompeur si l'opération avait été importée AVANT le correctif de fusion
-      // (la paire scindée est alors toujours en base, cf. doc 17 §14.8).
+      // Décision produit (retour auteur) : sur un ré-import, annoncer « ces deux lignes
+      // ont été réunies » est du bruit — le journal n'a pas bougé — et trompeur si
+      // l'opération avait été importée AVANT le correctif de fusion (la paire scindée est
+      // alors toujours en base, cf. la conception interne).
       final preview = ImportPreview(
         toCreate: const [],
         duplicates: [

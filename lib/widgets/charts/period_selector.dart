@@ -12,12 +12,12 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 /// garantit un rendu identique et correct dans les thèmes clair comme sombre,
 /// sans couleur codée en dur.
 ///
-/// - [selectedPeriod] : période actuellement active.
-/// - [onSelected]     : callback déclenché quand l'utilisateur change de période.
-/// - [height]         : hauteur facultative du SizedBox englobant (32 pour
+/// - [selectedPeriod] : période actuellement active. - [onSelected] : callback
+/// déclenché quand l'utilisateur change de période. - [height] : hauteur facultative
+/// du SizedBox englobant (32 pour
 ///                      account_view / position_detail ; null pour wallet_view).
-/// - [selectedLabelBold]     : mettre le libellé en gras quand sélectionné.
-/// - [unselectedLabelColor]  : surcharge éventuelle de la couleur du texte des
+/// - [selectedLabelBold] : mettre le libellé en gras quand sélectionné. -
+/// [unselectedLabelColor] : surcharge éventuelle de la couleur du texte des
 ///                             chips non sélectionnés (défaut : onSurfaceVariant).
 class PeriodSelector extends StatelessWidget {
   final ChartPeriod selectedPeriod;

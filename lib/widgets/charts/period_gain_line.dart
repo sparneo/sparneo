@@ -17,10 +17,9 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 /// chiffrée. La carte de valeur ne porte plus que ce qui ne dépend d'aucun
 /// réglage : la valeur totale et le gain total depuis l'origine.
 ///
-/// Paramètres :
-/// - [amount]           : gain absolu sur la période (null = rien n'est rendu).
-/// - [percent]          : `%` associé (null = « — », cf. `l10n.notAvailable`).
-/// - [selectedPeriod]   : période affichée (J/1M/…/Max) — sert à la fois de
+/// Paramètres : - [amount] : gain absolu sur la période (null = rien n'est rendu).
+/// - [percent] : `%` associé (null = « — », cf. `l10n.notAvailable`). -
+/// [selectedPeriod] : période affichée (J/1M/…/Max) — sert à la fois de
 ///                        libellé (mode performance) et de portée temporelle
 ///                        (mode réel, cf. [netOfContributions]).
 /// - [percentAnnualized]: mode réel uniquement (B7) — SECOND `%` (rendement
@@ -40,7 +39,7 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 ///                        traîner derrière. `false` (mode performance,
 ///                        défaut) : format inchangé, [selectedPeriod] reste en
 ///                        fin de ligne.
-/// - [onInfoPressed]    : ouvre la popup pédagogique via une icône ⓘ discrète.
+/// - [onInfoPressed] : ouvre la popup pédagogique via une icône ⓘ discrète.
 ///                        `null` = pas d'icône. Un [Tooltip] seul ne
 ///                        conviendrait pas (appui long indevinable sur mobile,
 ///                        refermeture trop rapide pour plusieurs paragraphes).

@@ -1,8 +1,8 @@
 // test/widgets/account_view_test.dart
 //
-// Tests WIDGET du repli « compte cash » d'AccountView (B8 lot 3, doc 19 §4.5,
-// §7 Lot 3) : un compte cash (livret, compte courant) ouvre désormais la MÊME
-// page qu'un compte titres, mais avec « Mes positions » masquée et le solde
+// Tests WIDGET du repli « compte cash » d'AccountView (B8 lot 3, conception
+// interne Lot 3) : un compte cash (livret, compte courant) ouvre désormais la
+// MÊME page qu'un compte titres, mais avec « Mes positions » masquée et le solde
 // espèces promu comme valeur mise en avant du compte.
 //
 // Pas d'appel réseau : fakes en mémoire pour MarketDataService, taux de
@@ -377,15 +377,15 @@ void main() {
       await tester.pumpWidget(_host(ctrl));
       await tester.pumpAndSettle();
 
-      // Bouton journal : icône « receipt_long » de la barre d'app (déjà
-      // inconditionnel avant B8, doc 19 §4.5). La navigation réelle vers
-      // AccountJournalPage n'est PAS exercée ici : cette page ouvre elle
-      // aussi sa propre base par défaut dans son initState, ce qui
-      // reproduirait le blocage documenté ci-dessus si on la pumpait. Les 4
-      // kinds espèces qu'elle propose (deposit/withdrawal/interest/charge,
-      // sans buy/sell) sont vérifiés par lecture de code (account_journal_
-      // page.dart:213, allowedKinds — aucune condition sur account.kind/type
-      // dans tout le fichier, confirmé par grep) : ce lot ne les modifie pas.
+      // Bouton journal : icône « receipt_long » de la barre d'app (déjà inconditionnel
+      // avant B8, conception interne). La navigation réelle vers AccountJournalPage
+      // n'est PAS exercée ici : cette page ouvre elle aussi sa propre base par défaut
+      // dans son initState, ce qui reproduirait le blocage documenté ci-dessus si on
+      // la pumpait. Les 4 kinds espèces qu'elle propose
+      // (deposit/withdrawal/interest/charge, sans buy/sell) sont vérifiés par lecture
+      // de code (account_journal_ page.dart:213, allowedKinds — aucune condition sur
+      // account.kind/type dans tout le fichier, confirmé par grep) : ce lot ne les
+      // modifie pas.
       expect(find.byIcon(Icons.receipt_long), findsOneWidget);
     });
 
@@ -407,8 +407,8 @@ void main() {
       expect(find.text(l10n.setInitialCashBalanceAction), findsOneWidget);
       expect(find.text(l10n.adjustCashBalanceAction), findsNothing);
 
-      // Régime legacy : TotalValueCard reflète `cash_balance` (500 €), la
-      // seule source de vérité tant qu'aucun ancrage n'existe (doc 19 §3).
+      // Régime legacy : TotalValueCard reflète `cash_balance` (500 €), la seule
+      // source de vérité tant qu'aucun ancrage n'existe (conception interne).
       expect(find.textContaining(RegExp(r'500,00\s€')), findsWidgets);
     });
 
@@ -443,10 +443,10 @@ void main() {
         // pas `cash_balance` (resté null ici).
         expect(find.textContaining(RegExp(r'1\s000,00\s€')), findsWidgets);
 
-        // Bonus (fix de gating dans ce lot) : la section graphique du compte
-        // s'affiche désormais pour un compte cash ancré (grille synthétique du
-        // journal, B8 doc 19 §4.3/4.4) — auparavant gatée sur positionsData
-        // (toujours vide pour un compte cash), donc jamais visible.
+        // Bonus (fix de gating dans ce lot) : la section graphique du compte s'affiche
+        // désormais pour un compte cash ancré (grille synthétique du journal, B8
+        // conception interne/4.4) — auparavant gatée sur positionsData (toujours vide
+        // pour un compte cash), donc jamais visible.
         expect(find.byType(PeriodSelector), findsOneWidget);
 
         // Le sélecteur Performance/Évolution réelle est MASQUÉ sur un compte

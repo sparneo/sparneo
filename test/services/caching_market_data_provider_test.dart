@@ -54,6 +54,15 @@ class _FakeProvider implements MarketDataProvider {
   @override
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async =>
       const [];
+
+  bool? symbolExistsToReturn;
+  String? lastSymbolExists;
+
+  @override
+  Future<bool?> symbolExists(String symbol) async {
+    lastSymbolExists = symbol;
+    return symbolExistsToReturn;
+  }
 }
 
 void main() {

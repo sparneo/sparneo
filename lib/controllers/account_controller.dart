@@ -131,17 +131,17 @@ class AccountController extends ChangeNotifier {
   double? _periodChange;
   double? _periodChangePercent;
 
-  // Mode 2 « évolution réelle » (B7, design doc 18) : reconstruction datée
-  // depuis le journal du compte, calculée EN PARALLÈLE du mode 1 ci-dessus
+  // Mode 2 « évolution réelle » (B7, design conception interne) : reconstruction
+  // datée depuis le journal du compte, calculée EN PARALLÈLE du mode 1 ci-dessus
   // (additif — n'écrit JAMAIS les champs mode 1). ALIGNÉE index-par-index sur
   // [_chartDates] (même grille, garantie par construction — cf.
-  // _computeAccountRealCurve). PÉRIMÈTRE : titres du compte reconstruits depuis
-  // le journal + CASH DÉRIVÉ du compte (projection B5 du même journal, gating
-  // d'ancrage `journalHasCashAnchor` appliqué par `reconstructRealNetWorth`) —
-  // c'est la vraie valeur du compte dans le temps, dont le point final coïncide
-  // avec la « Valeur totale » affichée (qui inclut le cash). Diffère donc du
-  // mode 1 du compte ([HistoryAggregator.aggregateHistoricalData], titres seuls
-  // sans cash) : le petit écart au basculement est le solde espèces, assumé.
+  // _computeAccountRealCurve). PÉRIMÈTRE : titres du compte reconstruits depuis le
+  // journal + CASH DÉRIVÉ du compte (projection B5 du même journal, gating d'ancrage
+  // `journalHasCashAnchor` appliqué par `reconstructRealNetWorth`) — c'est la vraie
+  // valeur du compte dans le temps, dont le point final coïncide avec la « Valeur
+  // totale » affichée (qui inclut le cash). Diffère donc du mode 1 du compte
+  // ([HistoryAggregator.aggregateHistoricalData], titres seuls sans cash) : le petit
+  // écart au basculement est le solde espèces, assumé.
   List<double> _realChartValues = [];
   // Dernière couverture calculée HORS chargement (cf. [realCurveCoverage]) —
   // gèle le getter pendant un rechargement pour que le sélecteur de mode ne
@@ -310,13 +310,13 @@ class AccountController extends ChangeNotifier {
   /// deux en ont besoin, et deux calculs parallèles auraient fini par diverger
   /// sur la GARDE D'ANCRAGE ci-dessous — la subtilité qui compte.
   ///
-  /// GARDE D'ANCRAGE, non négociable (invariant « faux négatif interdit »,
-  /// design cash-ledger §6.7 / partition doc 19 §6.5) : sur un compte SANS
-  /// mouvement d'espèces au journal, [derivedCash] vaut « ce que les achats
-  /// ont coûté », soit un solde NÉGATIF FICTIF (le cache `accounts.
-  /// derived_cash` est écrit inconditionnellement — sa non-nullité ne protège
-  /// de rien, seul [hasCashAnchor] protège). Même garde que
-  /// [WalletController._cashBalances] et que [reconstructRealNetWorth].
+  /// GARDE D'ANCRAGE, non négociable (invariant « faux négatif interdit », design
+  /// cash-ledger §6.7 / partition conception interne) : sur un compte SANS
+  /// mouvement d'espèces au journal, [derivedCash] vaut « ce que les achats ont
+  /// coûté », soit un solde NÉGATIF FICTIF (le cache `accounts. derived_cash` est
+  /// écrit inconditionnellement — sa non-nullité ne protège de rien, seul
+  /// [hasCashAnchor] protège). Même garde que [WalletController._cashBalances] et
+  /// que [reconstructRealNetWorth].
   double get currentTotalValueEur {
     final account = _activeAccount;
     if (account == null) return 0.0;
@@ -324,9 +324,9 @@ class AccountController extends ChangeNotifier {
         account.currency.toUpperCase() == 'USD' ? _usdToEurRate : 1.0;
 
     if (account.type == AccountType.cash) {
-      // Un livret n'a aucune position : sa valeur EST son solde espèces
-      // (dérivé du journal si ancré, `cash_balance` legacy sinon — même règle
-      // que WalletController.loadAllData, B8 doc 19 §4.4/§4.5).
+      // Un livret n'a aucune position : sa valeur EST son solde espèces (dérivé du
+      // journal si ancré, `cash_balance` legacy sinon — même règle que
+      // WalletController.loadAllData, B8 conception interne).
       final cashRaw = _hasCashAnchor
           ? (double.tryParse(_derivedCash ?? '0') ?? 0.0)
           : (account.cashBalance ?? 0.0);
@@ -523,12 +523,11 @@ class AccountController extends ChangeNotifier {
   Future<void> _initService() async {
     if (_activeAccount == null) return;
     await _loadAllPrices();
-    // AVANT l'historique (ordre inversé par B8, doc 19 §4.4) : [_derivedCash]
+    // AVANT l'historique (ordre inversé par B8, conception interne) : [_derivedCash]
     // alimente le CAPITAL du gain total mode 2 (`cashEur` de
-    // [HistoryAggregator.computeRealTotalGain], cf. [_computeAccountRealCurve])
-    // — le charger après laissait ce capital à 0 au premier affichage, et
-    // rendrait un compte cash journalisé (dont le cash EST toute la valeur)
-    // franchement faux.
+    // [HistoryAggregator.computeRealTotalGain], cf. [_computeAccountRealCurve]) — le
+    // charger après laissait ce capital à 0 au premier affichage, et rendrait un
+    // compte cash journalisé (dont le cash EST toute la valeur) franchement faux.
     await _loadDerivedCash();
     await _loadAccountHistory();
   }
@@ -793,16 +792,16 @@ class AccountController extends ChangeNotifier {
 
   Future<void> _loadAccountHistory() async {
     if (_positionsData.isEmpty) {
-      // B8 (doc 19 §4.4) : un compte CASH ANCRÉ n'a aucune position mais a bel
-      // et bien une histoire — son journal. Il ne doit donc plus tomber dans
-      // le repli « aucun historique du tout » : sa grille naît de
+      // B8 (conception interne) : un compte CASH ANCRÉ n'a aucune position mais a bel
+      // et bien une histoire — son journal. Il ne doit donc plus tomber dans le repli «
+      // aucun historique du tout » : sa grille naît de
       // [HistoryAggregator.buildDateGrid] faute de toute série de prix où
-      // s'échantillonner. Restreint aux comptes de type cash à dessein : un
-      // compte TITRES sans position n'a pas de grille de prix non plus, mais
-      // son mode 2 porterait des titres soldés dont l'arbitrage de grille
-      // (prix vs synthétique) n'est pas tranché — hors périmètre de ce lot.
-      // Tout autre compte sans position (compte titres vide, compte cash
-      // LEGACY) garde le comportement d'avant B8, bit pour bit.
+      // s'échantillonner. Restreint aux comptes de type cash à dessein : un compte
+      // TITRES sans position n'a pas de grille de prix non plus, mais son mode 2
+      // porterait des titres soldés dont l'arbitrage de grille (prix vs synthétique)
+      // n'est pas tranché — hors périmètre de ce lot. Tout autre compte sans position
+      // (compte titres vide, compte cash LEGACY) garde le comportement d'avant B8, bit
+      // pour bit.
       final account = _activeAccount;
       final cashTxs = (account != null && account.type == AccountType.cash)
           ? await _txStorage.getByAccount(account.id)
@@ -904,18 +903,17 @@ class AccountController extends ChangeNotifier {
     }
   }
 
-  // ---------------------------------------------------------------------------
-  // B8 (doc 19) — compte CASH ANCRÉ : grille de dates SYNTHÉTIQUE + escalier
-  // réel. Aucune position, donc aucune série de prix où s'échantillonner.
+  // --------------------------------------------------------------------------- B8
+  // (conception interne) — compte CASH ANCRÉ : grille de dates SYNTHÉTIQUE +
+  // escalier réel. Aucune position, donc aucune série de prix où s'échantillonner.
   // ---------------------------------------------------------------------------
 
-  /// Budget de points de la grille synthétique (doc 19 §4.3/§8.5) : au-delà,
-  /// [HistoryAggregator.buildDateGrid] sous-échantillonne à pas régulier
-  /// plutôt que de produire un point par jour (« Max » sur 10 ans ≈ 3 650
-  /// points, coûteux au rendu `fl_chart`). Même valeur que côté patrimoine
-  /// (`wallet_controller.dart`), volontairement dupliquée plutôt que partagée
-  /// via un module tiers : les deux contrôleurs n'ont aucune dépendance l'un
-  /// vers l'autre.
+  /// Budget de points de la grille synthétique (conception interne) : au-delà,
+  /// [HistoryAggregator.buildDateGrid] sous-échantillonne à pas régulier plutôt que
+  /// de produire un point par jour (« Max » sur 10 ans ≈ 3 650 points, coûteux au
+  /// rendu `fl_chart`). Même valeur que côté patrimoine (`wallet_controller.dart`),
+  /// volontairement dupliquée plutôt que partagée via un module tiers : les deux
+  /// contrôleurs n'ont aucune dépendance l'un vers l'autre.
   static const int _syntheticGridMaxPoints = 400;
 
   /// Début de la période sélectionnée, ou `null` pour « Max » (pas de borne
@@ -928,7 +926,7 @@ class AccountController extends ChangeNotifier {
     return now.subtract(Duration(days: days));
   }
 
-  /// Borne gauche de la grille synthétique (doc 19 §4.3 règle 2) :
+  /// Borne gauche de la grille synthétique (conception interne, règle 2) :
   /// `max(début de période, premier mouvement du journal)` — avant le premier
   /// mouvement la valeur est 0, pas une extrapolation, et
   /// [HistoryAggregator.buildDateGrid] ne connaît pas le journal.
@@ -945,11 +943,11 @@ class AccountController extends ChangeNotifier {
     return periodStart.isAfter(firstMovement) ? periodStart : firstMovement;
   }
 
-  /// Historique d'un compte CASH ANCRÉ (B8, doc 19 §4.4) : aucune position,
-  /// donc aucune grille de prix — la grille naît de
-  /// [HistoryAggregator.buildDateGrid] et reste la SEULE du calcul (mode 1,
-  /// mode 2 et courbe de flux la partagent : deux grilles concurrentes
-  /// désaligneraient valeur et flux, doc 19 §4.3 règle 3 / §8.3 MAJEUR).
+  /// Historique d'un compte CASH ANCRÉ (B8, conception interne) : aucune
+  /// position, donc aucune grille de prix — la grille naît de
+  /// [HistoryAggregator.buildDateGrid] et reste la SEULE du calcul (mode 1, mode
+  /// 2 et courbe de flux la partagent : deux grilles concurrentes désaligneraient
+  /// valeur et flux, conception interne, règle 3 / §8.3 MAJEUR).
   ///
   /// Le mode 1 y garde sa sémantique habituelle — rétroprojection de la valeur
   /// ACTUELLE, donc une courbe PLATE au solde dérivé du jour (variation de
@@ -1030,13 +1028,13 @@ class AccountController extends ChangeNotifier {
     _realUnanchoredRevenueEur = 0.0;
   }
 
-  /// Calcule le mode 2 « évolution réelle » du COMPTE (B7, design doc 18) :
-  /// reconstruction datée depuis le journal du compte actif, PÉRIMÈTRE TITRES
-  /// SEULS (cf. commentaire de [_realChartValues] — aucun cash injecté, pour
-  /// rester comparable au mode 1 du compte). Énumère TOUS les symboles du
-  /// journal (y compris les titres soldés, absents de [currentPositions]),
-  /// élargit le fetch d'historique au DELTA manquant, applique le repli
-  /// « dernier cours » pour les symboles détenus sans historique.
+  /// Calcule le mode 2 « évolution réelle » du COMPTE (B7, design conception
+  /// interne) : reconstruction datée depuis le journal du compte actif, PÉRIMÈTRE
+  /// TITRES SEULS (cf. commentaire de [_realChartValues] — aucun cash injecté, pour
+  /// rester comparable au mode 1 du compte). Énumère TOUS les symboles du journal
+  /// (y compris les titres soldés, absents de [currentPositions]), élargit le fetch
+  /// d'historique au DELTA manquant, applique le repli « dernier cours » pour les
+  /// symboles détenus sans historique.
   ///
   /// [currentPositions] et [results] sont APPAIRÉS PAR INDEX (même contrat que
   /// [HistoryAggregator.aggregateHistoricalData]) : `results[i]` est
@@ -1087,14 +1085,14 @@ class AccountController extends ChangeNotifier {
     // n'expose alors PAS de courbe réelle (`hasRealCurve` reste faux → aucun
     // bascule proposé), plutôt que d'afficher un zéro cassé.
     //
-    // B8 (doc 19 §4.4) : SAUF sur un compte CASH ANCRÉ, où l'absence de titre
-    // est la NORME et où le journal porte au contraire toute l'histoire du
-    // compte. La garde reste stricte pour un compte TITRES sans titre
-    // journalisé (le raisonnement ci-dessus y vaut toujours).
+    // B8 (conception interne) : SAUF sur un compte CASH ANCRÉ, où l'absence de titre
+    // est la NORME et où le journal porte au contraire toute l'histoire du compte.
+    // La garde reste stricte pour un compte TITRES sans titre journalisé (le
+    // raisonnement ci-dessus y vaut toujours).
     //
     // [_realExcludedLegacySymbols] N'EST PAS remis à vide ici (bug constaté à
-    // l'écran, doc privé) : sur un compte 100 % hérité, c'est justement CETTE
-    // liste — déjà calculée juste au-dessus — qui indique à l'utilisateur ce
+    // l'écran, conception interne) : sur un compte 100 % hérité, c'est justement
+    // CETTE liste — déjà calculée juste au-dessus — qui indique à l'utilisateur ce
     // qu'il a à déclarer, faute de courbe réelle à lui montrer à la place. Ne
     // réinitialiser que ce qui présuppose une reconstruction (courbe,
     // approximations, flux, gains).
@@ -1262,9 +1260,9 @@ class AccountController extends ChangeNotifier {
   /// Ajoute une position classique (actions, ETF, crypto…).
   ///
   /// Retourne null en cas de succès, ou un code d'erreur :
-  ///   - 'noActiveAccount' : pas de compte actif
-  ///   - 'invalidQuantity' : quantité nulle ou non parsable
-  ///   - 'assetNotFound'   : le symbole est introuvable sur le marché
+  ///   - 'noActiveAccount' : pas de compte actif - 'invalidQuantity' :
+  ///   quantité nulle ou non parsable - 'assetNotFound' : le symbole est
+  ///   introuvable sur le marché
   Future<String?> addNewPosition(
     String newSymbol,
     String quantity, [
@@ -1328,9 +1326,9 @@ class AccountController extends ChangeNotifier {
   /// Ajoute une position métal précieux.
   ///
   /// Retourne null en cas de succès, ou un code d'erreur :
-  ///   - 'noActiveAccount' : pas de compte actif
-  ///   - 'invalidQuantity' : quantité nulle ou non parsable
-  ///   - 'assetNotFound'   : le cours de référence est introuvable
+  ///   - 'noActiveAccount' : pas de compte actif - 'invalidQuantity' :
+  ///   quantité nulle ou non parsable - 'assetNotFound' : le cours de
+  ///   référence est introuvable
   Future<String?> addNewPreciousMetal({
     required String name,
     required String refSymbol,
@@ -1557,11 +1555,11 @@ class AccountController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
   // Actions de journal explicites sur le SOLDE ESPÈCES (lot cash-ledger)
   //
-  // Analogues cash de emitOpeningBalance/emitAdjustment (positions) : le cash
-  // dérivé (compte titres ANCRÉ comme compte cash ANCRÉ, doc 19) est en
-  // LECTURE SEULE (corollaire D1/PRU) — toute correction passe par un acte de
-  // journal nommé, jamais une édition directe (B8/doc 19 §2 : l'ancienne
-  // édition manuelle du solde d'un compte cash a été retirée au lot 4).
+  // Analogues cash de emitOpeningBalance/emitAdjustment (positions) : le cash dérivé
+  // (compte titres ANCRÉ comme compte cash ANCRÉ, conception interne) est en LECTURE
+  // SEULE (corollaire D1/PRU) — toute correction passe par un acte de journal nommé,
+  // jamais une édition directe (B8/conception interne : l'ancienne édition manuelle
+  // du solde d'un compte cash a été retirée au lot 4).
   // ---------------------------------------------------------------------------
 
   /// « Définir le solde espèces initial… » — déclare une trésorerie

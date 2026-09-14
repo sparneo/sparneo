@@ -33,4 +33,27 @@ abstract class MarketDataProvider {
   /// que l'UI distingue « introuvable » d'une panne. La désambiguïsation (choix
   /// du symbole retenu parmi les hits) n'appartient PAS à cette couche.
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8});
+
+  /// Vérifie l'EXISTENCE d'un [symbol] auprès de la source de marché, adossée à
+  /// `v8/finance/chart/<symbol>` — même endpoint que [getQuoteWithMetadata], mais
+  /// lu au niveau du CODE DE STATUT plutôt que de la charge utile (conception
+  /// interne, import crypto B16).
+  ///
+  /// Trois issues, DISTINCTES — c'est la raison d'être de cette méthode par
+  /// rapport à [getQuoteWithMetadata]/[getHistoricalData], qui APLATISSENT
+  /// aujourd'hui toute erreur (404 symbole invalide inclus) en `null` :
+  ///  - `false` : réponse `404` — le symbole N'EXISTE PAS chez le
+  ///    fournisseur (constat fiable, jamais un repli sur panne) ;
+  ///  - `true` : réponse `200` avec `chart.result` non vide — le symbole
+  ///    est valide et coté ;
+  ///  - `null` : TOUTE AUTRE issue (timeout, `429` même après backoff,
+  ///    erreur socket, autre statut HTTP, `200` sans résultat exploitable…) —
+  ///    *inconnu*, jamais assimilable à `false`. Un symbole crypto valide
+  ///    (ex. `POL-USD`) peut ne pas être vérifiable par la voie `search`
+  ///    existante (§14.9) ; cette méthode ne doit jamais le faire passer à
+  ///    tort pour inexistant sur une simple panne réseau.
+  ///
+  /// Pas de cache à ce stade (lot 0) : passthrough pur côté décorateur
+  /// [CachingMarketDataProvider].
+  Future<bool?> symbolExists(String symbol);
 }

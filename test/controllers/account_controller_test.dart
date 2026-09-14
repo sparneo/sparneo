@@ -694,8 +694,8 @@ void main() {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // Mode 2 — « évolution réelle » du compte (B7, design doc 18)
+  // ------------------------------------------------------------------------- Mode
+  // 2 — « évolution réelle » du compte (B7, design conception interne)
   // -------------------------------------------------------------------------
 
   group('mode 2 — évolution réelle du compte (B7)', () {
@@ -923,10 +923,10 @@ void main() {
       // switch n'est donc pas proposé (évite une courbe plate à 0 trompeuse).
       expect(ctrl.hasRealCurve, isFalse);
       expect(ctrl.realChartValues, isEmpty);
-      // MAIS la liste des positions héritées reste renseignée (bug constaté à
-      // l'écran, doc privé) : faute de courbe réelle à montrer, c'est la
-      // SEULE indication de ce qu'il y a à déclarer — elle ne doit pas être
-      // vidée par le retour anticipé « rien à reconstruire ».
+      // MAIS la liste des positions héritées reste renseignée (bug constaté à l'écran,
+      // conception interne) : faute de courbe réelle à montrer, c'est la SEULE
+      // indication de ce qu'il y a à déclarer — elle ne doit pas être vidée par le
+      // retour anticipé « rien à reconstruire ».
       expect(ctrl.realExcludedLegacySymbols, ['TKR']);
       expect(ctrl.realExcludedLegacyCount, 1);
     });
@@ -1556,9 +1556,9 @@ void main() {
     });
   });
 
-  // -------------------------------------------------------------------------
-  // B8 (doc 19) — compte CASH journalisé : le compte cash devient un compte
-  // comme les autres dès qu'un ancrage espèces existe.
+  // ------------------------------------------------------------------------- B8
+  // (conception interne) — compte CASH journalisé : le compte cash devient un
+  // compte comme les autres dès qu'un ancrage espèces existe.
   // -------------------------------------------------------------------------
 
   group('compte cash journalisé (B8 lot 2)', () {

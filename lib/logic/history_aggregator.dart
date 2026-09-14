@@ -59,18 +59,18 @@ typedef AccountsPeriodChangesResult = ({
   Map<String, double> accountPeriodChangePercents,
 });
 
-/// Résultat de [HistoryAggregator.computeRealGains] — le gain sur la
-/// PÉRIODE affichée SEUL (B7 lot correction financière) : performance de
-/// MARCHÉ pendant la fenêtre, isolée des flux externes (apports/retraits/
-/// entrées-sorties de titres). Le gain TOTAL (état courant, base coût,
-/// indépendant de la fenêtre) est un calcul SÉPARÉ — voir [RealTotalGain] /
-/// [HistoryAggregator.computeRealTotalGain] — les deux ne sont PAS
-/// substituables (méthodes différentes : flux valorisés au jour du flux ici,
-/// base de coût là-bas ; l'écart entre les deux est assumé, cf. design
-/// doc 18, décision « divergence assumée »).
-/// Tous les champs sont `double?` : `null` = non calculable (garde-fous
-/// documentés sur [HistoryAggregator.computeRealGains]), jamais un zéro
-/// arbitraire qui laisserait croire à une absence de gain.
+/// Résultat de [HistoryAggregator.computeRealGains] — le gain sur la PÉRIODE
+/// affichée SEUL (B7 lot correction financière) : performance de MARCHÉ pendant
+/// la fenêtre, isolée des flux externes (apports/retraits/ entrées-sorties de
+/// titres). Le gain TOTAL (état courant, base coût, indépendant de la fenêtre)
+/// est un calcul SÉPARÉ — voir [RealTotalGain] /
+/// [HistoryAggregator.computeRealTotalGain] — les deux ne sont PAS substituables
+/// (méthodes différentes : flux valorisés au jour du flux ici, base de coût
+/// là-bas ; l'écart entre les deux est assumé, cf. design conception interne,
+/// décision « divergence assumée »). Tous les champs sont `double?` : `null` =
+/// non calculable (garde-fous documentés sur
+/// [HistoryAggregator.computeRealGains]), jamais un zéro arbitraire qui
+/// laisserait croire à une absence de gain.
 class RealGains {
   const RealGains({
     this.periodGain,
@@ -139,17 +139,16 @@ class RealTotalGain {
   /// réservé au kind `charge`.
   final double chargesTotal;
 
-  /// Somme EUR SIGNÉE des revenus (`dividend`/`interest`/`charge`) portés par
-  /// des comptes NON ancrés ([journalHasCashAnchor] faux). Ces revenus entrent
-  /// dans [totalGain] (terme (3)) mais restent INVISIBLES dans la courbe
-  /// d'évolution réelle : faute d'ancrage espèces, aucune timeline cash n'est
-  /// construite pour ces comptes (invariant « faux négatif interdit »,
-  /// design §6.7), donc le crédit du revenu n'apparaît nulle part sur le
-  /// graphe. C'est l'un des écarts résiduels CONNUS entre la carte et la
-  /// courbe (doc 18 §11.8 point 9, résidu 1) — PUREMENT informatif, n'entre
-  /// dans AUCUN calcul, destiné à une note explicative sous le graphe pour
-  /// que l'écart soit nommé plutôt que subi. `0.0` si tout compte porteur de
-  /// revenus est ancré.
+  /// Somme EUR SIGNÉE des revenus (`dividend`/`interest`/`charge`) portés par des
+  /// comptes NON ancrés ([journalHasCashAnchor] faux). Ces revenus entrent dans
+  /// [totalGain] (terme (3)) mais restent INVISIBLES dans la courbe d'évolution
+  /// réelle : faute d'ancrage espèces, aucune timeline cash n'est construite pour
+  /// ces comptes (invariant « faux négatif interdit », design §6.7), donc le crédit
+  /// du revenu n'apparaît nulle part sur le graphe. C'est l'un des écarts résiduels
+  /// CONNUS entre la carte et la courbe (conception interne, résidu 1) — PUREMENT
+  /// informatif, n'entre dans AUCUN calcul, destiné à une note explicative sous le
+  /// graphe pour que l'écart soit nommé plutôt que subi. `0.0` si tout compte
+  /// porteur de revenus est ancré.
   final double unanchoredRevenueEur;
 }
 
@@ -360,7 +359,7 @@ class HistoryAggregator {
   }
 
   // ---------------------------------------------------------------------------
-  // Reconstruction réelle (mode 2 — B7, design doc 18) : PURE, sans I/O.
+  // Reconstruction réelle (mode 2 — B7, design conception interne) : PURE, sans I/O.
   // ---------------------------------------------------------------------------
 
   /// Reconstruit la valeur du patrimoine (EUR) DATE PAR DATE depuis le journal
@@ -486,13 +485,12 @@ class HistoryAggregator {
     return (dates: gridDates, values: values);
   }
 
-  /// Grille de dates SYNTHÉTIQUE, date-only UTC (design B8 §4.3, doc 19) —
-  /// SEUL nouveau cas : un patrimoine (ou un compte) sans AUCUN titre, donc
-  /// sans aucune [AssetHistoricalData], n'a nulle part où échantillonner
-  /// [reconstructRealNetWorth]. Aujourd'hui la grille naît exclusivement des
-  /// séries de prix (`hist.dates`, cf. les groupes de test
-  /// `reconstructRealNetWorth`) ; un livret journalisé seul en a besoin d'une
-  /// bâtie directement sur `[from, to]`.
+  /// Grille de dates SYNTHÉTIQUE, date-only UTC (design B8, conception interne) —
+  /// SEUL nouveau cas : un patrimoine (ou un compte) sans AUCUN titre, donc sans
+  /// aucune [AssetHistoricalData], n'a nulle part où échantillonner
+  /// [reconstructRealNetWorth]. Aujourd'hui la grille naît exclusivement des séries
+  /// de prix (`hist.dates`, cf. les groupes de test `reconstructRealNetWorth`) ; un
+  /// livret journalisé seul en a besoin d'une bâtie directement sur `[from, to]`.
   ///
   /// - [from] : borne gauche déjà résolue par l'APPELANT comme
   ///   `max(début de période demandé, premier mouvement du journal)` — cette
@@ -514,15 +512,14 @@ class HistoryAggregator {
   /// [buildQuantityTimeline]/[buildCashTimeline] de `position_projection.dart`
   /// — design §4.3 règle 1 / §8.4).
   ///
-  /// ⚠️ Ne JAMAIS mélanger cette grille avec la grille de prix existante
-  /// (design §4.3 règle 3 / §8.3 [MAJEUR]) : dès qu'il existe une grille de
-  /// prix (au moins un titre), elle fait AUTORITÉ et cette grille synthétique
-  /// n'est PAS construite — sinon les courbes valeur et flux se
-  /// désaligneraient ([reconstructRealNetWorth]/[buildExternalFlowsCurve]
-  /// exigent une SEULE grille partagée, doc 18 [M5]). Cet arbitrage
-  /// (« ai-je une grille de prix ? ») est fait par l'APPELANT, pas ici : cette
-  /// fonction se contente de fabriquer LA grille synthétique quand on la lui
-  /// demande.
+  /// ⚠️ Ne JAMAIS mélanger cette grille avec la grille de prix existante (design
+  /// §4.3 règle 3 / §8.3 [MAJEUR]) : dès qu'il existe une grille de prix (au moins
+  /// un titre), elle fait AUTORITÉ et cette grille synthétique n'est PAS construite
+  /// — sinon les courbes valeur et flux se désaligneraient
+  /// ([reconstructRealNetWorth]/[buildExternalFlowsCurve] exigent une SEULE grille
+  /// partagée, conception interne [M5]). Cet arbitrage (« ai-je une grille de prix ?
+  /// ») est fait par l'APPELANT, pas ici : cette fonction se contente de fabriquer
+  /// LA grille synthétique quand on la lui demande.
   ///
   /// Cas dégénéré : si `to` n'est pas strictement après `from` (plage nulle ou
   /// inversée), renvoie `[from]` normalisé — un seul point, jamais de liste
@@ -568,8 +565,8 @@ class HistoryAggregator {
 
   // ---------------------------------------------------------------------------
   // Repli « dernier cours » + composition cash pur (mode 2, B7 Lot 2 — design
-  // doc 18 §4/§11.5 m1). PUR, sans I/O — extrait de wallet_controller pour
-  // rester testable unitairement (le reste du Lot 2 est de la glue réseau).
+  // conception interne m1). PUR, sans I/O — extrait de wallet_controller pour rester
+  // testable unitairement (le reste du Lot 2 est de la glue réseau).
   // ---------------------------------------------------------------------------
 
   /// Synthétise une [AssetHistoricalData] PLATE (deux points, prix constant) au
@@ -626,24 +623,23 @@ class HistoryAggregator {
   /// Ajoute un cash PUR en CONSTANTE à chaque valeur d'une série mode 2 déjà
   /// composée.
   ///
-  /// Périmètre (RESSERRÉ par le design B8, doc 19 §4.3 — ANCIEN périmètre :
-  /// « comptes `AccountType.cash`, sans journal ») : comptes `AccountType.cash`
-  /// **SANS ancrage espèces au journal** ([journalHasCashAnchor] faux sur leur
-  /// journal, `position_projection.dart:477`). Les comptes cash ANCRÉS ne
-  /// passent PLUS par ici — ils sont projetés comme n'importe quel autre
-  /// compte via `txsByAccount` dans [reconstructRealNetWorth] (même gating
-  /// M1, même timeline [buildCashTimeline]), exactement comme un compte-titres
-  /// ancré.
+  /// Périmètre (RESSERRÉ par le design B8, conception interne — ANCIEN périmètre : «
+  /// comptes `AccountType.cash`, sans journal ») : comptes `AccountType.cash` **SANS
+  /// ancrage espèces au journal** ([journalHasCashAnchor] faux sur leur journal,
+  /// `position_projection.dart:477`). Les comptes cash ANCRÉS ne passent PLUS par ici
+  /// — ils sont projetés comme n'importe quel autre compte via `txsByAccount` dans
+  /// [reconstructRealNetWorth] (même gating M1, même timeline [buildCashTimeline]),
+  /// exactement comme un compte-titres ancré.
   ///
-  /// ⚠️ PIÈGE N°1 [BLOQUANT, doc 19 §8.1/§6.5] — DOUBLE COMPTAGE DU CASH : un
-  /// compte cash ANCRÉ ne doit JAMAIS apparaître à la fois dans [values]
-  /// (injecté par [reconstructRealNetWorth] via `txsByAccount`) ET dans
-  /// [pureCashEur] ici — les deux chemins sont mutuellement exclusifs par
-  /// construction de [journalHasCashAnchor] (un compte tombe dans EXACTEMENT
-  /// une branche), mais c'est à L'APPELANT de respecter cette partition en
-  /// choisissant quels comptes alimentent [pureCashEur] (Lot 2, contrôleurs) —
-  /// cette fonction ne reçoit qu'un total déjà agrégé et n'a donc AUCUN moyen
-  /// de vérifier elle-même l'absence de recoupement.
+  /// ⚠️ PIÈGE N°1 [BLOQUANT, conception interne] — DOUBLE COMPTAGE DU CASH : un
+  /// compte cash ANCRÉ ne doit JAMAIS apparaître à la fois dans [values] (injecté
+  /// par [reconstructRealNetWorth] via `txsByAccount`) ET dans [pureCashEur] ici —
+  /// les deux chemins sont mutuellement exclusifs par construction de
+  /// [journalHasCashAnchor] (un compte tombe dans EXACTEMENT une branche), mais
+  /// c'est à L'APPELANT de respecter cette partition en choisissant quels comptes
+  /// alimentent [pureCashEur] (Lot 2, contrôleurs) — cette fonction ne reçoit qu'un
+  /// total déjà agrégé et n'a donc AUCUN moyen de vérifier elle-même l'absence de
+  /// recoupement.
   ///
   /// Fonction À PART : le cash DÉRIVÉ des comptes non-cash (et désormais des
   /// comptes cash ancrés) est DÉJÀ dans [values] (calculé par
@@ -659,7 +655,7 @@ class HistoryAggregator {
   }
 
   // ---------------------------------------------------------------------------
-  // Courbe des apports nets (mode 2, B7 Lot 3b — design doc 18 §7.2/§11.4) :
+  // Courbe des apports nets (mode 2, B7 Lot 3b — design conception interne) :
   // superposée à la courbe de valeur, l'écart vertical visualise le gain.
   // ---------------------------------------------------------------------------
 
@@ -806,22 +802,21 @@ class HistoryAggregator {
   ///
   /// Anti-double-comptage (invariant central, cf. en-tête
   /// `position_projection.dart`) : `openingBalance` TITRE a `amount == null`
-  /// (jamais capté par (a)) ; `openingBalance` ESPÈCES a `deltaQty == 0`
-  /// (jamais capté par (b)) ; `buy`/`sell` D'UN COMPTE ANCRÉ contribuent `0`
-  /// des deux côtés (leur jambe cash est réellement projetée par (a), via la
-  /// timeline construite sur ce compte). Sur un compte NON ancré, (b bis)
-  /// bascule la contribution du côté (b) : elle non plus n'est alors comptée
-  /// qu'une fois, (a) ne portant par construction AUCUNE timeline pour ce
-  /// compte (cf. gating [journalHasCashAnchor] de [reconstructRealNetWorth],
-  /// répliqué à l'identique ici — désormais aussi pour son propre filtre sur
-  /// [openingBalance]/[adjustment] ESPÈCES, résidu 2 du design doc 18 §11.8 :
-  /// un `adjustment` espèces sur un compte NON ancré n'est capté ni par (a)
-  /// [le filtre l'exclut], ni par (b) [`symbol == null`], ni par (b bis)
-  /// [pas un `buy`/`sell`] — il ne compte simplement PAS en capital, comme il
-  /// ne compte NULLE PART en aval côté valeur/gain). Un prix manquant
+  /// (jamais capté par (a)) ; `openingBalance` ESPÈCES a `deltaQty == 0` (jamais
+  /// capté par (b)) ; `buy`/`sell` D'UN COMPTE ANCRÉ contribuent `0` des deux côtés
+  /// (leur jambe cash est réellement projetée par (a), via la timeline construite
+  /// sur ce compte). Sur un compte NON ancré, (b bis) bascule la contribution du
+  /// côté (b) : elle non plus n'est alors comptée qu'une fois, (a) ne portant par
+  /// construction AUCUNE timeline pour ce compte (cf. gating [journalHasCashAnchor]
+  /// de [reconstructRealNetWorth], répliqué à l'identique ici — désormais aussi
+  /// pour son propre filtre sur [openingBalance]/[adjustment] ESPÈCES, résidu 2 du
+  /// design conception interne : un `adjustment` espèces sur un compte NON ancré
+  /// n'est capté ni par (a) [le filtre l'exclut], ni par (b) [`symbol == null`], ni
+  /// par (b bis) [pas un `buy`/`sell`] — il ne compte simplement PAS en capital,
+  /// comme il ne compte NULLE PART en aval côté valeur/gain). Un prix manquant
   /// (résiduel malgré le repli) donne une valorisation `0` en (b) — vue
-  /// IDENTIQUEMENT par [reconstructRealNetWorth] (même `symbolToData`),
-  /// l'écart valeur/flux reste donc net de cet aléa.
+  /// IDENTIQUEMENT par [reconstructRealNetWorth] (même `symbolToData`), l'écart
+  /// valeur/flux reste donc net de cet aléa.
   ///
   /// Change : même compromis v1 que le reste du mode 2 (§6) — USD converti via
   /// [usdToEurRate] au taux COURANT.
@@ -835,38 +830,36 @@ class HistoryAggregator {
   }) {
     if (gridDates.isEmpty) return <double>[];
 
-    // Comptes ANCRÉS (design (b bis), réconciliation du 29/07) — précalculé
-    // UNE FOIS, exactement le même prédicat [journalHasCashAnchor] que le
-    // gating de [reconstructRealNetWorth], pour que les deux courbes ne
-    // puissent jamais diverger sur ce critère. Un compte absent de cet
-    // ensemble n'a AUCUNE timeline cash en aval : son `buy`/`sell` n'est
-    // alors jamais un transfert interne, quel que soit son `amount` — et,
-    // depuis la brique (a) ci-dessous, son `openingBalance`/`adjustment`
-    // ESPÈCES non plus (résidu 2 du design doc 18 §11.8).
+    // Comptes ANCRÉS (design (b bis), réconciliation du 29/07) — précalculé UNE
+    // FOIS, exactement le même prédicat [journalHasCashAnchor] que le gating de
+    // [reconstructRealNetWorth], pour que les deux courbes ne puissent jamais
+    // diverger sur ce critère. Un compte absent de cet ensemble n'a AUCUNE
+    // timeline cash en aval : son `buy`/`sell` n'est alors jamais un transfert
+    // interne, quel que soit son `amount` — et, depuis la brique (a) ci-dessous,
+    // son `openingBalance`/`adjustment` ESPÈCES non plus (résidu 2 du design
+    // conception interne).
     final anchoredAccountIds = <String>{
       for (final entry in txsByAccount.entries)
         if (journalHasCashAnchor(entry.value)) entry.key,
     };
 
-    // (a) Flux CASH — sous-ensemble filtré, mêmes briques que
-    // buildContributionsCurve : deposit/withdrawal + openingBalance/
-    // adjustment ESPÈCES (symbol == null), le tout restreint aux comptes
-    // ANCRÉS ([anchoredAccountIds]) — même gating EXACT que
-    // [reconstructRealNetWorth] (résidu 2 du design doc 18 §11.8, soldé).
-    // `deposit`/`withdrawal` ancrent PAR DÉFINITION ([journalHasCashAnchor])
-    // : le filtre est un no-op pour eux, mais l'appliquer uniformément à
-    // toute la brique est plus simple à lire qu'un test différencié par
-    // kind. Le seul kind RÉELLEMENT concerné en pratique est `adjustment`
-    // ESPÈCES (`openingBalance` ESPÈCES ancre lui aussi, cf.
-    // [journalHasCashAnchor]) : sur un compte SANS trésorerie suivie, un
-    // `adjustment` espèces pur (ex. `cashRegularization` de l'import Bourse
-    // Direct, `statement_import_service.dart`) n'a de contrepartie NULLE
-    // PART en aval — ni dans la valeur ([reconstructRealNetWorth] ne
-    // construit aucune timeline cash pour ce compte), ni dans le gain
-    // ([computeRealTotalGain]) — et ne doit donc pas non plus compter en
-    // capital investi, sous peine de faire dériver `Valeur − Capital investi
-    // == gain total` du montant de l'ajustement (cas de test : +50 € de dérive
-    // sur un `adjustment` de +50 € importé sur un compte non ancré).
+    // (a) Flux CASH — sous-ensemble filtré, mêmes briques que buildContributionsCurve
+    // : deposit/withdrawal + openingBalance/ adjustment ESPÈCES (symbol == null), le
+    // tout restreint aux comptes ANCRÉS ([anchoredAccountIds]) — même gating EXACT
+    // que [reconstructRealNetWorth] (résidu 2 du design conception interne, soldé).
+    // `deposit`/`withdrawal` ancrent PAR DÉFINITION ([journalHasCashAnchor]) : le
+    // filtre est un no-op pour eux, mais l'appliquer uniformément à toute la brique
+    // est plus simple à lire qu'un test différencié par kind. Le seul kind RÉELLEMENT
+    // concerné en pratique est `adjustment` ESPÈCES (`openingBalance` ESPÈCES ancre
+    // lui aussi, cf. [journalHasCashAnchor]) : sur un compte SANS trésorerie suivie,
+    // un `adjustment` espèces pur (ex. `cashRegularization` de l'import Bourse
+    // Direct, `statement_import_service.dart`) n'a de contrepartie NULLE PART en aval
+    // — ni dans la valeur ([reconstructRealNetWorth] ne construit aucune timeline
+    // cash pour ce compte), ni dans le gain ([computeRealTotalGain]) — et ne doit
+    // donc pas non plus compter en capital investi, sous peine de faire dériver
+    // `Valeur − Capital investi == gain total` du montant de l'ajustement (cas de
+    // test : +50 € de dérive sur un `adjustment` de +50 € importé sur un compte non
+    // ancré).
     final cashFlows = <AssetTransaction>[
       for (final entry in txsByAccount.entries)
         if (anchoredAccountIds.contains(entry.key))

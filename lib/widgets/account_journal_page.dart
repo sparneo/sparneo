@@ -285,13 +285,13 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
 
   // ---------------------------------------------------------------------------
   // Édition / suppression d'un mouvement d'espèces (calqué sur
-  // position_detail_page.dart, mêmes garde-fous). RÉSERVÉ aux mouvements
-  // SAISIS À LA MAIN (!isSystemGenerated, cf. _buildTile) : un adjustment/
-  // transferOut/openingBalance TITRE reste en LECTURE SEULE dans ce journal —
-  // ces kinds portent une sémantique câblée ailleurs (PRU, jambe d'OST) qu'un
-  // dialogue générique casserait s'il les rendait éditables ici. EXCEPTION
-  // (B18/doc 19 §3bis) : l'openingBalance ESPÈCES (symbol null) a SA PROPRE
-  // édition dédiée, cf. _openEditCashOpeningBalance ci-dessous.
+  // position_detail_page.dart, mêmes garde-fous). RÉSERVÉ aux mouvements SAISIS À LA
+  // MAIN (!isSystemGenerated, cf. _buildTile) : un adjustment/
+  // transferOut/openingBalance TITRE reste en LECTURE SEULE dans ce journal — ces
+  // kinds portent une sémantique câblée ailleurs (PRU, jambe d'OST) qu'un dialogue
+  // générique casserait s'il les rendait éditables ici. EXCEPTION (B18/conception
+  // interne) : l'openingBalance ESPÈCES (symbol null) a SA PROPRE édition dédiée,
+  // cf. _openEditCashOpeningBalance ci-dessous.
   // ---------------------------------------------------------------------------
 
   Future<void> _openEditTransaction(AssetTransaction tx) async {
@@ -328,14 +328,14 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
 
   // ---------------------------------------------------------------------------
   // Édition du SOLDE ESPÈCES INITIAL (openingBalance espèces, `symbol` null) —
-  // B18/doc 19 §3bis : c'est la SEULE ligne système désormais éditable ici (les
-  // autres, adjustment/transferOut/openingBalance TITRE, restent verrouillées,
+  // B18/conception interne : c'est la SEULE ligne système désormais éditable ici
+  // (les autres, adjustment/transferOut/openingBalance TITRE, restent verrouillées,
   // cf. _showSystemLineHelp). Justifié par un fait de projection : le cash est
-  // additif et kind-agnostique (Σ amount, position_projection.dart), et
-  // l'ancrage `journalHasCashAnchor` dépend du KIND seul — modifier date/
-  // montant/note d'un openingBalance espèces existant ne casse ni le calcul ni
-  // l'ancrage. PAS de suppression (cf. trailing dans _buildTile) : supprimer le
-  // seul ancrage ferait retomber le compte en régime legacy (doc 19 §2.4).
+  // additif et kind-agnostique (Σ amount, position_projection.dart), et l'ancrage
+  // `journalHasCashAnchor` dépend du KIND seul — modifier date/ montant/note d'un
+  // openingBalance espèces existant ne casse ni le calcul ni l'ancrage. PAS de
+  // suppression (cf. trailing dans _buildTile) : supprimer le seul ancrage ferait
+  // retomber le compte en régime legacy (conception interne).
   // ---------------------------------------------------------------------------
 
   Future<void> _openEditCashOpeningBalance(AssetTransaction tx) async {
@@ -687,11 +687,11 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     //    titre complet. Éditer ici forcerait `symbol: null` (cf.
     //    _openEditTransaction) et casserait le rattachement au titre.
     // 3. SOLDE ESPÈCES INITIAL (`kind == openingBalance && symbol == null`,
-    //    B18/doc 19 §3bis) → éditable via son propre dialogue dédié
-    //    ([CashOpeningBalanceDialog]), PAS supprimable : la projection cash est
-    //    additive et kind-agnostique (position_projection.dart), donc corriger
-    //    date/montant/note ne casse rien, mais supprimer le seul ancrage cash
-    //    ferait retomber le compte en régime legacy (doc 19 §2.4).
+    //    B18/conception interne) → éditable via son propre dialogue dédié
+    //    ([CashOpeningBalanceDialog]), PAS supprimable : la projection cash est additive
+    //    et kind-agnostique (position_projection.dart), donc corriger date/montant/note
+    //    ne casse rien, mais supprimer le seul ancrage cash ferait retomber le compte en
+    //    régime legacy (conception interne).
     // 4. SYSTÈME espèces restant (`isSystemGenerated && symbol == null`,
     //    hors openingBalance : adjustment/transferOut espèces) → lecture
     //    seule, mais un tap EXPLIQUE le pourquoi (ancre de trésorerie / jambe

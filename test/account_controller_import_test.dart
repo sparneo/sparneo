@@ -100,8 +100,8 @@ const _walletId = 'wallet-1';
 const _accountId = 'account-1';
 
 /// Relevé de test couvrant les 5 chemins de résolution/dédup/rejet exercés :
-///   - REF-OLD  : déjà importé (doublon)
-///   - REF-NEW1 : titre existant retrouvé par ISIN (le symbole CSV diffère
+///   - REF-OLD : déjà importé (doublon) - REF-NEW1 : titre existant retrouvé par
+///   ISIN (le symbole CSV diffère
 ///     volontairement du symbole stocké — vérifie la priorité ISIN)
 ///   - REF-NEW2 : symbole neuf mappé directement par le CSV (actif à créer)
 ///   - REF-NEW3 : ISIN inconnu ET pas de symbole mappé → non résolu
@@ -125,7 +125,7 @@ Asset _assetWithIsin(String symbol, String isin) => Asset(
 /// Peuple wallet + compte + positions de départ :
 ///   - AAPL : projetée (derived_at non NULL), un mouvement déjà importé
 ///     (meta.importKey = REF-OLD) pour éprouver la dédup.
-///   - LEG  : LEGACY déclarée (derived_at NULL), AUCUN journal.
+///   - LEG : LEGACY déclarée (derived_at NULL), AUCUN journal.
 Future<void> _seed(AppDatabase db) async {
   final storage = AccountStorage(database: db);
   final ledger = LedgerService(database: db);

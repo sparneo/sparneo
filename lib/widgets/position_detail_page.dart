@@ -1630,7 +1630,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
             // (position déjà réconciliée puis vidée de tous ses mouvements,
             // ex. suppressions). C'est le journal, PAS `derived_at`, qui
             // décide de l'action proposée (constat UX du 10/09/2026) :
-            //   - journal VIDE  → « Définir la position initiale… » SEULE.
+            //   - journal VIDE → « Définir la position initiale… » SEULE.
             //     Le badge devient alors lui-même tapable (même action) pour
             //     la découvrabilité. « Réconcilier » ne peut PAS être proposé
             //     ici : sa confirmation dit « recalculé à partir du journal »,

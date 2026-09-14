@@ -59,10 +59,9 @@ class _WalletViewState extends State<WalletView> {
   /// déclenchait son repli automatique plus tôt qu'avant.
   static const double _chartBoxHeight = 224;
 
-  // Mode d'affichage du graphe global (B7 Lot 3a, design doc 18 §7.2/§11.6).
-  // Les DEUX séries (performance / évolution réelle) sont déjà calculées par
-  // le contrôleur (Lots 1+2) — basculer ne recharge rien, un simple setState
-  // suffit.
+  // Mode d'affichage du graphe global (B7 Lot 3a, design conception interne). Les
+  // DEUX séries (performance / évolution réelle) sont déjà calculées par le
+  // contrôleur (Lots 1+2) — basculer ne recharge rien, un simple setState suffit.
   //
   // N'est PLUS un champ initialisé à `true` : le défaut reste le mode réel
   // (retour manuel du 29/07 — il reflète ce qui s'est VRAIMENT passé,
@@ -112,7 +111,7 @@ class _WalletViewState extends State<WalletView> {
     AccountKind selectedKind = AccountKind.autre;
     double cashBalance = 0.0;
     // Date de l'openingBalance espèces émis à la création (défaut aujourd'hui,
-    // MODIFIABLE — B18/doc 19 §3bis : un solde initial est souvent antidaté).
+    // MODIFIABLE — B18/conception interne : un solde initial est souvent antidaté).
     // Sans effet pour un compte non-cash.
     DateTime openingBalanceDate = DateTime.now();
 
@@ -323,16 +322,15 @@ class _WalletViewState extends State<WalletView> {
   /// Suppression DIFFÉRÉE (annulable) d'un compte, partagée par les deux points
   /// d'entrée restants : balayage de la liste et corbeille de la barre
   /// d'[AccountView] (le dialogue d'édition du solde cash, troisième chemin
-  /// historique, a été retiré au Lot 4 — cf. doc 19 §2, la corbeille
-  /// d'AccountView est désormais l'unique chemin de suppression d'un compte
-  /// cash). La confirmation (+ garde « dernier compte ») a déjà eu lieu en
-  /// amont ; ici on masque le compte de la liste sans toucher au stockage et
-  /// on ouvre une fenêtre d'annulation. La suppression réelle n'est validée
-  /// qu'à la fermeture du snackbar SANS action « Annuler ». Aligné sur
-  /// _onPositionDismissed / manage_wallets_page.
+  /// historique, a été retiré au Lot 4 — cf. la conception interne, la corbeille
+  /// d'AccountView est désormais l'unique chemin de suppression d'un compte cash). La
+  /// confirmation (+ garde « dernier compte ») a déjà eu lieu en amont ; ici on
+  /// masque le compte de la liste sans toucher au stockage et on ouvre une fenêtre
+  /// d'annulation. La suppression réelle n'est validée qu'à la fermeture du snackbar
+  /// SANS action « Annuler ». Aligné sur _onPositionDismissed / manage_wallets_page.
   /// Traduit les positions héritées groupées par compte
-  /// ([WalletController.realExcludedLegacyGroups]) en entrées cliquables pour
-  /// la note sous le graphe : « PEA (2) », « CTO (1) »…
+  /// ([WalletController.realExcludedLegacyGroups]) en entrées cliquables pour la note
+  /// sous le graphe : « PEA (2) », « CTO (1) »…
   ///
   /// Le callback ouvre le compte par le MÊME chemin que sa tuile ([_openAccount]),
   /// retour `resultDeleted` compris. La CAPTURE du compte se fait ici, au build :
@@ -963,10 +961,9 @@ class _WalletViewState extends State<WalletView> {
                                 // calcul (cf. ChartNotes.suppressCoverageNotes).
                                 suppressCoverageNotes:
                                     _controller.isLoadingHistory,
-                                // Patrimoine 100 % hérité (bug constaté à
-                                // l'écran, doc privé) : aucune courbe réelle à
-                                // proposer — la note change alors de préfixe
-                                // (cf. ChartNotes.realCurveAvailable).
+                                // Patrimoine 100 % hérité (bug constaté à l'écran, conception interne) : aucune
+                                // courbe réelle à proposer — la note change alors de préfixe (cf.
+                                // ChartNotes.realCurveAvailable).
                                 realCurveAvailable: _controller.hasRealCurve,
                               ),
                             ],

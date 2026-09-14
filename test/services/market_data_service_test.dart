@@ -66,6 +66,15 @@ class _FakeProvider implements MarketDataProvider {
     lastSearchIsin = isin;
     return searchHitsToReturn;
   }
+
+  bool? symbolExistsToReturn;
+  String? lastSymbolExists;
+
+  @override
+  Future<bool?> symbolExists(String symbol) async {
+    lastSymbolExists = symbol;
+    return symbolExistsToReturn;
+  }
 }
 
 void main() {

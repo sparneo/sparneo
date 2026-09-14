@@ -1,8 +1,8 @@
 // test/logic/real_net_worth_test.dart
 //
-// Mode 2 « évolution réelle du patrimoine » (B7, design doc 18, Lot 1) :
-// HistoryAggregator.reconstructRealNetWorth, PURE, bâtie sur les timelines de
-// position_projection.dart (buildQuantityTimeline / buildCashTimeline).
+// Mode 2 « évolution réelle du patrimoine » (B7, design conception interne, Lot
+// 1) : HistoryAggregator.reconstructRealNetWorth, PURE, bâtie sur les timelines
+// de position_projection.dart (buildQuantityTimeline / buildCashTimeline).
 
 import 'package:decimal/decimal.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -389,10 +389,10 @@ void main() {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // Lot 2 (glue réseau, design doc 18 §9) : les deux fonctions pures extraites
-  // pour rester testables sans I/O — buildLastPriceFallback (repli « dernier
-  // cours ») et addConstantPureCash (composition cash pur sans double-comptage).
+  // --------------------------------------------------------------------------- Lot 2
+  // (glue réseau, design conception interne) : les deux fonctions pures extraites
+  // pour rester testables sans I/O — buildLastPriceFallback (repli « dernier cours »)
+  // et addConstantPureCash (composition cash pur sans double-comptage).
   // ---------------------------------------------------------------------------
 
   group('HistoryAggregator.buildLastPriceFallback', () {
@@ -562,10 +562,10 @@ void main() {
     });
   });
 
-  // ---------------------------------------------------------------------------
-  // Lot 3b (design doc 18 §7.2/§11.4) : courbe des APPORTS NETS CUMULÉS
-  // (versements − retraits d'espèces), superposée à la courbe de valeur en
-  // mode réel — décision produit : cash PUR, pas la base flux complète.
+  // --------------------------------------------------------------------------- Lot
+  // 3b (design conception interne) : courbe des APPORTS NETS CUMULÉS (versements −
+  // retraits d'espèces), superposée à la courbe de valeur en mode réel — décision
+  // produit : cash PUR, pas la base flux complète.
   // ---------------------------------------------------------------------------
 
   group('HistoryAggregator.buildContributionsCurve', () {
@@ -1492,16 +1492,16 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // Résidu 2 (design doc 18 §11.8, soldé) — la brique (a) de
-  // buildExternalFlowsCurve gate désormais son `openingBalance`/`adjustment`
-  // ESPÈCES sur [journalHasCashAnchor], exactement comme
-  // reconstructRealNetWorth : sur un compte NON ancré, un `adjustment`
-  // espèces pur (atteignable par l'import Bourse Direct, `cashRegularization`
-  // → `adjustment` `symbol: null`) n'a de contrepartie NULLE PART en aval
-  // (ni valeur, ni gain) et ne doit donc plus gonfler le capital investi.
+  // Résidu 2 (design conception interne, soldé) — la brique (a) de
+  // buildExternalFlowsCurve gate désormais son `openingBalance`/`adjustment` ESPÈCES
+  // sur [journalHasCashAnchor], exactement comme reconstructRealNetWorth : sur un
+  // compte NON ancré, un `adjustment` espèces pur (atteignable par l'import Bourse
+  // Direct, `cashRegularization` → `adjustment` `symbol: null`) n'a de contrepartie
+  // NULLE PART en aval (ni valeur, ni gain) et ne doit donc plus gonfler le capital
+  // investi.
   // ---------------------------------------------------------------------------
   group('HistoryAggregator.buildExternalFlowsCurve — adjustment ESPÈCES '
-      'gaté sur compte ANCRÉ (résidu 2, design doc 18 §11.8)', () {
+      'gaté sur compte ANCRÉ (résidu 2, design conception interne)', () {
     test('compte NON ANCRÉ : adjustment ESPÈCES ignoré, seul le buy compte '
         '(b bis)', () {
       final buy = AssetTransaction(

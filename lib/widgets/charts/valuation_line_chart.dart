@@ -11,22 +11,22 @@ import 'package:portfolio_tracker/l10n/app_localizations.dart';
 
 /// Graphique linéaire de valorisation, partagé par WalletView et AccountView.
 ///
-/// Paramètres communs aux deux vues :
-/// - [dates] / [values]       : séries de données de l'axe temporel.
-/// - [contributionsSpots]     : série « Capital investi » (mode réel) — ligne
+/// Paramètres communs aux deux vues : - [dates] / [values] : séries de données de
+/// l'axe temporel. - [contributionsSpots] : série « Capital investi » (mode réel)
+/// — ligne
 ///                              SOLIDE des versements−retraits cumulés, sous la
 ///                              courbe de valeur (l'écart visualise le gain) ;
 ///                              liste vide = série absente.
-/// - [periodChange]           : variation de période (nul = couleur verte par
+/// - [periodChange] : variation de période (nul = couleur verte par
 ///                              défaut, valeur < 0 = rouge).
-/// - [selectedPeriod]         : période active (format axe / tooltip).
+/// - [selectedPeriod] : période active (format axe / tooltip).
 ///
-/// Paramètres de mise en page (défauts = wallet_view) :
-/// - [height]                 : hauteur fixée par le parent ; null = dynamique
+/// Paramètres de mise en page (défauts = wallet_view) : - [height] : hauteur fixée
+/// par le parent ; null = dynamique
 ///                              (account_view utilise une hauteur calculée).
 /// - [leftTitlesReservedSize] : espace pour l'axe gauche (wallet_view : 40,
 ///                              account_view : 50).
-/// - [barWidth]               : épaisseur de la courbe principale (wallet : 3,
+/// - [barWidth] : épaisseur de la courbe principale (wallet : 3,
 ///                              account : 2).
 class ValuationLineChart extends StatefulWidget {
   final List<DateTime> dates;

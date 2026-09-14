@@ -26,11 +26,11 @@
 // Le journal porte DEUX projections dérivées disjointes, qui ne partagent AUCUN
 // champ numérique :
 //
-//   ┌───────────────────┬──────────────────────────┬─────────────────────────┐
-//   │ Projection        │ Lit                      │ Ignore                  │
-//   ├───────────────────┼──────────────────────────┼─────────────────────────┤
-//   │ TITRE (qty/coût)  │ quantity, unitPrice, fee │ amount, settlementCur.  │
-//   │ CASH (Σ amount)   │ amount, settlementCur.   │ fee, quantity, unitPrice│
+//   ┌───────────────────┬──────────────────────────┬─────────────────────────┐ │
+//   Projection │ Lit │ Ignore │
+//   ├───────────────────┼──────────────────────────┼─────────────────────────┤ │
+//   TITRE (qty/coût) │ quantity, unitPrice, fee │ amount, settlementCur. │ │ CASH
+//   (Σ amount) │ amount, settlementCur. │ fee, quantity, unitPrice│
 //   └───────────────────┴──────────────────────────┴─────────────────────────┘
 //
 // Aucun champ n'étant lu par les deux moteurs, le double comptage est IMPOSSIBLE
@@ -421,10 +421,10 @@ bool isHeldPosition({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// TIMELINES EN ESCALIER (mode 2 « évolution réelle du patrimoine », B7 —
-// design doc 18 §2/§11.3) : constructeurs PURS bâtis SUR [replayLedger] +
-// `onStep`, ZÉRO logique arithmétique par kind ajoutée ici. Un seul rejeu du
-// journal (invariant de tête de fichier) alimente ces deux escaliers.
+// TIMELINES EN ESCALIER (mode 2 « évolution réelle du patrimoine », B7 — design
+// conception interne) : constructeurs PURS bâtis SUR [replayLedger] + `onStep`,
+// ZÉRO logique arithmétique par kind ajoutée ici. Un seul rejeu du journal
+// (invariant de tête de fichier) alimente ces deux escaliers.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Normalise une [DateTime] en DATE-ONLY UTC (tronque heure/minute/seconde et

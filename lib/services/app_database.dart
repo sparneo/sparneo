@@ -5,9 +5,9 @@
 //   - Ouverture lazy mémoïsée (singleton runtime effectif — risque R6).
 //   - DDL v1 (5 tables) avec PRAGMA foreign_keys = ON (risque R4).
 //   - Sélection de la factory selon la plateforme :
-//       • mobile (Android/iOS)  → databaseFactory sqflite natif
-//       • desktop (Linux/macOS/Windows) → databaseFactoryFfi après sqfliteFfiInit()
-//       • test → injection via constructeur (factory + inMemoryDatabasePath)
+//       • mobile (Android/iOS) → databaseFactory sqflite natif • desktop
+//       (Linux/macOS/Windows) → databaseFactoryFfi après sqfliteFfiInit() • test → injection
+//       via constructeur (factory + inMemoryDatabasePath)
 //   - Résolution du chemin de la base selon la plateforme (cf. _resolveDefaultPath) :
 //       • mobile → nom de fichier RELATIF (sqflite le résout dans son
 //         répertoire databases standard — comportement historique inchangé)

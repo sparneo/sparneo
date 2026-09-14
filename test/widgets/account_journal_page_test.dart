@@ -209,10 +209,10 @@ void main() {
     );
 
     testWidgets(
-      // B18/doc 19 §3bis : SEUL l'openingBalance ESPÈCES est devenu éditable
-      // (cf. groupe « édition du solde espèces initial » plus bas) —
-      // adjustment ESPÈCES reste, lui, verrouillé en lecture seule (non-
-      // régression). openingBalance a donc quitté ce test.
+      // B18/conception interne : SEUL l'openingBalance ESPÈCES est devenu éditable
+      // (cf. groupe « édition du solde espèces initial » plus bas) — adjustment
+      // ESPÈCES reste, lui, verrouillé en lecture seule (non- régression).
+      // openingBalance a donc quitté ce test.
       'adjustment ESPÈCES (système restant) : tap → popup '
       '« Mouvement automatique », JAMAIS le dialogue d\'édition, aucun '
       'bouton supprimer',
@@ -342,10 +342,10 @@ void main() {
   });
 
   // ===========================================================================
-  // B18/doc 19 §3bis : le solde espèces initial (openingBalance espèces) est
+  // B18/conception interne : le solde espèces initial (openingBalance espèces) est
   // devenu la QUATRIÈME famille éditable du journal (dialogue dédié
-  // CashOpeningBalanceDialog), seule exception aux mouvements système
-  // verrouillés — cf. commentaire de _openEditCashOpeningBalance.
+  // CashOpeningBalanceDialog), seule exception aux mouvements système verrouillés —
+  // cf. commentaire de _openEditCashOpeningBalance.
   // ===========================================================================
   group(
       'AccountJournalPage — édition du solde espèces initial (openingBalance '
