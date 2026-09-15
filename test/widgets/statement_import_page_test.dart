@@ -131,11 +131,12 @@ class _FakeApplyManualValuationsController extends AccountController {
   final ImportPreview? result;
   Map<String, String>? capturedEurByImportKey;
 
-  /// Aperçu effectivement transmis à `confirmStatementImport` (filet de
-  /// confirmation « échanges à valoriser », retour auteur drive — capturé pour
-  /// vérifier que « Valoriser puis importer » confirme bien le NOUVEL aperçu
-  /// rafraîchi par [applyManualCryptoValuations], jamais l'ancien. Court-circuite
-  /// l'écriture réelle, même motif que [_FakeVerifyController].
+  /// Aperçu effectivement transmis à `confirmStatementImport` (filet de confirmation
+  /// « échanges à valoriser », retour auteur drive — capturé pour vérifier que «
+  /// Confirmer l'import » (chemin direct ou via « Importer sans ces échanges »)
+  /// confirme bien le NOUVEL aperçu rafraîchi par [applyManualCryptoValuations],
+  /// jamais l'ancien. Court-circuite l'écriture réelle, même motif que
+  /// [_FakeVerifyController].
   ImportPreview? capturedConfirmPreview;
   bool confirmCalled = false;
 
@@ -1628,7 +1629,10 @@ void main() {
         findsOneWidget,
       );
       expect(find.byType(TextField), findsOneWidget);
-      expect(find.widgetWithText(FilledButton, 'Appliquer'), findsOneWidget);
+      // Bouton « Appliquer » démonté (retour auteur, drive — la valorisation se
+      // déclenche désormais depuis « Confirmer l'import », cf. groupe « filet de
+      // confirmation » plus bas.
+      expect(find.widgetWithText(FilledButton, 'Appliquer'), findsNothing);
 
       // Mouvements internes : le résidu et la bascule (défaut OFF) sont
       // visibles sans interaction (pas un ExpansionTile replié).
@@ -1897,9 +1901,10 @@ void main() {
       () {
     testWidgets(
         'les trois motifs sont rendus, chacun avec son champ EUR ; une '
-        'saisie invalide affiche une erreur SUR CE champ, une saisie valide '
-        '(virgule française) et l\'application n\'impactent que les clés '
-        'renseignées', (tester) async {
+        'saisie invalide n\'est jamais transmise, seule une saisie valide '
+        '(virgule française) l\'est — via « Confirmer l\'import » → dialogue '
+        '→ « Importer sans ces échanges » (2 des 3 entrées restent '
+        'incomplètes)', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(
           toCreate: [_cryptoBuyMovement()],
@@ -1945,8 +1950,20 @@ void main() {
       // Champ « fxUnavailable » laissé VIDE.
       await tester.pump();
 
-      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      // Plus de bouton « Appliquer » dédié (démonté, retour auteur du drive : la
+      // valorisation part désormais de « Confirmer l'import » — 2 entrées sur 3
+      // restent incomplètes (« abc » invalide, champ vide sans choix) → dialogue, «
+      // Importer sans ces échanges » applique la seule complète puis confirme.
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Montants non saisis'), findsOneWidget);
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Importer sans ces échanges'),
+      );
       await tester.pumpAndSettle();
 
       // Seule la clé valide et renseignée est transmise au contrôleur — la
@@ -1956,11 +1973,15 @@ void main() {
         {'ref:account-1:REFEXCH': '150.50'},
       );
 
-      // L'aperçu affiché reflète le résultat renvoyé par le contrôleur : le
-      // compteur du groupe et le bandeau « positions provisoires » retombent
-      // à 2 (les deux entrées non résolues), le champ « spread » a disparu.
-      expect(find.text('Échanges à valoriser (2)'), findsOneWidget);
-      expect(find.byType(TextField), findsNWidgets(2));
+      // La confirmation porte sur l'aperçu RENVOYÉ par le contrôleur (celui
+      // capturé, PAS l'écran — la confirmation a navigué vers l'étape
+      // finale) : le compteur retombe à 2 (les deux entrées non résolues),
+      // « spread » a disparu.
+      expect(controller.confirmCalled, isTrue);
+      expect(
+        controller.capturedConfirmPreview?.unvaluedExchanges.length,
+        2,
+      );
     });
 
     // ------------------------------------------------------------------- Amendement
@@ -2042,9 +2063,11 @@ void main() {
     });
 
     testWidgets(
-        '« Appliquer » SANS AUCUNE interaction transmet suggestedReceivedEur '
-        '(défaut « Valeur reçue ») ; une entrée d\'un AUTRE motif laissée '
-        'vide n\'est TOUJOURS PAS transmise', (tester) async {
+        '« Confirmer l\'import » SANS AUCUNE interaction sur le champ EUR '
+        'transmet suggestedReceivedEur (défaut « Valeur reçue ») ; une '
+        'entrée d\'un AUTRE motif laissée vide, elle, reste incomplète (1 '
+        'seule incomplète → dialogue → « Importer sans ces échanges »)',
+        (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(
           toCreate: [_cryptoBuyMovement()],
@@ -2064,14 +2087,25 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      // L'entrée AVEC choix est complète sans interaction : seule
+      // « unreadable » (autre motif, sans choix, laissée vide) est
+      // incomplète → dialogue à 1 entrée.
+      expect(find.text('Montants non saisis'), findsOneWidget);
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Importer sans ces échanges'),
+      );
       await tester.pumpAndSettle();
 
       // Seule l'entrée AVEC choix est transmise, à sa valeur par défaut
       // « reçue » (Decimal BRUT '207.5', pas '207,50 €' reformaté) — l'entrée
-      // « unreadable » (autre motif, sans choix, laissée vide) reste absente
-      // de la map, comportement historique inchangé.
+      // « unreadable » reste absente de la map, comportement historique
+      // inchangé.
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '207.5'},
@@ -2079,8 +2113,9 @@ void main() {
     });
 
     testWidgets(
-        'basculer sur « Valeur cédée » PUIS Appliquer transmet '
-        'suggestedPaidEur', (tester) async {
+        'basculer sur « Valeur cédée » PUIS « Confirmer l\'import » transmet '
+        'suggestedPaidEur (entrée seule et AVEC choix : toujours complète, '
+        'aucun dialogue)', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
       );
@@ -2102,10 +2137,13 @@ void main() {
       await tester.tap(find.text('Valeur cédée : $paidUsd (≈ $paidEur)'));
       await tester.pump();
 
-      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
+      expect(find.text('Montants non saisis'), findsNothing);
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '180'},
@@ -2114,7 +2152,8 @@ void main() {
 
     testWidgets(
         'le champ dérogatoire rempli PRIME sur le choix, peu importe '
-        'l\'option sélectionnée', (tester) async {
+        'l\'option sélectionnée (entrée toujours complète, aucun dialogue)',
+        (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
       );
@@ -2132,11 +2171,16 @@ void main() {
       await tester.enterText(find.byType(TextField).first, '99,90');
       await tester.pump();
 
-      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
-      // Le montant SAISI l'emporte sur la suggestion '207.5' du choix.
+      // Le montant SAISI l'emporte sur la suggestion '207.5' du choix, et
+      // reste COMPLET (pas de dialogue) : le champ dérogatoire rempli et
+      // valide ne bloque jamais.
+      expect(find.text('Montants non saisis'), findsNothing);
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '99.90'},
@@ -2201,9 +2245,9 @@ void main() {
     });
 
     testWidgets(
-        'une saisie invalide affiche « Montant invalide » sur le champ et '
-        'AUCUN appel au contrôleur si rien de valide n\'est saisi',
-        (tester) async {
+        'une saisie invalide → dialogue « Montants non saisis », '
+        '« Compléter la saisie » (défaut) affiche « Montant invalide » sur '
+        'le champ et n\'appelle JAMAIS le contrôleur', (tester) async {
       final controller = _FakeApplyManualValuationsController(result: null);
       final preview = ImportPreview(
         toCreate: [_cryptoBuyMovement()],
@@ -2215,17 +2259,24 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).first, '0');
-      await tester.pump();
-      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
-      await tester.pumpAndSettle();
-
       // Zéro n'est PAS strictement positif : invalide, comme le motive la
       // garde de [AccountController.applyManualCryptoValuations].
+      await tester.enterText(find.byType(TextField).first, '0');
+      await tester.pump();
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Montants non saisis'), findsOneWidget);
+      await tester.tap(find.widgetWithText(FilledButton, 'Compléter la saisie'));
+      await tester.pumpAndSettle();
+
       expect(find.text('Montant invalide'), findsOneWidget);
       expect(controller.capturedEurByImportKey, isNull);
-      // L'aperçu affiché n'a pas changé (aucune reconstruction déclenchée).
+      // Ni apply ni confirm : on reste sur l'étape aperçu, inchangée.
+      expect(controller.confirmCalled, isFalse);
       expect(find.text('Échanges à valoriser (1)'), findsOneWidget);
     });
 
@@ -2364,19 +2415,24 @@ void main() {
   });
 
   // ---------------------------------------------------------------------------
-  // Chantier B17 (retour auteur, drive, verbatim : « Je ne suis pas convaincu par ce
-  // bouton [Appliquer], je préférerais un contrôle sur un clic sur le bouton
-  // Importer ») — filet de confirmation quand l'aperçu porte encore des échanges à
-  // valoriser NON appliqués : sans lui, confirmer directement les laisse muets
-  // (aucun mouvement émis, positions fausses en silence).
+  // Chantier B17 (retour auteur, drive, verbatim : « enlève le bouton appliquer et
+  // remplace par un contrôle de surface pour t'assurer que tout a bien été saisi »)
+  // — REMPLACE le filet-dialogue à 3 issues testé ci-avant (démonté avec le bouton «
+  // Appliquer » du panneau « Échanges à valoriser », cf. la doc démontée de
+  // `_guardUnvaluedExchangesBeforeConfirm`) : « Confirmer l'import » applique
+  // désormais lui-même les valorisations en attente, précédé d'un contrôle de
+  // saisie. Toutes complètes → confirmation directe, zéro friction. Une saisie
+  // manquante ou invalide → dialogue à 2 issues (« Compléter la saisie » / «
+  // Importer sans ces échanges »).
   // ---------------------------------------------------------------------------
 
   group('StatementImportPage — filet de confirmation « échanges à valoriser »'
       ' (B17)', () {
     testWidgets(
-        'entrée APPLICABLE (choix présélectionné) non appliquée → dialogue à '
-        '3 issues ; « Valoriser puis importer » applique PUIS confirme le '
-        'NOUVEL aperçu rafraîchi (pas l\'ancien)', (tester) async {
+        'aucune entrée incomplète (choix présélectionné, aucune saisie) → '
+        'confirmation DIRECTE sans dialogue ; applique à la valeur par '
+        'défaut du choix PUIS confirme le NOUVEL aperçu rafraîchi (jamais '
+        'l\'ancien)', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         // Aperçu APRÈS valorisation : plus aucun échange en attente, un
         // second mouvement finalisé est venu s'ajouter — sert à distinguer
@@ -2404,32 +2460,12 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
-      // Dialogue à 3 issues, libellé concret sur l'enjeu.
-      expect(find.text('Échanges non valorisés'), findsOneWidget);
-      expect(
-        find.text(
-          '1 échange(s) à valoriser n\'ont pas été appliqués. Sans '
-          'valorisation, ces échanges ne créeront aucun mouvement et vos '
-          'positions seront provisoires.',
-        ),
-        findsOneWidget,
-      );
-      expect(
-        find.widgetWithText(FilledButton, 'Valoriser puis importer'),
-        findsOneWidget,
-      );
-      expect(
-        find.widgetWithText(TextButton, 'Importer sans valoriser'),
-        findsOneWidget,
-      );
-      expect(find.widgetWithText(TextButton, 'Annuler'), findsOneWidget);
-      expect(controller.confirmCalled, isFalse);
-
-      await tester.tap(find.widgetWithText(FilledButton, 'Valoriser puis importer'));
-      await tester.pumpAndSettle();
+      // Aucun dialogue : l'unique entrée en attente porte un choix
+      // présélectionné, donc COMPLÈTE sans la moindre saisie.
+      expect(find.text('Montants non saisis'), findsNothing);
 
       // Valorise à la valeur par défaut du choix (« reçue »), exactement
-      // comme un clic direct sur « Appliquer » sans interaction.
+      // comme l'ancien clic direct sur « Appliquer » sans interaction.
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '207.5'},
@@ -2442,13 +2478,13 @@ void main() {
     });
 
     testWidgets(
-        '« Valoriser puis importer » avec valorisation en ÉCHEC (contrôleur '
-        'renvoie null, aperçu inchangé) → AUCUNE confirmation : on reste sur '
-        'l\'écran, jamais d\'import silencieux de l\'aperçu refusé',
-        (tester) async {
-      // `result: null` = échec réseau du contrôleur : `_preview` reste
-      // inchangé, l'entrée applicable demeure — le filet doit alors ANNULER
-      // la confirmation (cf. garde de `_guardUnvaluedExchangesBeforeConfirm`).
+        'échec de l\'application (contrôleur renvoie null, aperçu '
+        'inchangé) → AUCUNE confirmation : on reste sur l\'écran, jamais '
+        'd\'import silencieux de l\'aperçu refusé', (tester) async {
+      // `result: null` = échec réseau du contrôleur (comportement par
+      // défaut de _FakeApplyManualValuationsController, cf. sa doc) :
+      // `_preview` reste inchangé, l'entrée complète demeure —
+      // [_applyPendingManualValuations] doit alors ANNULER la confirmation.
       final controller = _FakeApplyManualValuationsController();
       final preview = ImportPreview(
         toCreate: [_cryptoBuyMovement()],
@@ -2465,10 +2501,9 @@ void main() {
       );
       await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Valoriser puis importer'));
-      await tester.pumpAndSettle();
 
-      // La valorisation a bien été TENTÉE (même chemin que « Appliquer »)…
+      // Aucun dialogue (entrée déjà complète) : la valorisation est TENTÉE
+      // directement, même moteur que l'ex-bouton « Appliquer »…
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '207.5'},
@@ -2483,13 +2518,14 @@ void main() {
     });
 
     testWidgets(
-        '« Importer sans valoriser » confirme directement, SANS appeler '
-        'applyManualCryptoValuations — l\'aperçu confirmé est bien l\'ANCIEN '
-        '(échange toujours en attente)', (tester) async {
+        'entrée SANS choix au champ VIDE → dialogue « Montants non saisis » '
+        'avec « Compléter la saisie » en action par défaut ; ce choix ne '
+        'déclenche NI application NI confirmation, le champ reste marqué '
+        '« Montant requis »', (tester) async {
       final controller = _FakeApplyManualValuationsController();
       final preview = ImportPreview(
         toCreate: [_cryptoBuyMovement()],
-        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+        unvaluedExchanges: [_unvaluedUnreadableFixture()], // champ laissé vide.
       );
 
       await tester.pumpWidget(_host(preview, controller: controller));
@@ -2503,72 +2539,120 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.widgetWithText(TextButton, 'Importer sans valoriser'));
-      await tester.pumpAndSettle();
-
-      expect(controller.capturedEurByImportKey, isNull);
-      expect(controller.confirmCalled, isTrue);
-      expect(controller.capturedConfirmPreview?.toCreate.length, 1);
+      expect(find.text('Montants non saisis'), findsOneWidget);
       expect(
-        controller.capturedConfirmPreview?.unvaluedExchanges.length,
-        1,
+        find.text(
+          '1 échange(s) n\'ont pas de montant saisi. Sans montant, ils ne '
+          'créeront aucun mouvement et vos positions seront provisoires.',
+        ),
+        findsOneWidget,
       );
-    });
-
-    testWidgets('Annuler → ni valorisation ni confirmation, retour à l\'écran',
-        (tester) async {
-      final controller = _FakeApplyManualValuationsController();
-      final preview = ImportPreview(
-        toCreate: [_cryptoBuyMovement()],
-        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      expect(
+        find.widgetWithText(FilledButton, 'Compléter la saisie'),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(TextButton, 'Importer sans ces échanges'),
+        findsOneWidget,
       );
 
-      await tester.pumpWidget(_host(preview, controller: controller));
-      await tester.pumpAndSettle();
-      await tester.tap(find.byIcon(Icons.arrow_back));
-      await tester.pumpAndSettle();
-
-      await tester.ensureVisible(
-        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
-      );
-      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
-      await tester.pumpAndSettle();
-
-      await tester.tap(find.widgetWithText(TextButton, 'Annuler'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Compléter la saisie'));
       await tester.pumpAndSettle();
 
       expect(controller.capturedEurByImportKey, isNull);
       expect(controller.confirmCalled, isFalse);
-      // Toujours sur l'étape aperçu, le bouton de confirmation est là.
+      // Toujours sur l'étape aperçu, le champ vide porte désormais l'erreur.
       expect(
         find.widgetWithText(FilledButton, 'Confirmer l\'import'),
         findsOneWidget,
       );
-      expect(find.text('Échanges non valorisés'), findsNothing);
+      expect(find.text('Montant requis'), findsOneWidget);
     });
 
     testWidgets(
-        'aucun échange à valoriser → confirmation directe, AUCUN dialogue '
-        '(non-régression du chemin historique)', (tester) async {
+        'saisie invalide (« abc ») → même traitement qu\'un champ vide : '
+        'dialogue + erreur « Montant invalide » sur le champ concerné',
+        (tester) async {
       final controller = _FakeApplyManualValuationsController();
-      final preview = ImportPreview(toCreate: [_cryptoBuyMovement()]);
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedUnreadableFixture()],
+      );
 
       await tester.pumpWidget(_host(preview, controller: controller));
       await tester.pumpAndSettle();
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
+      await tester.enterText(find.byType(TextField).first, 'abc');
+      await tester.pump();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
       await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Échanges non valorisés'), findsNothing);
-      expect(controller.confirmCalled, isTrue);
-      expect(controller.capturedConfirmPreview?.toCreate.length, 1);
+      expect(find.text('Montants non saisis'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Compléter la saisie'));
+      await tester.pumpAndSettle();
+
+      expect(controller.capturedEurByImportKey, isNull);
+      expect(controller.confirmCalled, isFalse);
+      expect(find.text('Montant invalide'), findsOneWidget);
     });
 
     testWidgets(
-        'entrées présentes mais AUCUNE applicable (clé partagée + jambe '
-        'fiat) → variante à 2 issues, SANS « Valoriser puis importer »',
+        '« Importer sans ces échanges » SANS AUCUNE entrée complète → '
+        'applyManualCryptoValuations n\'est même pas appelé (rien à '
+        'appliquer), mais la confirmation a bien lieu sur l\'aperçu tel '
+        'quel (les deux entrées incomplètes y restent, longueur 2)',
+        (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedUnreadableFixture(), // champ laissé vide.
+          _unvaluedFxUnavailableFixture(), // champ laissé vide.
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Montants non saisis'), findsOneWidget);
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Importer sans ces échanges'),
+      );
+      await tester.pumpAndSettle();
+
+      // Rien de complet à transmettre : le contrôleur n'est jamais atteint
+      // (`toApply` vide, cf. doc de [_applyManualCryptoValuations]).
+      expect(controller.capturedEurByImportKey, isNull);
+      // La confirmation a quand même lieu, sur l'aperçu tel quel : les deux
+      // entrées restent (aucune n'a pu être valorisée) — « Importer sans ces
+      // échanges » ne les retire jamais, il les laisse simplement muettes
+      // (point 2c/2d de la consigne).
+      expect(controller.confirmCalled, isTrue);
+      expect(
+        controller.capturedConfirmPreview?.unvaluedExchanges.length,
+        2,
+      );
+    });
+
+    testWidgets(
+        'entrées présentes mais TOUTES structurellement refusées (clé '
+        'partagée + jambe fiat) → jamais bloquantes, confirmation DIRECTE, '
+        'AUCUN dialogue (elles n\'ont jamais été saisissables)',
         (tester) async {
       final controller = _FakeApplyManualValuationsController();
       final preview = ImportPreview(
@@ -2590,30 +2674,32 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
       await tester.pumpAndSettle();
 
-      expect(find.text('Échanges non valorisés'), findsOneWidget);
-      expect(
-        find.widgetWithText(FilledButton, 'Valoriser puis importer'),
-        findsNothing,
-      );
-      expect(
-        find.widgetWithText(TextButton, 'Importer sans valoriser'),
-        findsNothing,
-      );
-      expect(
-        find.widgetWithText(FilledButton, 'Importer quand même'),
-        findsOneWidget,
-      );
-      expect(find.widgetWithText(TextButton, 'Annuler'), findsOneWidget);
-
-      await tester.tap(find.widgetWithText(FilledButton, 'Importer quand même'));
-      await tester.pumpAndSettle();
-
+      expect(find.text('Montants non saisis'), findsNothing);
       expect(controller.capturedEurByImportKey, isNull);
       expect(controller.confirmCalled, isTrue);
       expect(
         controller.capturedConfirmPreview?.unvaluedExchanges.length,
         2,
       );
+    });
+
+    testWidgets(
+        'aucun échange à valoriser → confirmation directe, AUCUN dialogue '
+        '(non-régression du chemin historique)', (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(toCreate: [_cryptoBuyMovement()]);
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Montants non saisis'), findsNothing);
+      expect(controller.confirmCalled, isTrue);
+      expect(controller.capturedConfirmPreview?.toCreate.length, 1);
     });
   });
 }

@@ -76,12 +76,6 @@ enum _ImportStep { pickFile, configureProfile, preview, resolveAssets, done }
 /// grand livre de jambes, pas un journal d'opérations — cf. la conception interne
 enum _ImportProfileChoice { genericManual, bourseDirect, kraken }
 
-/// Issue du filet de confirmation « échanges à valoriser » (retour auteur, drive —
-/// verbatim : « Je ne suis pas convaincu par ce bouton [Appliquer], je préférerais un
-/// contrôle sur un clic sur le bouton Importer »), cf.
-/// [_StatementImportPageState._guardUnvaluedExchangesBeforeConfirm].
-enum _UnvaluedGuardAction { cancel, importWithoutValuation, valuateFirst }
-
 class StatementImportPage extends StatefulWidget {
   /// Contrôleur DÉJÀ initialisé du compte ouvrant l'assistant (celui
   /// d'AccountView) : réutilisé tel quel (jamais disposé ici, la page ne le
@@ -199,6 +193,17 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// du groupe (chaque échange s'applique indépendamment).
   final Set<String> _manualValuationInvalidKeys = {};
 
+  /// Clés dont le champ était VIDE (et sans choix binaire présélectionné,
+  /// cf. [_unvaluedHasChoice]) au moment du contrôle de saisie déclenché par
+  /// « Confirmer l'import » ([_prepareUnvaluedExchangesBeforeConfirm]) —
+  /// distinct de [_manualValuationInvalidKeys] (saisie NON vide mais mal
+  /// formée) pour afficher un message dédié (« Montant requis » plutôt que
+  /// « Montant invalide », cf. [_unvaluedExchangeTile]) : un champ jamais
+  /// touché n'est pas une erreur de FRAPPE, la distinction évite de laisser
+  /// croire à l'utilisateur qu'il a mal tapé alors qu'il n'a simplement rien
+  /// saisi.
+  final Set<String> _manualValuationRequiredKeys = {};
+
   /// Sélection du choix binaire « valeur cédée / valeur reçue » (amendement drive
   /// lot 2 (suite), clé = `UnvaluedExchange.importKey` — `true` = valeur CÉDÉE
   /// sélectionnée (défaut, cf. [_unvaluedChoiceRow]), `false` = valeur REÇUE.
@@ -211,9 +216,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// même clé ne trouve pas un choix obsolète.
   final Map<String, bool> _unvaluedChoicePaidByKey = {};
 
-  /// `true` pendant [_applyManualCryptoValuations] (bouton « Appliquer » du
-  /// groupe « Échanges à valoriser ») — désactive le bouton, évite un double
-  /// appel concurrent.
+  /// `true` pendant [_applyManualCryptoValuations], déclenché depuis « Confirmer
+  /// l'import » (ex-bouton « Appliquer » du groupe « Échanges à valoriser »,
+  /// démonté — retour auteur du drive — pilote l'indicateur d'attente pendant
+  /// cette phase (le bandeau « Réessayer » FX indisponible reste désactivé pendant
+  /// ce laps, cf. son `onPressed`) et évite un double appel concurrent.
   bool _applyingManualValuations = false;
 
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
@@ -1087,21 +1094,39 @@ class _StatementImportPageState extends State<StatementImportPage> {
   // Étape 5 — confirmation
   // ---------------------------------------------------------------------------
 
-  /// `true` si CETTE entrée du groupe « Échanges à valoriser » serait
-  /// effectivement valorisée par un clic sur « Appliquer » EN L'ÉTAT ACTUEL
-  /// de la saisie — reflète exactement la logique de
-  /// [_applyManualCryptoValuations] (choix binaire présélectionné en repli si
-  /// le champ dérogatoire est vide, montant saisi sinon) SAUF pour les deux
-  /// motifs structurellement refusés par le contrôleur
-  /// (`AccountController.applyManualCryptoValuations`) : clé de dédup
+  /// `true` si [u] ne sera JAMAIS saisissable depuis ce panneau, quoi que
+  /// l'utilisateur tape — les deux motifs structurellement refusés par le
+  /// contrôleur (`AccountController.applyManualCryptoValuations`) : clé de dédup
   /// PARTAGÉE (`ambiguousGroup`) et jambe fiat (`codePaidIsFiat`/
-  /// `codeReceivedIsFiat`), jamais valorisables ici quoi que l'utilisateur
-  /// saisisse (cf. [_unvaluedExchangeTile], qui désactive déjà leur champ).
-  /// Sert au filet de confirmation ([_guardUnvaluedExchangesBeforeConfirm])
-  /// à décider s'il propose « Valoriser puis importer ».
-  bool _unvaluedExchangeIsApplicable(UnvaluedExchange u) {
-    if (u.manualReason == 'ambiguousGroup') return false;
-    if (u.codePaidIsFiat || u.codeReceivedIsFiat) return false;
+  /// `codeReceivedIsFiat`). Extrait de l'ancien `_unvaluedExchangeIsApplicable`
+  /// (démonté avec le filet-dialogue à 3 issues, retour auteur du drive pour être
+  /// partagé entre [_unvaluedExchangeIsComplete] (ces entrées ne comptent jamais
+  /// comme « complètes ») et [_prepareUnvaluedExchangesBeforeConfirm] (elles ne
+  /// comptent jamais non plus comme « incomplètes » : point 2d de la consigne —
+  /// jamais bloquantes, restent muettes dans le panneau). Le champ de saisie de
+  /// [_unvaluedExchangeTile] les désactive déjà indépendamment
+  /// (`isAmbiguousGroup`/`isForeignFiat`), ceinture séparée.
+  bool _unvaluedExchangeIsStructurallyRefused(UnvaluedExchange u) =>
+      u.manualReason == 'ambiguousGroup' ||
+      u.codePaidIsFiat ||
+      u.codeReceivedIsFiat;
+
+  /// `true` si CETTE entrée du groupe « Échanges à valoriser » est COMPLÈTE
+  /// en l'état actuel de la saisie — une entrée AVEC choix binaire
+  /// présélectionné est toujours complète (le champ dérogatoire, s'il est
+  /// rempli, prime mais n'est jamais OBLIGATOIRE) ; une entrée SANS choix
+  /// exige un montant valide (`Decimal` strictement positif). Une entrée
+  /// structurellement refusée ([_unvaluedExchangeIsStructurallyRefused])
+  /// n'est jamais « complète » (elle n'est simplement jamais comptée comme
+  /// incomplète non plus, cf. appelants).
+  ///
+  /// Ancien nom `_unvaluedExchangeIsApplicable` (fonction inchangée sinon
+  /// que la 3e ligne de doc listait le bouton « Appliquer », démonté) :
+  /// renommée car ce prédicat est désormais le cœur du contrôle de saisie
+  /// [_prepareUnvaluedExchangesBeforeConfirm] déclenché par « Confirmer
+  /// l'import », plus seulement une aide de rendu pour un bouton dédié.
+  bool _unvaluedExchangeIsComplete(UnvaluedExchange u) {
+    if (_unvaluedExchangeIsStructurallyRefused(u)) return false;
     final raw = _manualValuationControllers[u.importKey]?.text.trim() ?? '';
     if (raw.isEmpty) return _unvaluedHasChoice(u);
     final normalized = raw.replaceAll(',', '.');
@@ -1109,96 +1134,116 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return amount != null && amount > Decimal.zero;
   }
 
-  /// Filet de sécurité AVANT confirmation (retour auteur, drive — cf. doc de
-  /// [_UnvaluedGuardAction]) : un utilisateur qui a oublié de cliquer « Appliquer »
-  /// dans le panneau « Échanges à valoriser » importait jusqu'ici en silence — ces
-  /// échanges n'émettent alors AUCUN mouvement, ce qui fausse les positions sans
-  /// avertissement. Le bouton « Appliquer » du panneau RESTE disponible par
-  /// ailleurs (permet de voir l'effet avant d'importer) : ce filet ne le remplace
-  /// pas, il rattrape l'oubli au dernier moment.
+  /// Applique [_applyManualCryptoValuations] (moteur de valorisation
+  /// inchangé, cf. sa doc) puis relit [_preview] pour distinguer un succès
+  /// concret d'une panne réseau silencieuse — idiome REPRIS tel quel de
+  /// l'ancien filet-dialogue (`case valuateFirst:` de l'ex-
+  /// `_guardUnvaluedExchangesBeforeConfirm`, démonté) : si au moins une
+  /// entrée était COMPLÈTE avant l'appel et qu'une entrée COMPLÈTE demeure
+  /// après, rien n'a pu être appliqué (le contrôleur a renvoyé `null`,
+  /// [_applyManualCryptoValuations] laisse alors [_preview] inchangé) — on
+  /// retourne `null` pour abandonner la confirmation (point 2e de la
+  /// consigne). Sans entrée complète avant l'appel (rien à appliquer — aucun
+  /// échange en attente, ou uniquement des entrées structurellement
+  /// refusées/déjà marquées incomplètes), [_applyManualCryptoValuations]
+  /// n'appelle même pas le contrôleur : on retourne alors [_preview]
+  /// directement, jamais `null`.
+  Future<ImportPreview?> _applyPendingManualValuations() async {
+    final before = _preview;
+    if (before == null) return null;
+    final hadCompleteEntry =
+        before.unvaluedExchanges.any(_unvaluedExchangeIsComplete);
+    await _applyManualCryptoValuations();
+    if (!mounted) return null;
+    final after = _preview;
+    if (after == null) return null;
+    if (hadCompleteEntry &&
+        after.unvaluedExchanges.any(_unvaluedExchangeIsComplete)) {
+      return null;
+    }
+    return after;
+  }
+
+  /// Contrôle de saisie AVANT confirmation (remplace l'ancien filet-dialogue à 3
+  /// issues `_guardUnvaluedExchangesBeforeConfirm`/`_UnvaluedGuardAction`, démontés
+  /// — retour auteur du drive, verbatim : « enlève le bouton appliquer et remplace
+  /// par un contrôle de surface pour t'assurer que tout a bien été saisi »). Le
+  /// bouton « Appliquer » du panneau « Échanges à valoriser » a disparu
+  /// ([_unvaluedExchangesGroup]) : « Confirmer l'import » applique désormais
+  /// lui-même les valorisations en attente, précédé de ce contrôle.
   ///
-  /// Sans échange en attente, retourne [preview] immédiatement, SANS dialogue
-  /// (comportement inchangé). Sinon, propose :
-  ///  - « Valoriser puis importer » (SEULEMENT si au moins une entrée est
-  ///    [_unvaluedExchangeIsApplicable]) : applique les valorisations (même
-  ///    chemin que le bouton « Appliquer », cf.
-  ///    [_applyManualCryptoValuations], qui rafraîchit [_preview]) puis
-  ///    retourne ce NOUVEL aperçu — jamais l'ancien, sans quoi la
-  ///    confirmation qui suit journaliserait sur un état déjà obsolète.
-  ///  - « Importer sans valoriser » / « Importer quand même » : [preview] tel
-  ///    quel, comportement historique (échanges non valorisés muets).
-  ///  - Annuler : `null`, aucune confirmation ne doit avoir lieu.
-  Future<ImportPreview?> _guardUnvaluedExchangesBeforeConfirm(
+  ///  - Aucune entrée SAISISSABLE (ni structurellement refusée, cf.
+  ///    [_unvaluedExchangeIsStructurallyRefused]) n'est incomplète (aperçu
+  ///    sans échange en attente, toutes complètes, ou uniquement des
+  ///    refusées structurelles qui ne sont jamais bloquantes) → applique
+  ///    SILENCIEUSEMENT les valorisations en attente
+  ///    ([_applyPendingManualValuations]) et retourne l'aperçu RAFRAÎCHI,
+  ///    SANS dialogue : chemin nominal, zéro friction.
+  ///  - Au moins une entrée saisissable incomplète (champ vide ou invalide)
+  ///    → marque CES champs en erreur (réutilise [_manualValuationInvalidKeys]
+  ///    pour une saisie invalide, [_manualValuationRequiredKeys] pour un
+  ///    champ vide — visibles dès la fermeture du dialogue, y compris via
+  ///    « Compléter la saisie ») puis affiche un dialogue à 2 issues :
+  ///     - « Compléter la saisie » (par défaut/primaire — dismiss du dialogue
+  ///       compris) : `null`, on reste sur l'écran.
+  ///     - « Importer sans ces échanges » : applique les entrées COMPLÈTES
+  ///       seulement (même moteur — les incomplètes restent dans le groupe,
+  ///       inchangées, cf. doc de [_applyManualCryptoValuations]) et
+  ///       retourne l'aperçu rafraîchi.
+  ///  - Échec de l'application (contrôleur renvoie `null`, panne réseau) →
+  ///    `null` dans les deux branches ci-dessus qui appliquent
+  ///    ([_applyPendingManualValuations] porte cette détection).
+  Future<ImportPreview?> _prepareUnvaluedExchangesBeforeConfirm(
     ImportPreview preview,
   ) async {
-    if (preview.unvaluedExchanges.isEmpty) return preview;
-    final l10n = AppLocalizations.of(context)!;
-    final hasApplicable = preview.unvaluedExchanges
-        .any(_unvaluedExchangeIsApplicable);
+    final incomplete = preview.unvaluedExchanges
+        .where((u) =>
+            !_unvaluedExchangeIsStructurallyRefused(u) &&
+            !_unvaluedExchangeIsComplete(u))
+        .toList();
 
-    final action = await showDialog<_UnvaluedGuardAction>(
+    if (incomplete.isEmpty) {
+      return _applyPendingManualValuations();
+    }
+
+    setState(() {
+      for (final u in incomplete) {
+        final raw =
+            _manualValuationControllers[u.importKey]?.text.trim() ?? '';
+        if (raw.isEmpty) {
+          _manualValuationRequiredKeys.add(u.importKey);
+        } else {
+          _manualValuationInvalidKeys.add(u.importKey);
+        }
+      }
+    });
+
+    final l10n = AppLocalizations.of(context)!;
+    // `true` = « Importer sans ces échanges », `false`/`null` (dismiss du
+    // dialogue compris) = « Compléter la saisie », action par DÉFAUT —
+    // c'est pourquoi elle porte le `FilledButton` (primaire) tandis que
+    // « Importer sans ces échanges » reste un `TextButton` secondaire.
+    final importWithoutThese = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: Text(l10n.importUnvaluedGuardTitle),
-        content: Text(
-          l10n.importUnvaluedGuardMessage(preview.unvaluedExchanges.length),
-        ),
+        title: Text(l10n.importUnvaluedIncompleteTitle),
+        content: Text(l10n.importUnvaluedIncompleteMessage(incomplete.length)),
         actions: [
           TextButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, _UnvaluedGuardAction.cancel),
-            child: Text(l10n.cancel),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(l10n.importUnvaluedImportWithoutTheseButton),
           ),
-          if (hasApplicable)
-            TextButton(
-              onPressed: () => Navigator.pop(
-                dialogContext,
-                _UnvaluedGuardAction.importWithoutValuation,
-              ),
-              child: Text(l10n.importUnvaluedGuardImportAnywayButton),
-            ),
           FilledButton(
-            onPressed: () => Navigator.pop(
-              dialogContext,
-              hasApplicable
-                  ? _UnvaluedGuardAction.valuateFirst
-                  : _UnvaluedGuardAction.importWithoutValuation,
-            ),
-            child: Text(
-              hasApplicable
-                  ? l10n.importUnvaluedGuardValuateButton
-                  : l10n.importUnvaluedGuardImportAnywayNoneApplicableButton,
-            ),
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(l10n.importUnvaluedCompleteEntryButton),
           ),
         ],
       ),
     );
 
-    switch (action) {
-      case _UnvaluedGuardAction.valuateFirst:
-        await _applyManualCryptoValuations();
-        // Échec de la valorisation (panne réseau — [_applyManualCryptoValuations]
-        // laisse alors [_preview] inchangé) : une entrée APPLICABLE demeure,
-        // preuve que rien n'a été appliqué. L'utilisateur vient de demander
-        // « Valoriser puis importer » — enchaîner la confirmation sur l'aperçu
-        // qu'il a précisément refusé serait l'import silencieux que ce filet
-        // existe pour empêcher. On reste sur l'écran (l'état d'erreur du
-        // panneau est visible, il peut réessayer). Après un APPLY réussi, les
-        // entrées restantes (saisie invalide, sans choix, refusées
-        // structurelles) ne sont jamais applicables : ce prédicat ne bloque
-        // donc que l'échec.
-        final refreshed = _preview;
-        if (refreshed == null ||
-            refreshed.unvaluedExchanges.any(_unvaluedExchangeIsApplicable)) {
-          return null;
-        }
-        return refreshed;
-      case _UnvaluedGuardAction.importWithoutValuation:
-        return preview;
-      case _UnvaluedGuardAction.cancel:
-      case null:
-        return null;
-    }
+    if (importWithoutThese != true) return null;
+
+    return _applyPendingManualValuations();
   }
 
   Future<void> _confirmImport() async {
@@ -1206,7 +1251,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (initialPreview == null) return;
 
     final preview =
-        await _guardUnvaluedExchangesBeforeConfirm(initialPreview);
+        await _prepareUnvaluedExchangesBeforeConfirm(initialPreview);
     if (preview == null || !mounted) return;
 
     final l10n = AppLocalizations.of(context)!;
@@ -2145,10 +2190,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// « Échanges à valoriser (N) » — DÉPLIÉ. Échanges entre crypto-monnaies (ou
   /// entrées en nature) restés en arbitrage MANUEL après la cascade de valorisation
   /// (lot 2, conception interne) : trace (ligne source, codes et quantités des deux
-  /// parties), MOTIF localisé et champ « Montant (EUR) » éditable — un bouton «
-  /// Appliquer » unique pour tout le groupe (plus simple qu'un bouton par ligne,
-  /// cohérent avec la bascule unique des « Mouvements internes » ci-dessous) envoie
-  /// les montants renseignés au contrôleur, qui reconstruit l'aperçu.
+  /// parties), MOTIF localisé et champ « Montant (EUR) » éditable. PLUS de bouton «
+  /// Appliquer » dédié au groupe (démonté, retour auteur du drive : les montants
+  /// renseignés ici ne sont envoyés au contrôleur qu'au clic sur « Confirmer
+  /// l'import », cf. [_prepareUnvaluedExchangesBeforeConfirm].
   List<Widget> _unvaluedExchangesGroup(
     AppLocalizations l10n,
     ImportPreview preview,
@@ -2172,30 +2217,6 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _unvaluedExchangeTile(l10n, u),
           if (items.length > _groupDisplayCap)
             _moreRow(l10n, items.length - _groupDisplayCap),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-            child: Align(
-              alignment: Alignment.centerRight,
-              child: _applyingManualValuations
-                  ? const Padding(
-                      padding: EdgeInsets.all(8),
-                      child: SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    )
-                  : FilledButton.tonal(
-                      // M-4 (revue adversariale) : un SEUL recalcul d'aperçu à
-                      // la fois — désactivé pendant un aperçu complet en cours
-                      // ([_runPreview], bandeau FX « Réessayer »).
-                      onPressed: _loadingPreview
-                          ? null
-                          : _applyManualCryptoValuations,
-                      child: Text(l10n.importUnvaluedApplyButton),
-                    ),
-            ),
-          ),
         ],
       ),
     ];
@@ -2262,6 +2283,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
       () => TextEditingController(),
     );
     final isInvalid = _manualValuationInvalidKeys.contains(key);
+    // Champ vide (et sans choix présélectionné) marqué par le contrôle de
+    // saisie de « Confirmer l'import » ([_prepareUnvaluedExchangesBeforeConfirm])
+    // — message dédié (« Montant requis »), distinct de [isInvalid] ci-dessus
+    // (saisie non vide mais mal formée), cf. doc de [_manualValuationRequiredKeys].
+    final isRequired = _manualValuationRequiredKeys.contains(key);
     // B-1 (BLOQUANT, revue adversariale) : clé de dédup PARTAGÉE par ≥ 2
     // entrées — jamais valorisable (`CryptoValuationService.resolve`/
     // `finalizeCryptoExchanges`/`AccountController.applyManualCryptoValuations`
@@ -2323,14 +2349,19 @@ class _StatementImportPageState extends State<StatementImportPage> {
                     : l10n.importUnvaluedAmountFieldLabel,
                 isDense: true,
                 border: const OutlineInputBorder(),
-                errorText: isInvalid ? l10n.invalidAmount : null,
+                errorText: isInvalid
+                    ? l10n.invalidAmount
+                    : (isRequired ? l10n.importUnvaluedAmountRequiredError : null),
               ),
               // La saisie change : l'erreur affichée n'est plus valable pour
               // ce nouveau texte — retirée immédiatement plutôt qu'attendre
-              // une nouvelle tentative d'application.
+              // une nouvelle tentative de confirmation.
               onChanged: (_) {
-                if (isInvalid) {
-                  setState(() => _manualValuationInvalidKeys.remove(key));
+                if (isInvalid || isRequired) {
+                  setState(() {
+                    _manualValuationInvalidKeys.remove(key);
+                    _manualValuationRequiredKeys.remove(key);
+                  });
                 }
               },
             ),
@@ -2443,21 +2474,26 @@ class _StatementImportPageState extends State<StatementImportPage> {
   }
 
   /// Applique au contrôleur les montants EUR actuellement saisis (ou choisis) dans
-  /// le groupe « Échanges à valoriser » (bouton « Appliquer », chantier B16, lot 2)
-  /// : pour une entrée SANS choix (autre motif, ou `spread` sans les quatre montants
-  /// — cf. [_unvaluedHasChoice]), comportement HISTORIQUE inchangé — une saisie VIDE
-  /// est simplement ignorée (l'échange reste manuel, aucune erreur affichée). Pour
-  /// une entrée AVEC choix (amendement drive lot 2 (suite) : le champ dérogatoire,
-  /// s'il est rempli, PRIME toujours sur le choix (même validation que le
-  /// comportement historique) ; s'il est vide, la valeur Decimal BRUTE de l'option
-  /// sélectionnée ([UnvaluedExchange.suggestedPaidEur] ou
+  /// le groupe « Échanges à valoriser » (chantier B16, lot 2) — moteur INCHANGÉ
+  /// depuis l'ex-bouton « Appliquer » du panneau (démonté, retour auteur du drive :
+  /// déclenché désormais UNIQUEMENT depuis [_applyPendingManualValuations]
+  /// (elle-même appelée par « Confirmer l'import », cf.
+  /// [_prepareUnvaluedExchangesBeforeConfirm]), jamais directement par un geste
+  /// utilisateur. Pour une entrée SANS choix (autre motif, ou `spread` sans les
+  /// quatre montants — cf. [_unvaluedHasChoice]), comportement HISTORIQUE inchangé —
+  /// une saisie VIDE est simplement ignorée (l'échange reste manuel, aucune erreur
+  /// affichée ; c'est exactement le cas qui atterrit désormais dans
+  /// [_manualValuationRequiredKeys] EN AMONT, dans le contrôle de saisie qui précède
+  /// cet appel). Pour une entrée AVEC choix (amendement drive lot 2 (suite) : le
+  /// champ dérogatoire, s'il est rempli, PRIME toujours sur le choix (même
+  /// validation que le comportement historique) ; s'il est vide, la valeur Decimal
+  /// BRUTE de l'option sélectionnée ([UnvaluedExchange.suggestedPaidEur] ou
   /// [UnvaluedExchange.suggestedReceivedEur], jamais reformatée) est transmise telle
-  /// quelle — plus de `continue` silencieux dans ce cas, un clic sur « Appliquer »
-  /// SANS AUCUNE saisie valorise déjà ces lignes. Dans tous les cas, une entrée NON
-  /// vide mais invalide (pas un [Decimal] strictement positif, cf.
-  /// [AccountController.applyManualCryptoValuations]) marque SEULEMENT ce champ en
-  /// erreur, sans bloquer les autres lignes valides du même groupe. Aucun appel au
-  /// contrôleur si rien de valide n'a été saisi.
+  /// quelle — un appel SANS AUCUNE saisie valorise déjà ces lignes. Dans tous les
+  /// cas, une entrée NON vide mais invalide (pas un [Decimal] strictement positif,
+  /// cf. [AccountController.applyManualCryptoValuations]) marque SEULEMENT ce champ
+  /// en erreur, sans bloquer les autres lignes valides du même groupe. Aucun appel
+  /// au contrôleur si rien de valide n'a été saisi.
   Future<void> _applyManualCryptoValuations() async {
     final preview = _preview;
     if (preview == null) return;
@@ -2514,6 +2550,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return gone;
       });
       _manualValuationInvalidKeys.removeWhere((key) => !remainingKeys.contains(key));
+      // Même purge pour le marquage « champ vide requis » (contrôle de
+      // saisie de « Confirmer l'import », cf. [_manualValuationRequiredKeys])
+      // — en pratique une entrée marquée REQUIRED n'est jamais dans
+      // `toApply` (`continue` ci-dessus, cf. doc) donc ne quitte jamais le
+      // groupe via CET appel, mais la même clé de dédup pourrait en théorie
+      // réapparaître sur un aperçu ultérieur : ceinture, même patron que les
+      // deux purges voisines.
+      _manualValuationRequiredKeys.removeWhere((key) => !remainingKeys.contains(key));
       // Même purge pour la sélection du choix (amendement drive lot 2 (suite) : une
       // entrée qui quitte le groupe ne doit pas laisser une sélection obsolète
       // derrière elle, au cas où une future entrée réutiliserait la même clé.

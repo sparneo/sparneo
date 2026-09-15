@@ -2715,32 +2715,28 @@
   "@importUnvaluedOverrideAmountFieldLabel": {
     "description": "Amendment, drive review 09/15 (B16 lot 2 follow-up): label of the same editable EUR amount field, but for a row that already offers the paid/received default choice (importUnvaluedChoicePaidLabel / importUnvaluedChoiceReceivedLabel) — reworded to signal that this field is an OVERRIDE: left empty, the selected default choice is applied instead; filled with a valid amount, it always wins over the choice."
   },
-  "importUnvaluedApplyButton": "Apply",
-  "@importUnvaluedApplyButton": {
-    "description": "Button at the bottom of the 'exchanges to value' group that applies the EUR amounts entered so far, without waiting for final import confirmation"
+  "importUnvaluedAmountRequiredError": "Amount required",
+  "@importUnvaluedAmountRequiredError": {
+    "description": "Error text shown under a manual crypto-exchange valuation row's amount field when its input-control step (triggered by 'Confirm import', cf. _prepareUnvaluedExchangesBeforeConfirm) finds it EMPTY and with no preselected paid/received choice — distinct from 'invalidAmount' (non-empty but malformed input), a dedicated wording felt clearer on this specific screen than reusing the generic one for both cases."
   },
-  "importUnvaluedGuardTitle": "Unvalued exchanges",
-  "@importUnvaluedGuardTitle": {
-    "description": "Title of the safety-net dialog shown when the user taps the import confirmation button while the 'exchanges to value' group still has entries pending (author drive feedback, 09/15: they forgot to tap 'Apply' before confirming, so those exchanges silently produced no movement)."
+  "importUnvaluedIncompleteTitle": "Missing amounts",
+  "@importUnvaluedIncompleteTitle": {
+    "description": "Title of the input-control dialog shown when the user taps the import confirmation button while the 'exchanges to value' group still has entries with no valid amount entered (replaces the former 3-choice safety-net dialog demounted on 09/16 author drive feedback: 'remove the Apply button, replace it with a surface-level check that everything has been filled in')."
   },
-  "importUnvaluedGuardMessage": "{count} exchange(s) to value have not been applied. Without valuation, these exchanges will create no movement and your positions will be provisional.",
-  "@importUnvaluedGuardMessage": {
-    "description": "Body of the safety-net dialog: states plainly what is at stake (no jargon) — the remaining unvalued exchanges won't produce any movement if the user proceeds without valuing them first. Same wording for both dialog variants (with or without an applicable entry).",
+  "importUnvaluedIncompleteMessage": "{count} exchange(s) have no amount entered. Without an amount, they will create no movement and your positions will be provisional.",
+  "@importUnvaluedIncompleteMessage": {
+    "description": "Body of the input-control dialog: states plainly what is at stake (no jargon) — the exchanges still missing an amount won't produce any movement if the user proceeds without them. count is the number of entries that are saisissable (not structurally refused) yet incomplete — structurally-refused entries (shared dedup key/foreign fiat leg) never count here, cf. _unvaluedExchangeIsStructurallyRefused.",
     "placeholders": {
       "count": { "type": "int" }
     }
   },
-  "importUnvaluedGuardValuateButton": "Value then import",
-  "@importUnvaluedGuardValuateButton": {
-    "description": "Primary/default action of the 3-choice variant of the safety-net dialog (shown only when at least one unvalued exchange is applicable, i.e. would actually be valued by a tap on 'Apply' as currently filled in): applies the manual valuations (same path as the panel's 'Apply' button) then proceeds straight to import confirmation on the refreshed preview."
+  "importUnvaluedCompleteEntryButton": "Complete entry",
+  "@importUnvaluedCompleteEntryButton": {
+    "description": "Default/primary action (FilledButton) of the input-control dialog: dismisses the dialog, stays on the preview screen with the incomplete fields now flagged in error — same outcome as tapping outside the dialog."
   },
-  "importUnvaluedGuardImportAnywayButton": "Import without valuing",
-  "@importUnvaluedGuardImportAnywayButton": {
-    "description": "Secondary action of the 3-choice variant of the safety-net dialog (at least one applicable entry exists): proceeds to import confirmation as-is, historical behaviour — the still-unvalued exchanges emit no movement."
-  },
-  "importUnvaluedGuardImportAnywayNoneApplicableButton": "Import anyway",
-  "@importUnvaluedGuardImportAnywayNoneApplicableButton": {
-    "description": "Sole forward action of the 2-choice variant of the safety-net dialog, shown when unvalued exchanges remain but NONE is applicable (e.g. only structurally-refused entries — shared dedup key/foreign fiat leg — or empty fields with no preselected choice): proceeds to import confirmation as-is."
+  "importUnvaluedImportWithoutTheseButton": "Import without these exchanges",
+  "@importUnvaluedImportWithoutTheseButton": {
+    "description": "Secondary action (TextButton) of the input-control dialog: applies the valuations for the COMPLETE entries only (same engine as the former 'Apply' button), ignoring the incomplete ones (they stay in the 'exchanges to value' group, unchanged), then proceeds to import confirmation on the refreshed preview."
   },
   "importUnvaluedChoicePaidLabel": "Value given: {usd} (≈ {eur})",
   "@importUnvaluedChoicePaidLabel": {
