@@ -779,6 +779,17 @@ class CryptoLedgerNormalizer {
           final unitPrice = (amountEur / quantityReceived)
               .toDecimal(scaleOnInfinitePrecision: 12);
           final depositImportKey = '${u.importKey}#deposit:$codeReceived';
+          // Problème 1 (retour auteur, drive B16, verbatim : « les cryptos suivantes
+          // listées dans dépôt ne sont pas des dépôts ») : le modèle d'émission
+          // `depositInKind` couvre AUSSI les jambes entrantes de poussière `transfer*`
+          // redirigées par SIGNE (`_processDepositOrWithdrawal`) — des écritures INTERNES
+          // de la plateforme (résidu de migration, restes de délistage, retour futures),
+          // jamais un apport EXTERNE de l'utilisateur. Seules les lignes SOURCE `deposit`
+          // (dépôt on-chain entrant) et `receive` (crédit externe type airdrop) sont de
+          // VRAIS dépôts — décision portée par `sourceKindLabel` (posé par le moteur PUR,
+          // jamais une inspection UI, cf. doc de `UnvaluedExchange.sourceKindLabel`).
+          final isGenuineDeposit = u.sourceKindLabel == 'deposit' ||
+              u.sourceKindLabel == 'receive';
           out.add(ImportedMovement.candidate(
             sourceRow: const [],
             sourceRowIndex: sourceRowIndex,
@@ -799,8 +810,29 @@ class CryptoLedgerNormalizer {
                 // jambe `sell`/`buy` d'échange (les deux portent la même valeur, cf.
                 // `_valuationMeta`). Sans elle, `filterJournal` ne pourrait pas faire remonter
                 // CET `adjustment` précis sous la puce « Dépôt » sans fuiter les autres
-                // (agrégats de récompenses, résidus de transferts internes).
-                'inKindDeposit': true,
+                // (agrégats de récompenses, résidus de transferts internes). Posée UNIQUEMENT
+                // pour un VRAI dépôt externe (`isGenuineDeposit` — Problème 1 ci-dessus) : une
+                // jambe `transfer*` interne reste au journal sous « Tous », jamais sous « Dépôt
+                // ».
+                if (isGenuineDeposit) 'inKindDeposit': true,
+                // Problème 2 (retour auteur, même drive) : `amountEur` est
+                // TOUJOURS un montant EUR exact — issu de la série FX
+                // historique (étage 1 « fichier ») OU saisi directement en
+                // EUR par l'utilisateur (valorisation MANUELLE, champ dédié
+                // « Montant (EUR) », cf. `AccountController.
+                // applyManualCryptoValuations`) — quelle que soit la devise
+                // qui finit par étiqueter ce mouvement (`currency` ci-dessus
+                // PUIS, en aval, la cascade de résolution ledgerCode→ticker,
+                // `AccountController._resolveCryptoTicker`, qui peut la
+                // réécrire en `USD` pour un actif sans cotation EUR — sans
+                // rapport avec la devise DU COMPTE ni avec CE montant). Posée
+                // ICI, au point d'émission, pour que l'affichage (`_inKind
+                // DepositEurApprox`) dispose d'un montant FIABLE sans jamais
+                // avoir à deviner une conversion depuis `qty × prix` — la
+                // valorisation MANUELLE, en particulier, n'a JAMAIS de
+                // `fxRate` (`CryptoValuation(source: 'manual')` n'en pose
+                // aucun), ce qui faisait planter tout repli qty×prix×fxRate.
+                'valueEur': amountEur.toString(),
                 'importKey': depositImportKey,
               },
             ),
@@ -1050,6 +1082,14 @@ class CryptoLedgerNormalizer {
         // jamais fiat — explicite plutôt qu'implicite sur le défaut (B-A,
         // contre-vérification lot 2, tous les points de construction).
         codeReceivedIsFiat: false,
+        // Problème 1 (drive B16 : `leg.kindLabel` est le type BRUT
+        // (`deposit`/`transfer`, JAMAIS le composite avec sous-type — un
+        // `transfer/spotfromfutures` porte `kindLabel == 'transfer'`) — c'est
+        // exactement ce qu'il faut à `finalizeCryptoExchanges` pour distinguer un VRAI
+        // dépôt externe (`deposit`) d'une écriture interne de plateforme (toute la
+        // famille `transfer*`, redirigée ici par signe) avant de poser
+        // `meta['inKindDeposit']`.
+        sourceKindLabel: leg.kindLabel,
       ));
       return;
     }

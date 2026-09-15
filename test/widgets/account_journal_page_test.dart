@@ -725,7 +725,39 @@ void main() {
     );
 
     testWidgets(
-      'dépôt en nature (coût USD SANS meta[\'fxRate\']) : repli sur '
+      'Problème 2 (drive B16 : dépôt en nature valorisé À LA MAIN '
+      '(meta[\'valueEur\'] posée par finalizeCryptoExchanges, currency '
+      '\'USD\' réécrite en aval par la cascade ticker, AUCUN fxRate) → '
+      '« quantité (≈ X €) », JAMAIS le brut « qty × prix USD »',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-inkind-deposit-usd-manual',
+          accountId: _accountId,
+          symbol: 'STRK-USD',
+          kind: TransactionKind.adjustment,
+          quantity: '4.67848',
+          unitPrice: '1.709957080077',
+          currency: 'USD',
+          date: DateTime(2024, 4, 6),
+          meta: const {
+            'inKindDeposit': true,
+            'valuationSource': 'manual',
+            'valueEur': '8',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        final eurLabel = Formatters.formatEur(8);
+        expect(find.text('4.67848 (≈ $eurLabel)'), findsOneWidget);
+        expect(find.textContaining('1.709957080077 USD'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'dépôt en nature (coût USD SANS meta[\'fxRate\'] NI meta[\'valueEur\'], '
+      'mouvement importé AVANT le correctif Problème 2) : repli sur '
       '« qty × prix USD » brut, JAMAIS de conversion inventée',
       (tester) async {
         final tx = AssetTransaction(

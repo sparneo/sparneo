@@ -1780,7 +1780,11 @@ void main() {
       expect(preview2.duplicates.where((m) => m.ledgerCode == 'STB'), hasLength(1));
     });
 
-    test('lot 2 : dépôt en nature valorisé → adjustment à coût, PRU impacté, AUCUN mouvement d\'espèces', () async {
+    test(
+        'lot 2 : dépôt en nature valorisé (transfer/spotfromfutures — '
+        'écriture INTERNE de plateforme, PAS un dépôt utilisateur, Problème 1 '
+        'drive B16 → adjustment à coût, PRU impacté, AUCUN '
+        'mouvement d\'espèces, meta[\'inKindDeposit\'] ABSENTE', () async {
       final db = await openTestDatabase();
       addTearDown(db.close);
       const accountId = 'acc-lot2-f';
@@ -1809,11 +1813,15 @@ void main() {
       // remplissage jusqu'à l'échelle 12 — cf. commentaire du test précédent).
       expect(deposit.transaction!.unitPrice, equals('54'));
       expect(deposit.importKey, equals('ref:$accountId:RE4#deposit:III'));
-      // Demande auteur, drive B16 (« voir les dépôts en crypto ») : clé DÉDIÉE,
-      // distincte de `valuationSource` (qui ne distingue pas ce dépôt d'une jambe
-      // sell/buy d'échange) — `filterJournal` s'en sert pour faire remonter CET
-      // adjustment sous la puce « Dépôt ».
-      expect(deposit.transaction!.meta!['inKindDeposit'], isTrue);
+      // Problème 1 (retour auteur, drive B16, verbatim : « les cryptos suivantes
+      // listées dans dépôt ne sont pas des dépôts ») : `transfer/spotfromfutures`
+      // est une écriture INTERNE de plateforme (retour futures), pas un apport
+      // EXTERNE — `inKindDeposit` ne doit PLUS être posée, alors même que le
+      // mouvement (quantité, coût, PRU) reste rigoureusement inchangé.
+      expect(deposit.transaction!.meta!.containsKey('inKindDeposit'), isFalse);
+      // Problème 2 (même drive) : `valueEur` reste posée pour TOUT
+      // depositInKind, indépendamment de son statut « dépôt »/« interne ».
+      expect(deposit.transaction!.meta!['valueEur'], equals('108')); // 120×0,9
 
       final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
       expect(err, isNull);
@@ -1826,6 +1834,122 @@ void main() {
       // Cash INCHANGÉ : un dépôt en nature ne touche jamais les espèces.
       final journal = await TransactionStorage(database: db).getByAccount(accountId);
       expect(journal.every((t) => t.amount == null), isTrue);
+    });
+
+    test(
+        'Problème 1 (drive B16 : dépôt `deposit` GENUINE (apport '
+        'externe réel) ET `transfer`/`transfer/delistingconversion` bare '
+        '(écritures INTERNES de plateforme) → SEUL le `deposit` porte '
+        'meta[\'inKindDeposit\'], le mouvement journalisé reste identique '
+        'par ailleurs', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-problem1';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      // VRAI dépôt externe (dépôt on-chain entrant) — kindLabel == 'deposit'.
+      b.leg(refid: 'RP1', time: '2024-01-05 08:00:00', type: 'deposit',
+          asset: 'DEP1', amount: '3', subclass: 'crypto', amountusd: '30');
+      // `transfer` BARE (sans sous-type), net positif — redirigé par SIGNE
+      // vers depositIn, mais reste une écriture INTERNE de plateforme.
+      b.leg(refid: 'RP2', time: '2024-01-06 08:00:00', type: 'transfer',
+          asset: 'DEP2', amount: '4', subclass: 'crypto', amountusd: '40');
+      // `transfer/delistingconversion` — même famille, sous-type EXPLICITE.
+      b.leg(refid: 'RP3', time: '2024-01-07 08:00:00', type: 'transfer',
+          subtype: 'delistingconversion', asset: 'DEP3', amount: '5',
+          subclass: 'crypto', amountusd: '50');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(
+          frankfurterBody({
+            '2024-01-05': 0.9,
+            '2024-01-06': 0.9,
+            '2024-01-07': 0.9,
+          }),
+          200,
+        );
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+      expect(preview.unvaluedExchanges, isEmpty);
+
+      final dep1 = preview.toCreate.firstWhere((m) => m.ledgerCode == 'DEP1');
+      expect(dep1.transaction!.meta!['inKindDeposit'], isTrue);
+      expect(dep1.transaction!.meta!['valueEur'], equals('27')); // 30×0,9
+
+      final dep2 = preview.toCreate.firstWhere((m) => m.ledgerCode == 'DEP2');
+      expect(dep2.transaction!.meta!.containsKey('inKindDeposit'), isFalse);
+      expect(dep2.transaction!.meta!['valueEur'], equals('36')); // 40×0,9
+
+      final dep3 = preview.toCreate.firstWhere((m) => m.ledgerCode == 'DEP3');
+      expect(dep3.transaction!.meta!.containsKey('inKindDeposit'), isFalse);
+      expect(dep3.transaction!.meta!['valueEur'], equals('45')); // 50×0,9
+    });
+
+    test(
+        'Problème 1 (drive B16 : `finalizeCryptoExchanges` posé '
+        'directement sur un `UnvaluedExchange` `sourceKindLabel: \'receive\'` '
+        '(crédit externe type airdrop) → meta[\'inKindDeposit\'] posée, '
+        'comme pour `deposit`', () {
+      final u = UnvaluedExchange(
+        kind: 'depositInKind',
+        date: DateTime(2024, 1, 5),
+        codeReceived: 'STRK',
+        quantityReceived: '4.67848',
+        sourceLines: const [1],
+        importKey: 'ref:acc1:RRCV',
+        sourceKindLabel: 'receive',
+      );
+      final plan = CryptoImportPlan(unvaluedExchanges: [u]);
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        {u.importKey: CryptoValuation(amountEur: Decimal.parse('8'), source: 'manual')},
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, hasLength(1));
+      expect(finalized.single.transaction!.meta!['inKindDeposit'], isTrue);
+      expect(finalized.single.transaction!.meta!['valueEur'], equals('8'));
+    });
+
+    test(
+        'Problème 2 (drive B16 : dépôt en nature valorisé À LA '
+        'MAIN (applyManualCryptoValuations, montant saisi en EUR) → '
+        'meta[\'valueEur\'] posée avec le montant EXACT saisi, JAMAIS de '
+        'meta[\'fxRate\'] (source manuelle)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-problem2';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      // `amountusd` illisible ('-') : reste en attente de valorisation
+      // manuelle — même patron que les autres tests N2 de ce fichier.
+      b.leg(refid: 'RP4', time: '2024-01-05 08:00:00', type: 'deposit',
+          asset: 'STRK', amount: '4.67848', subclass: 'crypto');
+
+      final preview = await ctrl.previewStatementImport(
+        b.toCsvBytes(),
+        profile,
+        accountId: accountId,
+      );
+      expect(preview.unvaluedExchanges, hasLength(1));
+      final key = preview.unvaluedExchanges.single.importKey;
+
+      final applied = await ctrl.applyManualCryptoValuations({key: '8'});
+      expect(applied, isNotNull);
+      final deposit = applied!.toCreate.firstWhere((m) => m.ledgerCode == 'STRK');
+      final meta = deposit.transaction!.meta!;
+      expect(meta['inKindDeposit'], isTrue); // kindLabel == 'deposit'.
+      expect(meta['valueEur'], equals('8'));
+      expect(meta.containsKey('fxRate'), isFalse);
+      expect(meta['valuationSource'], equals('manual'));
     });
 
     test(

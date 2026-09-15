@@ -111,6 +111,23 @@ class UnvaluedExchange {
   final bool codePaidIsFiat;
   final bool codeReceivedIsFiat;
 
+  /// Type BRUT (colonne CSV `type`, `_Leg.kindLabel` — jamais le composite
+  /// `type/subtype`) de la ligne SOURCE d'origine — posé UNIQUEMENT pour `kind ==
+  /// 'depositInKind'` (`null` pour `kind == 'exchange'`, sans signification). Sert
+  /// exclusivement à `finalizeCryptoExchanges` pour décider si
+  /// `meta['inKindDeposit']` doit être posé (drive B16, retour auteur : « les
+  /// cryptos suivantes listées dans dépôt ne sont pas des dépôts ») : SEULES les
+  /// lignes `deposit` (dépôt on-chain entrant) et `receive` (crédit externe type
+  /// airdrop) sont de VRAIS apports EXTERNES — les entrantes de la famille
+  /// `transfer*` (`transfer` bare, `transfer/delistingconversion`,
+  /// `transfer/spotfromfutures`, redirigées par SIGNE vers `depositIn`, cf.
+  /// `_processDepositOrWithdrawal` et le mapping `BrokerProfile` §5.2.1) sont des
+  /// écritures INTERNES de la plateforme (résidu de migration, restes de
+  /// délistage, retour futures), jamais un dépôt de l'utilisateur — même si elles
+  /// empruntent le MÊME modèle d'émission `depositInKind` (quantité + coût, aucun
+  /// cash).
+  final String? sourceKindLabel;
+
   const UnvaluedExchange({
     required this.kind,
     required this.date,
@@ -129,6 +146,7 @@ class UnvaluedExchange {
     this.suggestedReceivedEur,
     this.codePaidIsFiat = false,
     this.codeReceivedIsFiat = false,
+    this.sourceKindLabel,
   });
 
   /// Reconstruction PARTIELLE (même motif que `ImportPreview.copyWith`, I-3 revue
@@ -164,6 +182,7 @@ class UnvaluedExchange {
             suggestedReceivedEur ?? this.suggestedReceivedEur,
         codePaidIsFiat: codePaidIsFiat,
         codeReceivedIsFiat: codeReceivedIsFiat,
+        sourceKindLabel: sourceKindLabel,
       );
 }
 

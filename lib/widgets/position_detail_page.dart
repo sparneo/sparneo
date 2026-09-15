@@ -1378,12 +1378,21 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   }
 
   /// Équivalent EUR d'un dépôt crypto EN NATURE (`adjustment`,
-  /// `meta['inKindDeposit'] == true`), calculé au rendu depuis
-  /// `quantity × unitPrice` — réplique exacte (motifs et replis compris) de
-  /// `account_journal_page.dart`, voir la doc là-bas : coût déjà EUR, ou USD
-  /// converti via `meta['fxRate']` ; `null` = repli sur `qty × prix devise`,
-  /// jamais de conversion inventée (B4).
+  /// `meta['inKindDeposit'] == true`) — réplique exacte (motifs et replis
+  /// compris) de `account_journal_page.dart`, voir la doc là-bas : chemin
+  /// PRIORITAIRE `meta['valueEur']` (Problème 2, drive B16 — TOUJOURS un montant
+  /// EUR exact, fichier OU manuel, posé par
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`), sinon repli `quantity ×
+  /// unitPrice` (coût déjà EUR, ou USD converti via `meta['fxRate']`) ; `null` =
+  /// repli sur `qty × prix devise`, jamais de conversion inventée (B4).
   String? _inKindDepositEurApprox(AppLocalizations l10n, AssetTransaction tx) {
+    final rawValueEur = tx.meta?['valueEur'];
+    final directValueEur =
+        rawValueEur is String ? double.tryParse(rawValueEur) : null;
+    if (directValueEur != null) {
+      return _formatEurApprox(l10n, directValueEur);
+    }
+
     final qty = double.tryParse(tx.quantity ?? '');
     final price = double.tryParse(tx.unitPrice ?? '');
     if (qty == null || price == null) return null;

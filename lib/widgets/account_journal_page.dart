@@ -303,28 +303,38 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   /// demande auteur, drive B16 (« sur les dépôts en crypto, est-ce possible
   /// d'avoir l'équivalent cash ? »).
   ///
-  /// Calculé au RENDU depuis `quantity × unitPrice`, PAS depuis une meta
-  /// dédiée (contrairement à [_transferOutEurApprox]) : `CryptoLedgerNormalizer.
-  /// finalizeCryptoExchanges` case `'depositInKind'` pose déjà le coût EXACT
-  /// dans ces deux champs (`unitPrice = valuation.amountEur ÷ quantity`,
-  /// `currency = accountCurrency`, TOUJOURS) — recalculer ici couvre aussi
-  /// les dépôts déjà importés AVANT ce correctif d'affichage, sans
-  /// migration de données.
+  /// CHEMIN PRIORITAIRE (Problème 2, même drive, verbatim : un dépôt
+  /// valorisé À LA MAIN affichait encore « qty × prix USD » brut) :
+  /// `meta['valueEur']`, posé DIRECTEMENT par `CryptoLedgerNormalizer.
+  /// finalizeCryptoExchanges` case `'depositInKind'` — TOUJOURS un montant
+  /// EUR exact, fichier OU manuel, INDÉPENDANT de `tx.currency` (qui peut
+  /// avoir été réécrite en aval par la cascade de résolution
+  /// ledgerCode→ticker, `AccountController._resolveCryptoTicker`, sans
+  /// rapport avec ce montant). Aucun calcul ni conversion nécessaire ici.
   ///
-  /// Deux cas selon `tx.currency` :
-  ///  - `EUR` (cas courant, compte libellé en euros) : le coût est déjà
-  ///    l'équivalent recherché, `quantity × unitPrice` suffit ;
-  ///  - `USD` (compte crypto libellé en dollars) : conversion via
-  ///    `meta['fxRate']` (taux USD→EUR du jour de la valorisation, posé par
-  ///    `CryptoLedgerNormalizer._valuationMeta` pour toute valorisation
-  ///    issue d'une série FX — absent seulement pour une valorisation
-  ///    MANUELLE saisie directement en EUR, cf. doc de
-  ///    `CryptoValuationService`).
+  /// REPLI — dépôts déjà importés AVANT ce correctif (`meta['valueEur']`
+  /// absent, aucune migration de données) : ancien calcul `quantity ×
+  /// unitPrice` (`CryptoLedgerNormalizer.finalizeCryptoExchanges` posait déjà
+  /// le coût EXACT dans ces deux champs), deux cas selon `tx.currency` :
+  ///  - `EUR` : le coût est déjà l'équivalent recherché, `quantity ×
+  ///    unitPrice` suffit ;
+  ///  - `USD` : conversion via `meta['fxRate']` (taux USD→EUR du jour de la
+  ///    valorisation, posé par `CryptoLedgerNormalizer._valuationMeta` pour
+  ///    toute valorisation issue d'une série FX — absent pour une
+  ///    valorisation MANUELLE, cf. `CryptoValuationService`, d'où le repli
+  ///    resté brut AVANT ce correctif).
   ///
-  /// `null` dans tous les autres cas (devise ni EUR ni USD, ou `fxRate`
-  /// absent/illisible, ou quantité/prix illisibles) : repli sur l'affichage
-  /// `qty × prix devise` existant, JAMAIS de conversion inventée (B4).
+  /// `null` dans tous les autres cas (ni `valueEur` ni repli exploitable) :
+  /// affichage `qty × prix devise` existant, JAMAIS de conversion inventée
+  /// (B4).
   String? _inKindDepositEurApprox(AppLocalizations l10n, AssetTransaction tx) {
+    final rawValueEur = tx.meta?['valueEur'];
+    final directValueEur =
+        rawValueEur is String ? double.tryParse(rawValueEur) : null;
+    if (directValueEur != null) {
+      return _formatEurApprox(l10n, directValueEur);
+    }
+
     final qty = double.tryParse(tx.quantity ?? '');
     final price = double.tryParse(tx.unitPrice ?? '');
     if (qty == null || price == null) return null;
