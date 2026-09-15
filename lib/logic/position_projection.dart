@@ -10,9 +10,54 @@
 //     commun ([replayLedger]) vers ses types `double` d'affichage.
 //
 // ARITHMÉTIQUE : la quantité est calculée en [Decimal] (exact — pas de dérive
-// binaire type 0.1 + 0.2). La base de coût est maintenue en [Rational] (exact,
-// y compris la division WAC lors des ventes) ; elle n'est convertie en `double`
-// qu'au tout dernier moment pour le PRU (contrat public `double?`).
+// binaire type 0.1 + 0.2). La base de coût est maintenue en [Rational] (pas de
+// dérive binaire non plus) ; elle n'est convertie en `double` qu'au tout
+// dernier moment pour le PRU (contrat public `double?`).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// PRÉCISION DE LA BASE DE COÛT : EXACTE, SAUF LA QUOTE-PART WAC
+// ─────────────────────────────────────────────────────────────────────────────
+// Toutes les opérations de la base de coût sont EXACTES (sommes de produits
+// `quantité × prix + frais`, dénominateurs puissances de 10) À UNE EXCEPTION
+// PRÈS : la QUOTE-PART WAC retirée par une `sell` ou un `transferOut`
+// (`runningCost × qEff/runningQty`) est TRONQUÉE à [_wacScale] décimales
+// (cf. [_truncateToWacScale]) — soit une erreur ≤ 1e-28 € PAR SORTIE
+// PARTIELLE, quatre ordres de grandeur sous le milliardième de centime.
+//
+// POURQUOI cette entorse assumée (correctif, suite du NaN `982d747`) : la
+// quote-part exacte est une fraction IRRÉDUCTIBLE dont le dénominateur n'est
+// PAS une puissance de 10. À chaque sortie partielle, le dénominateur de
+// `runningCost` était donc multiplié par celui de la quote-part — jusqu'à +10
+// chiffres par sortie avec des quantités CRYPTO à 8-12 décimales. Trois
+// conséquences, toutes mesurées sur un journal Kraken réel (~115 sorties
+// partielles sur un seul symbole) :
+//   1. NaN STRUCTUREL : passé ~35 sorties, numérateur ET dénominateur
+//      dépassaient la dynamique du `double` et `Rational.toDouble()` (une
+//      division `BigInt/BigInt`) rendait `Infinity/Infinity`, c'est-à-dire
+//      NaN — d'où une courbe « Capital investi » invisible et un « -NaN »
+//      sous le graphe ;
+//   2. REJEU QUADRATIQUE-CUBIQUE : chaque opération (multiplication, pgcd de
+//      canonisation) portait sur des BigInt de plusieurs milliers de chiffres
+//      — 32 s pour UN rejeu à 400 sorties, et `replayLedger` est appelé
+//      plusieurs fois par rendu d'écran ;
+//   3. précision inutile : conserver 3 000 chiffres significatifs sur un
+//      montant en euros n'a aucun sens métier.
+// Tronquer la quote-part BORNE le dénominateur à un diviseur de
+// 10^[_wacScale] (combiné aux puissances de 10 des données d'entrée) : il
+// cesse définitivement d'enfler avec le nombre de mouvements. Le rejeu
+// redevient LINÉAIRE, et le NaN devient structurellement impossible EN AMONT
+// de la conversion — [rationalToDisplayDouble] reste en place comme simple
+// ceinture, son chemin de repli n'étant plus jamais emprunté.
+//
+// [_wacScale] est choisie SUPÉRIEURE à l'échelle naturelle des données (une
+// quantité à 12 décimales × un prix unitaire à 12 décimales fait 24
+// décimales) : tant que les données d'entrée restent sous cette échelle, toute
+// valeur exacte traverse la troncature INCHANGÉE, et une liquidation TOTALE
+// continue d'annuler EXACTEMENT la base de coût (la quote-part y vaut
+// `runningCost` lui-même, déjà sous l'échelle) — pas de poussière résiduelle.
+// Au-delà (données d'entrée à plus de 28 décimales), le résidu éventuel est
+// borné par 1e-28 € et ne peut de toute façon pas ressusciter un PRU : celui-ci
+// exige une quantité strictement positive, nulle après une liquidation totale.
 //
 // CAS TRAITÉS (projection TITRE, identiques à computeTransactionAnalytics) :
 // buy / sell / openingBalance / adjustment / transferOut. dividend / deposit /
@@ -172,6 +217,39 @@ double rationalToDisplayDouble(Rational r) {
   return scaled.toDouble() / _displayScaleDivisor;
 }
 
+/// Échelle de troncature des QUOTE-PARTS WAC — 28 décimales, choisies au-dessus
+/// de l'échelle naturelle des données (quantité 12 déc. × prix unitaire 12 déc.
+/// = 24 déc.) pour que toute valeur exacte traverse [_truncateToWacScale]
+/// INCHANGÉE. Cf. l'encadré « PRÉCISION DE LA BASE DE COÛT » en tête de fichier.
+const int _wacScale = 28;
+final BigInt _wacScaleFactor = BigInt.from(10).pow(_wacScale);
+
+/// Tronque [r] à [_wacScale] décimales (vers zéro), en ramenant son
+/// DÉNOMINATEUR à un diviseur de 10^[_wacScale].
+///
+/// SEUL point du moteur où la base de coût perd de la précision — et SEUL
+/// moyen d'empêcher son dénominateur d'enfler indéfiniment : la quote-part WAC
+/// exacte (`runningCost × qEff/runningQty`) est une fraction irréductible de
+/// dénominateur quelconque, que `runningCost` absorbait jusqu'ici à chaque
+/// sortie partielle (cf. l'encadré en tête de fichier — NaN, puis rejeu
+/// cubique). Toutes les AUTRES opérations de la base de coût restent exactes :
+/// elles n'ajoutent que des produits `quantité × prix (+ frais)` de
+/// [Decimal]s, donc des dénominateurs déjà puissances de 10.
+///
+/// Erreur ≤ 1e-28 € par sortie partielle, toujours dans le sens d'une
+/// quote-part SOUS-ESTIMÉE (troncature vers zéro, cohérente avec le clamp ≥ 0
+/// du switch) ; NULLE dès que [r] a moins de [_wacScale] décimales, ce qui
+/// couvre le cas d'une liquidation TOTALE (quote-part == `runningCost`).
+///
+/// Le même [Rational] tronqué sert à la fois à décrémenter `runningCost` ET à
+/// calculer la plus-value réalisée : jamais deux valeurs différentes pour un
+/// même retrait de base de coût, donc aucune dérive entre le PRU restant et la
+/// plus-value bookée (invariant `Valeur − Capital investi == gain total`).
+Rational _truncateToWacScale(Rational r) {
+  final scaled = (r.numerator * _wacScaleFactor) ~/ r.denominator;
+  return Rational(scaled, _wacScaleFactor);
+}
+
 /// Parse une chaîne décimale en [Decimal] EXACT. Tolère la virgule décimale
 /// (format FR) et les espaces/tabulations parasites (données legacy non
 /// trimées, ex. `AssetTransaction.fromJson` qui ne trim pas) ; `null`, vide ou
@@ -223,16 +301,20 @@ class LedgerStep {
   ///
   /// C'est, par définition, « combien de capital ce mouvement fait entrer ou
   /// sortir » : `q×p+frais` pour un achat, `q×p` pour une position déclarée,
-  /// `0` pour une attribution gratuite, et la quote-part WAC exacte pour une
-  /// vente ou un `transferOut` partiel. Sert à la courbe « Capital investi »
+  /// `0` pour une attribution gratuite, et la quote-part WAC pour une vente ou
+  /// un `transferOut` partiel (seul terme non exact du moteur : tronqué à
+  /// 1e-28 € près, cf. l'encadré « PRÉCISION DE LA BASE DE COÛT » en tête de
+  /// fichier — la MÊME valeur tronquée sert au décrément de la base et à la
+  /// plus-value réalisée, aucune dérive entre les deux).
+  /// Sert à la courbe « Capital investi »
   /// ([HistoryAggregator.buildExternalFlowsCurve]), qui doit se réconcilier au
   /// centime avec le gain total base-coût — d'où la RESTITUTION du calcul du
   /// moteur plutôt qu'une réimplémentation côté appelant (invariant
   /// anti-divergence de l'en-tête de ce fichier).
   ///
   /// `double` (et non [Rational]) : cette valeur n'alimente que des séries
-  /// d'affichage, elles-mêmes en `double`. L'arithmétique EXACTE reste
-  /// intégralement interne à [replayLedger].
+  /// d'affichage, elles-mêmes en `double`. L'arithmétique en précision
+  /// arbitraire reste intégralement interne à [replayLedger].
   final double costDelta;
 
   /// Vrai si le mouvement DÉCLARE un prix unitaire. Permet de distinguer
@@ -342,13 +424,20 @@ LedgerReplayResult replayLedger(
         var costBasisSold = Rational.zero;
         if (runningQty > Decimal.zero) {
           final qEff = q > runningQty ? runningQty : q;
-          costBasisSold = runningCost * (qEff.toRational() / runningQty.toRational());
+          // TRONQUÉE à [_wacScale] décimales — seule entorse à l'exactitude de
+          // la base de coût, et seul moyen de borner son dénominateur (cf.
+          // l'encadré « PRÉCISION DE LA BASE DE COÛT » en tête de fichier). Le
+          // MÊME rational tronqué sert ci-dessous à la plus-value réalisée ET
+          // au décrément de `runningCost` : aucune dérive possible entre les
+          // deux.
+          costBasisSold = _truncateToWacScale(
+            runningCost * (qEff.toRational() / runningQty.toRational()),
+          );
         }
 
-        // Conversion d'AFFICHAGE protégée (cf. [rationalToDisplayDouble]) :
-        // `costBasisSold` hérite du dénominateur enflé de `runningCost`, un
-        // `toDouble()` nu y rendrait NaN passé quelques dizaines de ventes
-        // partielles crypto.
+        // Conversion d'AFFICHAGE protégée (cf. [rationalToDisplayDouble]) —
+        // ceinture : depuis la troncature ci-dessus, le dénominateur est borné
+        // et le chemin rapide est le seul emprunté.
         realized +=
             rationalToDisplayDouble(proceeds.toRational() - costBasisSold);
         // Clamp ≥ 0 : ni stock ni base de coût négatifs en cas de survente.
@@ -388,8 +477,12 @@ LedgerReplayResult replayLedger(
         var costBasisRemoved = Rational.zero;
         if (runningQty > Decimal.zero) {
           final qEff = q > runningQty ? runningQty : q;
-          costBasisRemoved =
-              runningCost * (qEff.toRational() / runningQty.toRational());
+          // TRONQUÉE comme la quote-part d'une `sell` ci-dessus (même entorse,
+          // mêmes raisons — un retrait on-chain crypto est la sortie partielle
+          // la plus fréquente d'un journal Kraken).
+          costBasisRemoved = _truncateToWacScale(
+            runningCost * (qEff.toRational() / runningQty.toRational()),
+          );
         }
         runningQty -= q;
         if (runningQty < Decimal.zero) runningQty = Decimal.zero;

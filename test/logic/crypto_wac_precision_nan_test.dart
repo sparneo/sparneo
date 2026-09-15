@@ -14,19 +14,27 @@
 // (« Capital investi », que `fl_chart` ne trace pas et que la règle d'échelle
 // écarte d'office), donc `periodGain` — affiché « -NaN » sous le graphe.
 // Les titres ordinaires y échappaient : leurs quantités entières gardent un
-// dénominateur trivial. Correctif : [rationalToDisplayDouble].
+// dénominateur trivial. Correctifs : [rationalToDisplayDouble] (ceinture de
+// conversion) PUIS la troncature des quote-parts WAC à échelle fixe, qui BORNE
+// le dénominateur (cf. l'encadré « PRÉCISION DE LA BASE DE COÛT » en tête de
+// `position_projection.dart`) — ce second lot rend le NaN structurellement
+// impossible EN AMONT de la conversion, et ramène le rejeu de cubique à
+// LINÉAIRE (mesuré : 32 s → 0,1 s pour 400 sorties partielles).
 //
 // Fixture 100 % SYNTHÉTIQUE, calquée sur les formes émises par
 // `CryptoLedgerNormalizer` : virement SEPA, achats à jambe EUR, retraits
 // on-chain en nature, agrégats mensuels de récompenses (quantité seule),
 // dépôt en nature à coût.
 
+import 'package:decimal/decimal.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:portfolio_tracker/logic/history_aggregator.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/model/asset.dart';
 import 'package:portfolio_tracker/model/asset_historical_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
+import 'package:portfolio_tracker/model/position.dart';
+import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/widgets/charts/valuation_line_chart.dart';
 import 'package:rational/rational.dart';
 
@@ -52,7 +60,7 @@ List<AssetTransaction> _journal({required int exits}) {
       accountId: _accountId,
       symbol: null,
       kind: TransactionKind.deposit,
-      amount: '20000',
+      amount: '200000',
       currency: 'EUR',
       settlementCurrency: 'EUR',
       date: _d(0),
@@ -84,15 +92,22 @@ List<AssetTransaction> _journal({required int exits}) {
 
   for (var i = 0; i < exits; i++) {
     // Achat à jambe EUR réelle (cash sortant), quantité à 10 décimales.
+    // `amount` = −(quantité × prix + frais) À L'EXACT : la jambe cash et la
+    // jambe titre d'un même achat doivent se correspondre, sans quoi
+    // l'invariant « Valeur − Capital investi == gain total » ne peut pas
+    // tenir (ce serait un défaut de la FIXTURE, pas du moteur).
+    final q = Decimal.parse('1.${1234567891 + i * 7919}');
+    final p = Decimal.parse('${3000 + i}.12');
+    final f = Decimal.parse('0.26');
     txs.add(AssetTransaction(
       id: 'buy$i',
       accountId: _accountId,
       symbol: _symbol,
       kind: TransactionKind.buy,
-      quantity: '1.${1234567891 + i * 7919}',
-      unitPrice: '${3000 + i}.12',
-      fee: '0.26',
-      amount: '-${3000 + i}',
+      quantity: q.toString(),
+      unitPrice: p.toString(),
+      fee: f.toString(),
+      amount: (-(q * p + f)).toString(),
       currency: 'EUR',
       settlementCurrency: 'EUR',
       date: _d(3 + i * 2),
@@ -199,7 +214,7 @@ void main() {
           reason: 'la courbe de valeur était déjà correcte');
       expect(r.flows.where((v) => !v.isFinite), isEmpty,
           reason: 'NaN ici → fl_chart ne trace RIEN (courbe invisible)');
-      // Virement SEPA (20 000 €) + dépôt en nature à coût, moins les retraits
+      // Virement SEPA (200 000 €) + dépôt en nature à coût, moins les retraits
       // on-chain : le capital investi reste franchement positif.
       expect(r.flows.last, greaterThan(0.0));
     });
@@ -230,6 +245,154 @@ void main() {
         ),
         isTrue,
       );
+    });
+  });
+
+  group('Troncature des quote-parts WAC — borne d\'erreur et dénominateur', () {
+    // Rejeu EXACT local, SANS troncature : réplique minimale des deux branches
+    // du switch utilisées par la fixture (buy / transferOut). Sert d'étalon.
+    Rational exactCost(List<AssetTransaction> txs) {
+      final sorted = List<AssetTransaction>.from(txs)
+        ..sort(AssetTransaction.compareChronological);
+      var q = Decimal.zero;
+      var c = Rational.zero;
+      for (final tx in sorted) {
+        if (tx.symbol == null) continue;
+        final qq = Decimal.parse(tx.quantity!);
+        switch (tx.kind) {
+          case TransactionKind.buy:
+            q += qq;
+            c += (qq * Decimal.parse(tx.unitPrice!) +
+                    Decimal.parse(tx.fee ?? '0'))
+                .toRational();
+          case TransactionKind.adjustment:
+            q += qq;
+            c += (qq * Decimal.parse(tx.unitPrice ?? '0')).toRational();
+          case TransactionKind.transferOut:
+            if (q > Decimal.zero) {
+              final qEff = qq > q ? q : qq;
+              c -= c * (qEff.toRational() / q.toRational());
+            }
+            q -= qq;
+          default:
+            break;
+        }
+      }
+      return c;
+    }
+
+    test('60 sorties partielles : écart à l\'exact ≤ 1e-12 €', () {
+      final journal = _journal(exits: 60);
+      final engine = replayLedger(journal).cost;
+      // La différence se convertit via la ceinture : l'étalon EXACT, lui, a
+      // toujours un dénominateur monstrueux (c'est tout le problème corrigé).
+      final ecart =
+          rationalToDisplayDouble(engine - exactCost(journal)).abs();
+      expect(ecart, lessThan(1e-12));
+    });
+
+    test(
+        '400 sorties partielles : dénominateur BORNÉ → le chemin rapide de '
+        'rationalToDisplayDouble est le seul emprunté', () {
+      final r = replayLedger(_journal(exits: 400));
+      // Le dénominateur ne dépend plus du NOMBRE de mouvements : quelques
+      // dizaines de chiffres, très loin des 1024 bits du chemin de repli.
+      expect(r.cost.denominator.bitLength, lessThan(256));
+      expect(r.cost.numerator.bitLength, lessThan(256));
+      // Conséquence : même la conversion NUE du package (celle qui rendait
+      // NaN) redevient saine — le NaN est impossible EN AMONT de la ceinture.
+      expect(r.cost.toDouble().isFinite, isTrue);
+      expect(rationalToDisplayDouble(r.cost), r.cost.toDouble());
+    });
+
+    test('scénario WAC connu (calcul à la main) : PRU exact, pas de dérive',
+        () {
+      // 10 @ 100 + frais 5 → coût 1005 ; 4 @ 150 vendus → quote-part
+      // 1005 × 4/10 = 402 exactement ; reste 6 titres pour 603 → PRU 100,50.
+      final txs = [
+        AssetTransaction(
+          id: 'b',
+          accountId: _accountId,
+          symbol: 'ACME',
+          kind: TransactionKind.buy,
+          quantity: '10',
+          unitPrice: '100',
+          fee: '5',
+          currency: 'EUR',
+          date: _d(0),
+        ),
+        AssetTransaction(
+          id: 's',
+          accountId: _accountId,
+          symbol: 'ACME',
+          kind: TransactionKind.sell,
+          quantity: '4',
+          unitPrice: '150',
+          currency: 'EUR',
+          date: _d(1),
+        ),
+      ];
+      final r = replayLedger(txs);
+      expect(r.cost, Rational.parse('603'), reason: 'exact, pas d\'arrondi');
+      expect(r.averagePrice, 100.5);
+      expect(r.realizedGain, closeTo(600.0 - 402.0, 1e-12));
+    });
+
+    test(
+        'liquidation TOTALE après des sorties partielles : base de coût '
+        'EXACTEMENT nulle (aucune poussière d\'arrondi)', () {
+      final journal = _journal(exits: 40);
+      final held = replayLedger(journal).quantity;
+      final r = replayLedger([
+        ...journal,
+        AssetTransaction(
+          id: 'liquidation',
+          accountId: _accountId,
+          symbol: _symbol,
+          kind: TransactionKind.sell,
+          quantity: held.toString(),
+          unitPrice: '5000',
+          amount: '${held.toDouble() * 5000}',
+          currency: 'EUR',
+          settlementCurrency: 'EUR',
+          date: _d(99),
+        ),
+      ]);
+      expect(r.quantity, Decimal.zero);
+      expect(r.cost, Rational.zero);
+      expect(r.averagePrice, isNull);
+    });
+
+    test(
+        'invariant I-A « Valeur − Capital investi == gain total » préservé '
+        'après 40 sorties partielles', () {
+      final journal = _journal(exits: 40);
+      final r = _rebuild(journal);
+      final proj = replayLedger(journal);
+      final cashEur =
+          (proj.cashByCurrency['EUR'] ?? Decimal.zero).toDouble();
+      // Cotation USD convertie à 0,9 (cf. _rebuild) ; le PRU, lui, est déjà
+      // en EUR (ledgerCode non nul) — c'est le cas I-1 du lot 2.
+      final position = PositionWithMarketData(
+        position: Position(
+          accountId: _accountId,
+          asset: _asset,
+          quantity: proj.quantity.toString(),
+          averageBuyPrice: proj.averagePrice,
+        ),
+        currentPrice: 4000.0,
+      );
+      final total = HistoryAggregator.computeRealTotalGain(
+        positions: [position],
+        txsBySymbol: {
+          _symbol: journal.where((t) => t.symbol == _symbol).toList(),
+        },
+        txsByAccount: {_accountId: journal},
+        usdToEurRate: 0.9,
+        cashEur: cashEur,
+      );
+      final gap = r.values.last - r.flows.last;
+      expect(total.totalGain, closeTo(gap, 1e-6));
     });
   });
 
