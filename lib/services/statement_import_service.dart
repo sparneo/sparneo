@@ -563,6 +563,26 @@ class StatementImportService {
     );
   }
 
+  /// Passthrough pur vers [CryptoLedgerNormalizer.finalizeCryptoExchanges]
+  /// (chantier B16, lot 2 — conception interne) : transforme les échanges
+  /// valorisés de [plan] en mouvements `sell`/`buy`/`adjustment` complets. Miroir
+  /// exact de [planCryptoImport] ci-dessus — même raison d'être (l'appelant,
+  /// `AccountController`, ne dépend que de ce service PUR, jamais directement de
+  /// `CryptoLedgerNormalizer`).
+  static List<ImportedMovement> finalizeCryptoExchanges(
+    CryptoImportPlan plan,
+    Map<String, CryptoValuation> valuations, {
+    required String accountId,
+    required String accountCurrency,
+  }) {
+    return CryptoLedgerNormalizer.finalizeCryptoExchanges(
+      plan,
+      valuations,
+      accountId: accountId,
+      accountCurrency: accountCurrency,
+    );
+  }
+
   // ---------------------------------------------------------------------
   // Fusion des JAMBES DE RÈGLEMENT scindées (passe INTER-LIGNES)
   // ---------------------------------------------------------------------

@@ -180,6 +180,24 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// [AccountController.confirmStatementImport].
   bool _journalizeUnbalancedInternalTransfers = false;
 
+  /// Contrôleurs de saisie du montant EUR par échange crypto manuel (chantier B16, lot 2,
+  /// conception interne), clé = `UnvaluedExchange.importKey` — créés PARESSEUSEMENT (cf.
+  /// [_unvaluedExchangeTile], même patron que [_newAssetSymbolControllers]) et disposés à la
+  /// fois dans [dispose] et dès qu'une entrée quitte le groupe (valorisée par
+  /// [_applyManualCryptoValuations]), pour ne jamais fuir.
+  final Map<String, TextEditingController> _manualValuationControllers = {};
+
+  /// Clés dont la DERNIÈRE tentative d'application portait un montant saisi
+  /// NON vide mais invalide (pas un [Decimal] strictement positif) —
+  /// affichage d'erreur immédiat sur CE champ, sans bloquer les autres lignes
+  /// du groupe (chaque échange s'applique indépendamment).
+  final Set<String> _manualValuationInvalidKeys = {};
+
+  /// `true` pendant [_applyManualCryptoValuations] (bouton « Appliquer » du
+  /// groupe « Échanges à valoriser ») — désactive le bouton, évite un double
+  /// appel concurrent.
+  bool _applyingManualValuations = false;
+
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
   final Map<String, TextEditingController> _newAssetSymbolControllers = {};
 
@@ -280,6 +298,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
   @override
   void dispose() {
     for (final c in _newAssetSymbolControllers.values) {
+      c.dispose();
+    }
+    for (final c in _manualValuationControllers.values) {
       c.dispose();
     }
     super.dispose();
@@ -1923,16 +1944,74 @@ class _StatementImportPageState extends State<StatementImportPage> {
       [..._ostRejectGroup(l10n, preview), ..._techRejectGroup(l10n, preview)];
 
   // ---------------------------------------------------------------------------
-  // Groupes CRYPTO (chantier B16, lot 1 — conception interne). Tous no-op (listes
+  // Groupes CRYPTO (chantier B16, lots 1+2 — conception interne). Tous no-op (listes
   // vides côté ImportPreview) sur un profil titres : aucun changement visible pour
   // Bourse Direct/générique. Ordre d'importance du design, rassemblés dans
   // [_cryptoGroups].
   // ---------------------------------------------------------------------------
 
-  /// « Échanges à valoriser (N) » — DÉPLIÉ. Échanges entre crypto-monnaies
-  /// (ou entrées en nature) exclus de `toCreate` faute de moteur de
-  /// valorisation (lot 2) : pas de champ de saisie ici, juste la trace
-  /// (ligne source, codes et quantités des deux parties).
+  /// Bandeau « FX indisponible » (`ImportPreview.cryptoFxUnavailable`, conception
+  /// interne) — EN TÊTE des groupes crypto : explique pourquoi TOUS les échanges
+  /// sans jambe fiat sont tombés en arbitrage manuel (plutôt que de laisser croire
+  /// à un simple lot d'échanges ambigus) et rassure sur le reste du fichier
+  /// (rewards, dépôts/retraits, trades à jambe fiat), déjà importé normalement —
+  /// jamais bloqué par cette panne. « N'importer que le reste » n'a PAS de bouton
+  /// dédié : c'est le comportement PAR DÉFAUT (chaque échange manuel reste exclu
+  /// tant qu'il n'est pas renseigné), il suffit de le dire dans le message plutôt
+  /// que de multiplier les actions — seul « Réessayer » (relance l'aperçu complet
+  /// via [_runPreview], le chemin existant) mérite un bouton.
+  List<Widget> _cryptoFxUnavailableBanner(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    if (!preview.cryptoFxUnavailable) return const [];
+    final theme = Theme.of(context);
+    return [
+      Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        color: theme.colorScheme.tertiaryContainer,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Icon(
+                Icons.wifi_off_rounded,
+                size: 20,
+                color: theme.colorScheme.onTertiaryContainer,
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  l10n.importCryptoFxUnavailableBanner,
+                  style: TextStyle(color: theme.colorScheme.onTertiaryContainer),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                // M-4 (revue adversariale) : un SEUL recalcul d'aperçu à la
+                // fois — désactivé aussi pendant l'application des saisies
+                // manuelles ([_applyManualCryptoValuations] reconstruit
+                // l'aperçu via le même contrôleur).
+                onPressed: (_loadingPreview || _applyingManualValuations)
+                    ? null
+                    : _runPreview,
+                child: Text(l10n.importSearchRetryButton),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ];
+  }
+
+  /// « Échanges à valoriser (N) » — DÉPLIÉ. Échanges entre crypto-monnaies (ou
+  /// entrées en nature) restés en arbitrage MANUEL après la cascade de valorisation
+  /// (lot 2, conception interne) : trace (ligne source, codes et quantités des deux
+  /// parties), MOTIF localisé et champ « Montant (EUR) » éditable — un bouton «
+  /// Appliquer » unique pour tout le groupe (plus simple qu'un bouton par ligne,
+  /// cohérent avec la bascule unique des « Mouvements internes » ci-dessous) envoie
+  /// les montants renseignés au contrôleur, qui reconstruit l'aperçu.
   List<Widget> _unvaluedExchangesGroup(
     AppLocalizations l10n,
     ImportPreview preview,
@@ -1956,12 +2035,82 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _unvaluedExchangeTile(l10n, u),
           if (items.length > _groupDisplayCap)
             _moreRow(l10n, items.length - _groupDisplayCap),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: _applyingManualValuations
+                  ? const Padding(
+                      padding: EdgeInsets.all(8),
+                      child: SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  : FilledButton.tonal(
+                      // M-4 (revue adversariale) : un SEUL recalcul d'aperçu à
+                      // la fois — désactivé pendant un aperçu complet en cours
+                      // ([_runPreview], bandeau FX « Réessayer »).
+                      onPressed: _loadingPreview
+                          ? null
+                          : _applyManualCryptoValuations,
+                      child: Text(l10n.importUnvaluedApplyButton),
+                    ),
+            ),
+          ),
         ],
       ),
     ];
   }
 
+  /// Motif localisé d'UN échange resté manuel — `null` si [UnvaluedExchange.
+  /// manualReason] n'est pas (encore) posé, cas DÉFENSIF qui ne devrait
+  /// jamais survenir sur un aperçu produit par [AccountController] (le motif
+  /// est TOUJOURS renseigné avant qu'un échange n'atteigne `ImportPreview.
+  /// unvaluedExchanges`) mais reste possible sur un [UnvaluedExchange]
+  /// construit à la main (fixture de test) — silencieux plutôt qu'un texte
+  /// « motif inconnu » qui n'aiderait personne.
+  String? _unvaluedReasonLabel(AppLocalizations l10n, UnvaluedExchange u) {
+    switch (u.manualReason) {
+      case 'unreadable':
+        return l10n.importUnvaluedReasonUnreadable;
+      case 'spread':
+        return l10n.importUnvaluedReasonSpread(
+          _spreadPercentLabel(u.valuationSpreadPct),
+        );
+      case 'fxUnavailable':
+        return l10n.importUnvaluedReasonFxUnavailable;
+      case 'ambiguousGroup':
+        // B-1 (revue adversariale) : clé de dédup partagée par ≥ 2 entrées
+        // (dustsweeping N→1 dégénéré, dépôt en nature multi-jambes) — jamais
+        // valorisable ici, cf. [_unvaluedExchangeTile] qui désactive aussi le
+        // champ de saisie pour ce motif.
+        return l10n.importUnvaluedReasonAmbiguousGroup;
+      case 'foreignFiat':
+        // B-A (contre-vérification lot 2) : jambe en devise étrangère (ex.
+        // `USD` sur un compte `EUR`) — aucune conversion disponible à cet
+        // étage, jamais valorisable ici, cf. [_unvaluedExchangeTile] qui
+        // désactive aussi le champ de saisie pour ce motif.
+        return l10n.importUnvaluedReasonForeignFiat;
+      default:
+        return null;
+    }
+  }
+
+  /// Écart relatif SIGNÉ (`UnvaluedExchange.valuationSpreadPct`, ex. `-0.23`)
+  /// → magnitude en pourcentage pour l'affichage (« 23.0 »), toujours SANS
+  /// signe (le motif parle d'un « écart », la direction n'apporte rien ici).
+  /// Repli sur `'?'` si non parsable (défensif, ne devrait jamais arriver
+  /// pour un motif `'spread'` produit par `CryptoValuationService`).
+  String _spreadPercentLabel(String? raw) {
+    final d = raw == null ? null : Decimal.tryParse(raw);
+    if (d == null) return '?';
+    return (d.abs() * Decimal.fromInt(100)).toStringAsFixed(1);
+  }
+
   Widget _unvaluedExchangeTile(AppLocalizations l10n, UnvaluedExchange u) {
+    final theme = Theme.of(context);
     final lines = u.sourceLines.join(', ');
     final codePaid = u.codePaid;
     final quantityPaid = u.quantityPaid;
@@ -1969,11 +2118,127 @@ class _StatementImportPageState extends State<StatementImportPage> {
         ? l10n.importUnvaluedDepositLine(lines, u.quantityReceived, u.codeReceived)
         : l10n.importUnvaluedExchangeLine(
             lines, quantityPaid, codePaid, u.quantityReceived, u.codeReceived);
-    return ListTile(
-      dense: true,
-      title: Text(line),
-      subtitle: Text(_formatDate(u.date)),
+    final reasonLabel = _unvaluedReasonLabel(l10n, u);
+    final key = u.importKey;
+    final controller = _manualValuationControllers.putIfAbsent(
+      key,
+      () => TextEditingController(),
     );
+    final isInvalid = _manualValuationInvalidKeys.contains(key);
+    // B-1 (BLOQUANT, revue adversariale) : clé de dédup PARTAGÉE par ≥ 2
+    // entrées — jamais valorisable (`CryptoValuationService.resolve`/
+    // `finalizeCryptoExchanges`/`AccountController.applyManualCryptoValuations`
+    // la refusent tous), le champ de saisie reste donc désactivé plutôt que
+    // d'accepter une saisie qui ne sera de toute façon jamais appliquée.
+    final isAmbiguousGroup = u.manualReason == 'ambiguousGroup';
+    // B-A (contre-vérification lot 2) : même désactivation que ci-dessus
+    // pour une jambe en devise étrangère — la saisie manuelle émettrait le
+    // même mouvement fiat fabriqué (`AccountController.
+    // applyManualCryptoValuations` la refuse déjà, ceinture indépendante).
+    final isForeignFiat = u.manualReason == 'foreignFiat';
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          ListTile(
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            title: Text(line),
+            subtitle: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(_formatDate(u.date)),
+                if (reasonLabel != null)
+                  Text(
+                    reasonLabel,
+                    style: theme.textTheme.bodySmall
+                        ?.copyWith(color: theme.colorScheme.error),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.only(right: 16, bottom: 4),
+            child: TextField(
+              controller: controller,
+              enabled: !isAmbiguousGroup && !isForeignFiat,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: InputDecoration(
+                labelText: l10n.importUnvaluedAmountFieldLabel,
+                isDense: true,
+                border: const OutlineInputBorder(),
+                errorText: isInvalid ? l10n.invalidAmount : null,
+              ),
+              // La saisie change : l'erreur affichée n'est plus valable pour
+              // ce nouveau texte — retirée immédiatement plutôt qu'attendre
+              // une nouvelle tentative d'application.
+              onChanged: (_) {
+                if (isInvalid) {
+                  setState(() => _manualValuationInvalidKeys.remove(key));
+                }
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Applique au contrôleur les montants EUR actuellement saisis dans le
+  /// groupe « Échanges à valoriser » (bouton « Appliquer », chantier B16, lot
+  /// 2) : une entrée VIDE est simplement ignorée (l'échange reste manuel,
+  /// aucune erreur affichée — l'utilisateur n'a pas encore renseigné cette
+  /// ligne) ; une entrée NON vide mais invalide (pas un [Decimal] strictement
+  /// positif, cf. [AccountController.applyManualCryptoValuations]) marque
+  /// SEULEMENT ce champ en erreur, sans bloquer les autres lignes valides du
+  /// même groupe. Aucun appel au contrôleur si rien de valide n'a été saisi.
+  Future<void> _applyManualCryptoValuations() async {
+    final preview = _preview;
+    if (preview == null) return;
+
+    final toApply = <String, String>{};
+    final invalid = <String>{};
+    for (final u in preview.unvaluedExchanges) {
+      final raw = _manualValuationControllers[u.importKey]?.text.trim() ?? '';
+      if (raw.isEmpty) continue;
+      final normalized = raw.replaceAll(',', '.');
+      final amount = Decimal.tryParse(normalized);
+      if (amount == null || amount <= Decimal.zero) {
+        invalid.add(u.importKey);
+      } else {
+        toApply[u.importKey] = normalized;
+      }
+    }
+
+    setState(() {
+      _manualValuationInvalidKeys
+        ..clear()
+        ..addAll(invalid);
+    });
+    if (toApply.isEmpty) return;
+
+    setState(() => _applyingManualValuations = true);
+    final updated =
+        await widget.controller.applyManualCryptoValuations(toApply);
+    if (!mounted) return;
+    setState(() {
+      _applyingManualValuations = false;
+      if (updated == null) return;
+      _preview = updated;
+      // Purge les contrôleurs des entrées qui ont quitté le groupe (celles
+      // valorisées à l'instant) — celles qui y restent (motif inchangé,
+      // ex. saisie invalide sur cette ligne) conservent leur texte.
+      final remainingKeys = {
+        for (final u in updated.unvaluedExchanges) u.importKey,
+      };
+      _manualValuationControllers.removeWhere((key, ctrl) {
+        final gone = !remainingKeys.contains(key);
+        if (gone) ctrl.dispose();
+        return gone;
+      });
+      _manualValuationInvalidKeys.removeWhere((key) => !remainingKeys.contains(key));
+    });
   }
 
   /// « Mouvements internes (N) » — DÉPLIÉ SEULEMENT s'il y a un résidu (liste
@@ -2225,16 +2490,74 @@ class _StatementImportPageState extends State<StatementImportPage> {
     );
   }
 
-  /// Les six groupes crypto, dans l'ordre d'importance du design (conception
-  /// interne) — listes vides sur tout profil titres, donc AUCUN élément rendu
-  /// (`_cryptoGroups` retourne alors `[]`).
+  /// Mouvements de `toCreate` finalisés par la valorisation des échanges
+  /// crypto (chantier B16, lot 2, `meta['valuationSource']` posé par
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`) — vue FILTRÉE de
+  /// `toCreate`, même patron que [_aggregatedRewardMovements]/
+  /// [_replacementsGroup] : ces mouvements seront bel et bien écrits, ce
+  /// groupe replié n'en est qu'une présentation lisible.
+  List<ImportedMovement> _valuedExchangeMovements(ImportPreview preview) => [
+        for (final m in preview.toCreate)
+          if (m.transaction?.meta?['valuationSource'] != null) m,
+      ];
+
+  /// Index du suffixe de rôle (`#sell:`/`#buy:`/`#deposit:`, posé par
+  /// `finalizeCryptoExchanges`) dans un `importKey`, ou `-1` si absent.
+  int _roleSuffixIndex(String key) {
+    for (final marker in const ['#sell:', '#buy:', '#deposit:']) {
+      final i = key.indexOf(marker);
+      if (i != -1) return i;
+    }
+    return -1;
+  }
+
+  /// Nombre d'ÉCHANGES DISTINCTS représentés par [movements] — PAS le nombre de
+  /// mouvements : un échange crypto↔crypto en émet DEUX (sell+buy, conception
+  /// interne), qui ne comptent qu'une seule fois ici. Regroupe par `importKey` DE
+  /// BASE (avant le suffixe de rôle) — clé stable, calculée AVANT toute
+  /// valorisation (conception interne).
+  int _valuedExchangeCount(List<ImportedMovement> movements) {
+    final baseKeys = <String>{};
+    for (final m in movements) {
+      final key = m.importKey ?? '';
+      final cut = _roleSuffixIndex(key);
+      baseKeys.add(cut == -1 ? key : key.substring(0, cut));
+    }
+    return baseKeys.length;
+  }
+
+  /// « Échanges valorisés (N) » — REPLIÉ (conception interne) : les échanges crypto
+  /// désormais journalisables (étage 1 « fichier » ou saisie manuelle), regroupés à
+  /// part de la liste générale « À créer » pour rester lisibles — chaque tuile
+  /// porte déjà son sous-titre de provenance (cf. [_valuationSourceLabel],
+  /// [_movementTile]).
+  List<Widget> _valuedExchangesGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items = _valuedExchangeMovements(preview);
+    if (items.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupValuedExchanges(_valuedExchangeCount(items))),
+        children: _cappedMovementTiles(l10n, items),
+      ),
+    ];
+  }
+
+  /// Le bandeau FX + les sept groupes crypto, dans l'ordre d'importance du design
+  /// (conception interne) — listes vides sur tout profil titres, donc AUCUN
+  /// élément rendu (`_cryptoGroups` retourne alors `[]`).
   List<Widget> _cryptoGroups(AppLocalizations l10n, ImportPreview preview) => [
+        ..._cryptoFxUnavailableBanner(l10n, preview),
         ..._unvaluedExchangesGroup(l10n, preview),
         ..._unbalancedInternalTransfersGroup(l10n, preview),
         ..._chainRupturesGroup(l10n, preview),
         ..._quantityGapsGroup(l10n, preview),
         ..._aggregatedRewardsGroup(l10n, preview),
         ..._replacementsGroup(l10n, preview),
+        ..._valuedExchangesGroup(l10n, preview),
       ];
 
   /// Mois « AAAA-MM » → libellé localisé capitalisé (« Mars 2024 » /
@@ -2698,6 +3021,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     // Traçabilité du repli de jambe espèces (§14.8) : le mouvement absorbé
     // disparaît de la liste — on nomme la ligne source recollée sous l'accueil.
     final mergedLegRow = _mergedLegSourceRow(m);
+    // Provenance de la valorisation crypto (chantier B16, lot 2, conception interne) —
+    // SEULEMENT sur les mouvements issus de `finalizeCryptoExchanges`
+    // (`meta['valuationSource']` posé), jamais sur un mouvement titre ordinaire.
+    final valuationLabel = _valuationSourceLabel(l10n, tx.meta);
     return ListTile(
       dense: true,
       title: Text('$symbolLabel — ${_kindLabel(l10n, tx.kind)}'),
@@ -2713,9 +3040,36 @@ class _StatementImportPageState extends State<StatementImportPage> {
                     color: Theme.of(context).colorScheme.onSurfaceVariant,
                   ),
             ),
+          if (valuationLabel != null)
+            Text(
+              valuationLabel,
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+                  ),
+            ),
         ],
       ),
     );
+  }
+
+  /// « Valorisé d'après le relevé » / « Valorisé manuellement » — discret,
+  /// SEULEMENT sur les mouvements crypto finalisés (`meta['valuationSource']`
+  /// posé par `CryptoLedgerNormalizer.finalizeCryptoExchanges`, valeurs
+  /// `'statement'`/`'manual'` au lot 2 ; `'marketHistory'`, hors périmètre de
+  /// ce lot, n'a PAS de libellé dédié ici). `null` sur tout autre mouvement
+  /// (aucun changement visible pour Bourse Direct/générique).
+  String? _valuationSourceLabel(
+    AppLocalizations l10n,
+    Map<String, dynamic>? meta,
+  ) {
+    switch (meta?['valuationSource']) {
+      case 'statement':
+        return l10n.importValuationSourceStatement;
+      case 'manual':
+        return l10n.importValuationSourceManual;
+      default:
+        return null;
+    }
   }
 
   /// Rappel COMPACT de la ligne source d'un mouvement (candidat, doublon ou
@@ -3090,6 +3444,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importRejectMixedCryptoActionsInGroup;
       case 'cryptoMigrationNotBalanced':
         return l10n.importRejectCryptoMigrationNotBalanced;
+      case 'cryptoImportKeyCollision':
+        return l10n.importRejectCryptoImportKeyCollision;
       default:
         return l10n.importRejectGeneric;
     }

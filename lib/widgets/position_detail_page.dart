@@ -171,6 +171,32 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     return result;
   }
 
+  /// `true` si le PRU projeté de cette position est déjà en devise DU COMPTE (donc
+  /// jamais en devise de COTATION), quelle que soit `Asset.currency` — réserve de
+  /// design levée au lot 2 (chantier B16, conception interne) : un actif CRYPTO
+  /// résolu à un ticker `<code>-USD` (étage 4 de la cascade
+  /// `AccountController._resolveCryptoTicker`, ou un `quoteAlias` du profil) porte
+  /// `Asset.currency == 'USD'` pour que la COTATION (cours live/historique) se
+  /// convertisse correctement — MAIS son `unitPrice` journalisé
+  /// (`CryptoLedgerNormalizer.finalizeCryptoExchanges`, ou la jambe fiat EUR d'un
+  /// trade classique du lot 1) est TOUJOURS `V_eur / quantité`, JAMAIS un prix de
+  /// marché natif en USD. `Asset. ledgerCode` (non-null UNIQUEMENT pour un actif
+  /// issu du pipeline crypto, conception interne) est le seul marqueur fiable de
+  /// cette distinction : un titre classique acheté en USD (courtier hors crypto) n'a
+  /// JAMAIS de `ledgerCode` et garde le comportement HISTORIQUE (PRU réellement
+  /// natif USD, comme sa cotation).
+  bool get _pruAlreadyInAccountCurrency =>
+      _currentPosition.asset.ledgerCode != null;
+
+  /// Devise à IMPOSER sur le champ « Prix unitaire » de
+  /// [TransactionEditDialog] (I-3, revue adversariale) — `null` (défaut du
+  /// dialogue, devise de cotation) tant que [_pruAlreadyInAccountCurrency]
+  /// est faux, ou que la devise du compte n'est pas encore chargée (best
+  /// effort, cf. [_loadAccountCurrency] : le dialogue retombe alors sur son
+  /// comportement historique plutôt que de bloquer l'ouverture).
+  String? get _costDisplayCurrency =>
+      _pruAlreadyInAccountCurrency ? _accountCurrency : null;
+
   /// Valeur courante de la ligne en EUR (cotation live × quantité projetée),
   /// `0` tant que la cotation n'est pas revenue.
   double get _currentValueEur {
@@ -293,6 +319,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         // Devise de règlement = devise du compte (découplage cotation/règlement,
         // design §8). Null tant que non chargée → dialogue mono-devise.
         settlementCurrency: _accountCurrency,
+        costDisplayCurrency: _costDisplayCurrency,
         exchangeRateService: _exchangeService,
         initialKind: initialKind,
         // Fiche position : seuls les mouvements rattachés à un titre (ou un
@@ -330,6 +357,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
         symbol: _currentPosition.symbol,
         currency: _currentPosition.currency,
         settlementCurrency: _accountCurrency,
+        costDisplayCurrency: _costDisplayCurrency,
         exchangeRateService: _exchangeService,
         existing: tx,
         // Cf. _openAddTransaction : la fiche position ne crée/n'édite que des
@@ -1022,7 +1050,15 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       context: context,
       builder: (_) => _EditPruDialog(
         currentPru: _currentPosition.averageBuyPrice,
-        currency: _currentPosition.currency,
+        // I-3 (revue adversariale) : le PRU d'un actif à `ledgerCode` est
+        // TOUJOURS déjà en devise du compte (`_pruAlreadyInAccountCurrency`)
+        // — afficher/saisir un suffixe `$` inciterait à ressaisir une valeur
+        // USD qui serait en réalité traitée comme de l'EUR (aucune conversion
+        // n'a lieu en aval pour ces actifs). Affichage seulement, rien de
+        // persisté.
+        currency: _pruAlreadyInAccountCurrency
+            ? (_accountCurrency ?? 'EUR')
+            : _currentPosition.currency,
       ),
     );
     if (outcome == null || !mounted) return;
@@ -1561,14 +1597,26 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     // ⭐ PLUS-VALUE LATENTE (uniquement si un PRU est défini)
     final pru = position.averageBuyPrice;
     final hasPru = pru != null;
-    // Calculs en devise native puis conversion EUR comme le reste de l'UI.
+    // Calculs en devise native puis conversion EUR comme le reste de l'UI — SAUF
+    // pour un actif CRYPTO résolu en `-USD` (réserve de design levée au lot 2,
+    // conception interne) : voir [_pruAlreadyInAccountCurrency].
     double? unrealizedGainEur;
     double? unrealizedGainPercent;
     if (hasPru && _currentPrice != null) {
-      final gainNative = (_currentPrice! - pru) * qtyNum;
-      unrealizedGainEur = isUsd ? gainNative * _usdToEurRate : gainNative;
+      final pruInAccountCurrency = isUsd && _pruAlreadyInAccountCurrency;
+      // Prix courant ramené dans la MÊME devise que [pru], pour que la
+      // soustraction ait un sens (jamais mélanger un cours USD natif avec un
+      // PRU déjà EUR).
+      final currentPriceComparable =
+          pruInAccountCurrency ? _currentPrice! * _usdToEurRate : _currentPrice!;
+      final gainComparable = (currentPriceComparable - pru) * qtyNum;
+      // Le PRU crypto `-USD` est DÉJÀ en EUR (`gainComparable` l'est donc
+      // aussi) : NE JAMAIS reconvertir une seconde fois, sous peine de
+      // sur-conversion silencieuse du prix de revient (le piège documenté).
+      unrealizedGainEur =
+          (isUsd && !pruInAccountCurrency) ? gainComparable * _usdToEurRate : gainComparable;
       if (pru != 0) {
-        unrealizedGainPercent = (_currentPrice! - pru) / pru * 100;
+        unrealizedGainPercent = (currentPriceComparable - pru) / pru * 100;
       }
     }
     final gainPositive = (unrealizedGainEur ?? 0) >= 0;
@@ -1934,7 +1982,16 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                             borderRadius: BorderRadius.circular(4),
                             child: Text(
                               l10n.averageBuyPriceShort(
-                                _formatPriceDisplay(pru, isUsd),
+                                // I-1 (revue adversariale) : un PRU crypto
+                                // (`_pruAlreadyInAccountCurrency`) est déjà en
+                                // EUR — le formater comme un prix USD (donc
+                                // `× _usdToEurRate`) serait une SUR-conversion
+                                // silencieuse. `isUsd` ne pilote donc l'affichage
+                                // « $ » que pour un PRU réellement natif USD.
+                                _formatPriceDisplay(
+                                  pru,
+                                  isUsd && !_pruAlreadyInAccountCurrency,
+                                ),
                               ),
                               maxLines: 2,
                               overflow: TextOverflow.ellipsis,
@@ -2260,6 +2317,12 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
   Widget _buildAdditionalDetails() {
     final l10n = AppLocalizations.of(context)!;
     final position = _currentPosition;
+    // I-1 (revue adversariale) : un PRU crypto (`_pruAlreadyInAccountCurrency`)
+    // est déjà en EUR — le formater avec `position.currency` (devise de
+    // COTATION, ex. USD) afficherait le mauvais symbole/code SANS reconvertir
+    // la valeur, un mensonge d'unité pur. La devise du compte fait foi.
+    final pruCurrency =
+        _pruAlreadyInAccountCurrency ? _accountCurrency ?? 'EUR' : position.currency;
 
     return Card(
       child: Padding(
@@ -2325,7 +2388,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                 position.averageBuyPrice != null
                     ? Formatters.formatCurrency(
                         position.averageBuyPrice!,
-                        position.currency,
+                        pruCurrency,
                       )
                     : l10n.undefined,
                 _openEditPru,
@@ -2339,7 +2402,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
                   position.averageBuyPrice != null
                       ? Formatters.formatCurrency(
                           position.averageBuyPrice!,
-                          position.currency,
+                          pruCurrency,
                         )
                       : l10n.undefined,
                 ),

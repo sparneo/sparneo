@@ -44,8 +44,20 @@ class PositionCard extends StatelessWidget {
     // ⭐ Plus-value latente vs PRU (prioritaire sur la variation période si défini).
     final pru = position.averageBuyPrice;
     final hasGain = pru != null && pru != 0 && currentPrice != null;
+    // Un actif CRYPTO résolu en `-USD` (`ledgerCode` non-null, réserve de design
+    // levée au lot 2 — conception interne) porte un PRU DÉJÀ en devise du compte,
+    // jamais natif USD comme sa cotation : ramener le cours courant dans cette même
+    // devise AVANT de comparer, sinon le pourcentage mélange une cotation USD avec
+    // un PRU EUR (même piège que
+    // `position_detail_page._pruAlreadyInAccountCurrency`, ici SANS multiplication
+    // littérale par le taux mais avec le même résultat faux).
+    final pruInAccountCurrency = position.asset.ledgerCode != null &&
+        position.asset.currency.toUpperCase() == 'USD';
+    final currentPriceComparable = pruInAccountCurrency
+        ? (currentPrice ?? 0) * usdToEurRate
+        : (currentPrice ?? 0);
     final double? gainPercent = hasGain
-        ? (currentPrice! - pru) / pru * 100
+        ? (currentPriceComparable - pru) / pru * 100
         : null;
 
     // Variation de PÉRIODE, affichée À CÔTÉ de la PV et non à sa place : les

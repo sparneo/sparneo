@@ -171,6 +171,20 @@ class TransactionEditDialog extends StatefulWidget {
   /// les champs titres et comparée au cours Yahoo pour le PRU.
   final String currency;
 
+  /// Devise d'AFFICHAGE du champ « Prix unitaire » SEULEMENT (I-3, revue
+  /// adversariale B16 lot 2) — `null` (défaut) : comportement historique,
+  /// suffixe [currency]. Non-null pour une position à `Asset.ledgerCode`
+  /// != null (résolue en `<code>-USD` par la cascade crypto) : son coût
+  /// journalisé (`unitPrice`) est TOUJOURS déjà en devise du COMPTE, jamais
+  /// dans la devise de COTATION native — afficher `$` inciterait à saisir une
+  /// valeur qui serait en réalité traitée comme de l'EUR sans AUCUNE
+  /// conversion en aval (cf. `CryptoLedgerNormalizer.finalizeCryptoExchanges`,
+  /// `HistoryAggregator.computeRealTotalGain`). N'affecte QUE le suffixe
+  /// affiché sur ce champ : `quantity`/`fee` restent en devise de cotation
+  /// (hors périmètre de ce correctif), aucune valeur n'est convertie ni
+  /// persistée différemment.
+  final String? costDisplayCurrency;
+
   /// Devise de RÈGLEMENT = devise DU COMPTE (celle de `amount`, effet net sur
   /// les espèces). `null` = non fournie → comportement mono-devise legacy
   /// (règlement supposé identique à la cotation). Quand elle DIFFÈRE de
@@ -210,6 +224,7 @@ class TransactionEditDialog extends StatefulWidget {
     this.symbol,
     required this.currency,
     this.settlementCurrency,
+    this.costDisplayCurrency,
     this.exchangeRateService,
     this.existing,
     this.initialKind,
@@ -664,8 +679,11 @@ class _TransactionEditDialogState extends State<TransactionEditDialog> {
                       helperText: (_kind.isSystemGenerated || isDividend)
                           ? l10n.optionalHint
                           : null,
+                      // I-3 (revue adversariale) : suffixe forcé à la devise
+                      // du COÛT (widget.costDisplayCurrency) quand fournie —
+                      // voir sa doc.
                       suffixText: Formatters.formatCurrencySymbol(
-                          widget.currency),
+                          widget.costDisplayCurrency ?? widget.currency),
                     ),
                     keyboardType: const TextInputType.numberWithOptions(
                         decimal: true),

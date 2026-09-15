@@ -27,6 +27,7 @@ import 'package:portfolio_tracker/model/position_with_market_data.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
 import 'package:portfolio_tracker/logic/position_projection.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
+import 'package:portfolio_tracker/services/crypto_valuation_service.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
@@ -46,6 +47,12 @@ class AccountController extends ChangeNotifier {
   final LedgerService _ledger;
   final MarketDataService _marketService;
   final ExchangeRateService _exchangeService;
+
+  /// Moteur de valorisation étage 1 « fichier » des échanges crypto sans jambe
+  /// fiat (chantier B16, lot 2, conception interne) — RÉUTILISE
+  /// [_exchangeService] (même instance, même cache mémoire de la série FX
+  /// historique) plutôt que d'en injecter un second, indépendant.
+  final CryptoValuationService _cryptoValuationService;
   /// Lecture du journal (lot cash-ledger) : sert uniquement à décider l'opt-in
   /// d'affichage du cash dérivé (cf. [journalHasCashAnchor] dans
   /// [_loadDerivedCash]). Les mutations passent par [_ledger].
@@ -83,6 +90,7 @@ class AccountController extends ChangeNotifier {
     LedgerService? ledgerService,
     MarketDataService? marketService,
     ExchangeRateService? exchangeService,
+    CryptoValuationService? cryptoValuationService,
     TransactionStorage? transactionStorage,
 
     /// Taux USD→EUR pré-chargé (évite l'appel réseau en test).
@@ -93,6 +101,10 @@ class AccountController extends ChangeNotifier {
        _ledger = ledgerService ?? LedgerService(),
        _marketService = marketService ?? MarketDataService.shared,
        _exchangeService = exchangeService ?? ExchangeRateService(),
+       _cryptoValuationService = cryptoValuationService ??
+           CryptoValuationService(
+             exchangeService: exchangeService ?? ExchangeRateService(),
+           ),
        _txStorage = transactionStorage ?? TransactionStorage(),
        _usdToEurRate = initialUsdToEurRate ?? 0.92;
 
@@ -263,6 +275,37 @@ class AccountController extends ChangeNotifier {
   /// périmètre de ce lot) peut l'afficher via
   /// [lastUnresolvedInternalTransferResidualCount].
   int _lastUnresolvedInternalTransferResidualCount = 0;
+
+  // ---------------------------------------------------------------------------
+  // Cache du DERNIER aperçu crypto (chantier B16, lot 2 — conception interne) : sert
+  // exclusivement à [applyManualCryptoValuations], pour reconstruire l'aperçu après
+  // une saisie manuelle SANS reparser le fichier (aucune I/O, aucun accès au journal
+  // une seconde fois) — le plan PUR issu de
+  // `CryptoLedgerNormalizer.planCryptoImport` ne change jamais, seule la table des
+  // valorisations s'enrichit à chaque saisie. Remis à zéro en tête de
+  // [previewStatementImport] (avant même de savoir si le profil est crypto) : un
+  // nouvel aperçu — crypto ou non — invalide tout contexte précédent, pour ne jamais
+  // appliquer une saisie manuelle à un plan obsolète (fichier différent, compte
+  // différent, ré-import).
+  // ---------------------------------------------------------------------------
+  CryptoImportPlan? _lastCryptoPlan;
+  Account? _lastCryptoAccount;
+  String? _lastCryptoAccountId;
+  BrokerProfile? _lastCryptoProfile;
+  bool _lastCryptoFxUnavailable = false;
+
+  /// Valorisations déjà résolues (étage 1 « fichier » + saisies manuelles
+  /// cumulées d'un appel à l'autre) — clé = `UnvaluedExchange.importKey`, la
+  /// même table que consomme `StatementImportService.finalizeCryptoExchanges`.
+  final Map<String, CryptoValuation> _lastCryptoValuations = {};
+
+  /// Motif ORIGINAL de chaque échange resté manuel (`unreadable`/`spread`/
+  /// `fxUnavailable`), posé UNE SEULE FOIS par [_previewCryptoImport] (le
+  /// motif ne dépend que des jambes du relevé, jamais d'une saisie manuelle
+  /// ultérieure) — reporté tel quel par [applyManualCryptoValuations] sur les
+  /// entrées qui restent manuelles après une saisie partielle.
+  final Map<String, ({String reason, String? spreadPct})>
+      _lastCryptoManualReasons = {};
 
   // ---------------------------------------------------------------------------
   // Getters publics
@@ -1669,6 +1712,19 @@ class AccountController extends ChangeNotifier {
     account ??= _activeAccount;
     if (account == null) return const ImportPreview();
 
+    // Invalide tout contexte crypto d'un aperçu PRÉCÉDENT (cf. doc de tête du
+    // cache ci-dessus) — même sur le chemin titres : un utilisateur qui
+    // enchaîne un import crypto puis un import titres dans la MÊME session de
+    // contrôleur ne doit jamais laisser [applyManualCryptoValuations]
+    // ressusciter le plan crypto abandonné.
+    _lastCryptoPlan = null;
+    _lastCryptoAccount = null;
+    _lastCryptoAccountId = null;
+    _lastCryptoProfile = null;
+    _lastCryptoFxUnavailable = false;
+    _lastCryptoValuations.clear();
+    _lastCryptoManualReasons.clear();
+
     // ---- Pipeline CRYPTO (chantier B16, lot 1 — conception interne) : branche
     // DÉDIÉE, isolée du chemin titres ci-dessous. La cascade de résolution
     // ledgerCode→ticker fait de l'I/O réseau (`symbolExists`) que le chemin titres
@@ -2085,9 +2141,210 @@ class AccountController extends ChangeNotifier {
       return ImportPreview(globalRejectReason: plan.globalRejectReason);
     }
 
+    // ---- LOT 2 : valorisation étage 1 « fichier » des échanges crypto sans jambe
+    // fiat (conception interne). Zéro appel si le fichier n'en a aucun
+    // (comportement bit-identique au lot 1 pour un relevé qui n'en produit pas).
+    // Les mouvements finalisés (sell+buy / adjustment) rejoignent [plan.movements]
+    // AVANT toute dédup/résolution de ticker — ils traversent ENSUITE exactement le
+    // même pipeline que n'importe quel autre mouvement crypto (clés
+    // `#sell:`/`#buy:`/`#deposit:` stables ⇒ ré-import idempotent, cf. la
+    // conception interne). Les échanges restés en arbitrage manuel (spread
+    // excessif, jambe(s) illisible(s), FX indisponible) sont réexposés dans
+    // [unvaluedExchanges] enrichis d'un motif via [UnvaluedExchange.copyWith] —
+    // jamais reconstruits à la main.
+    //
+    // Les valorisations résolues ET les motifs des entrées manuelles sont
+    // aussi mis en CACHE sur le contrôleur (cf. doc de tête des champs
+    // `_lastCrypto*`) : [applyManualCryptoValuations] (UI, saisie manuelle
+    // d'un montant EUR) les réutilise pour reconstruire l'aperçu sans
+    // reparser le fichier.
+    var financeMovements = const <ImportedMovement>[];
+    var unvaluedForPreview = plan.unvaluedExchanges;
+    var cryptoFxUnavailable = false;
+    if (plan.unvaluedExchanges.isNotEmpty) {
+      try {
+        final resolution = await _cryptoValuationService.resolve(
+          plan.unvaluedExchanges,
+          // M-1 (revue adversariale) : seuil de spread du PROFIL, plus jamais
+          // la valeur codée en dur du service — Kraken vaut déjà `0.10`
+          // (comportement inchangé pour ce profil).
+          maxLegValuationSpread: profile.crypto!.maxLegValuationSpread,
+        );
+        _lastCryptoValuations.addAll(resolution.valuations);
+        for (final m in resolution.manual) {
+          _lastCryptoManualReasons[m.source.importKey] =
+              (reason: m.reason.wire, spreadPct: m.valuationSpreadPct);
+        }
+        financeMovements = StatementImportService.finalizeCryptoExchanges(
+          plan,
+          resolution.valuations,
+          accountId: accountId,
+          accountCurrency: account.currency,
+        );
+        unvaluedForPreview = [
+          for (final m in resolution.manual)
+            m.source.copyWith(
+              manualReason: m.reason.wire,
+              valuationSpreadPct: m.valuationSpreadPct,
+            ),
+        ];
+      } on ExchangeRateUnavailable {
+        // Aucune coercition (conception interne) : TOUS les échanges sans jambe fiat
+        // repartent en arbitrage manuel, motif uniforme — le reste du fichier
+        // (rewards, dépôts/retraits, trades à jambe fiat, déjà dans `plan.movements`)
+        // continue à être proposé normalement.
+        cryptoFxUnavailable = true;
+        for (final u in plan.unvaluedExchanges) {
+          _lastCryptoManualReasons[u.importKey] =
+              (reason: 'fxUnavailable', spreadPct: null);
+        }
+        unvaluedForPreview = [
+          for (final u in plan.unvaluedExchanges)
+            u.copyWith(manualReason: 'fxUnavailable'),
+        ];
+      }
+    }
+
+    _lastCryptoPlan = plan;
+    _lastCryptoAccount = account;
+    _lastCryptoAccountId = accountId;
+    _lastCryptoProfile = profile;
+    _lastCryptoFxUnavailable = cryptoFxUnavailable;
+
+    return _finishCryptoPreview(
+      plan: plan,
+      financeMovements: financeMovements,
+      unvaluedForPreview: unvaluedForPreview,
+      cryptoFxUnavailable: cryptoFxUnavailable,
+      account: account,
+      accountId: accountId,
+      profile: profile,
+    );
+  }
+
+  /// Applique des valorisations EUR SAISIES MANUELLEMENT (étage 3 « arbitrage
+  /// manuel », chantier B16, lot 2 — conception interne) aux échanges crypto encore
+  /// en attente du DERNIER aperçu crypto calculé ([previewStatementImport] avec
+  /// `profile.crypto != null`) : reconstruit l'aperçu complet SANS reparser le
+  /// fichier ni retoucher le réseau (le plan PUR et les valorisations déjà résolues
+  /// à l'étage 1 restent en cache sur le contrôleur, cf. `_lastCrypto*`) — seule la
+  /// dédup/résolution de ticker/delta est rejouée, exactement comme un second
+  /// aperçu.
+  ///
+  /// [eurByImportKey] : clé = `UnvaluedExchange.importKey` (LA MÊME clé que
+  /// `ImportPreview.unvaluedExchanges[i].importKey` — l'UI ne fabrique
+  /// JAMAIS les clés `#sell:`/`#buy:`/`#deposit:` dérivées, c'est le rôle de
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`), valeur = montant EUR
+  /// SAISI (chaîne décimale, virgule OU point). Une entrée dont le montant
+  /// n'est pas un [Decimal] strictement positif est IGNORÉE (garde
+  /// défensive silencieuse — la validation du champ, côté UI, empêche déjà
+  /// une saisie invalide d'atteindre cette méthode) : cette clé RESTE en
+  /// arbitrage manuel avec son motif d'origine, jamais valorisée à zéro.
+  ///
+  /// Retourne `null` si aucun aperçu crypto n'est en cours (aucun appel
+  /// préalable à [previewStatementImport] sur un profil crypto, ou le cache
+  /// a été invalidé par un aperçu plus récent) — l'appelant garde alors
+  /// l'aperçu affiché tel quel.
+  Future<ImportPreview?> applyManualCryptoValuations(
+    Map<String, String> eurByImportKey,
+  ) async {
+    final plan = _lastCryptoPlan;
+    final account = _lastCryptoAccount;
+    final accountId = _lastCryptoAccountId;
+    final profile = _lastCryptoProfile;
+    if (plan == null ||
+        account == null ||
+        accountId == null ||
+        profile == null) {
+      return null;
+    }
+
+    // B-1 (BLOQUANT, revue adversariale) : refuse (ignore) toute clé PARTAGÉE
+    // par ≥ 2 `UnvaluedExchange` du plan — même garde que `resolve`/
+    // `finalizeCryptoExchanges`, ceinture supplémentaire côté saisie MANUELLE
+    // (en pratique déjà inatteignable depuis l'UI, le champ correspondant y
+    // est désactivé pour ce motif, mais ce contrôleur ne fait jamais confiance
+    // à l'UI seule pour une garde B4).
+    final keyCounts = <String, int>{};
+    for (final u in plan.unvaluedExchanges) {
+      keyCounts[u.importKey] = (keyCounts[u.importKey] ?? 0) + 1;
+    }
+
+    // B-A (BLOQUANT, contre-vérification lot 2) : même raisonnement que B-1
+    // ci-dessus — refuse (ignore) toute clé dont l'`UnvaluedExchange` porte
+    // une jambe FIAT (payée OU reçue, typiquement étrangère à la devise du
+    // compte) : une saisie manuelle appliquée à cette clé émettrait le MÊME
+    // `sell`/`buy` fiat fabriqué que la valorisation automatique
+    // (`CryptoValuationService.resolve`/`CryptoLedgerNormalizer.
+    // finalizeCryptoExchanges` la refusent déjà toutes les deux) — le champ
+    // correspondant est désactivé côté UI pour ce motif, mais ce contrôleur
+    // ne fait jamais confiance à l'UI seule pour une garde B4.
+    final foreignFiatKeys = <String>{
+      for (final u in plan.unvaluedExchanges)
+        if (u.codePaidIsFiat || u.codeReceivedIsFiat) u.importKey,
+    };
+
+    for (final entry in eurByImportKey.entries) {
+      if ((keyCounts[entry.key] ?? 0) >= 2) continue; // clé partagée — refusée.
+      if (foreignFiatKeys.contains(entry.key)) continue; // jambe fiat — refusée.
+      final amount = Decimal.tryParse(entry.value.trim().replaceAll(',', '.'));
+      if (amount == null || amount <= Decimal.zero) continue;
+      _lastCryptoValuations[entry.key] = CryptoValuation(
+        amountEur: amount,
+        source: 'manual',
+      );
+    }
+
+    final financeMovements = StatementImportService.finalizeCryptoExchanges(
+      plan,
+      _lastCryptoValuations,
+      accountId: accountId,
+      accountCurrency: account.currency,
+    );
+    // Ne restent en arbitrage manuel que les entrées SANS valorisation
+    // (ni étage 1, ni saisie manuelle) — motif reporté tel quel depuis le
+    // cache posé au premier aperçu (cf. [_lastCryptoManualReasons], jamais
+    // recalculé : il ne dépend que des jambes du relevé).
+    final unvaluedForPreview = [
+      for (final u in plan.unvaluedExchanges)
+        if (!_lastCryptoValuations.containsKey(u.importKey))
+          u.copyWith(
+            manualReason: _lastCryptoManualReasons[u.importKey]?.reason,
+            valuationSpreadPct:
+                _lastCryptoManualReasons[u.importKey]?.spreadPct,
+          ),
+    ];
+
+    return _finishCryptoPreview(
+      plan: plan,
+      financeMovements: financeMovements,
+      unvaluedForPreview: unvaluedForPreview,
+      cryptoFxUnavailable: _lastCryptoFxUnavailable,
+      account: account,
+      accountId: accountId,
+      profile: profile,
+    );
+  }
+
+  /// Termine la construction de l'[ImportPreview] crypto — dédup par
+  /// `importKey`, résolution ledgerCode→ticker, delta projeté — commune à
+  /// [_previewCryptoImport] (premier aperçu, depuis les bytes du fichier) et
+  /// [applyManualCryptoValuations] (ré-aperçu après saisie manuelle, sans
+  /// fichier). PUR de tout accès réseau/base propre à la valorisation :
+  /// [financeMovements]/[unvaluedForPreview]/[cryptoFxUnavailable] sont
+  /// calculés par l'APPELANT, cette méthode ne fait que la suite commune.
+  Future<ImportPreview> _finishCryptoPreview({
+    required CryptoImportPlan plan,
+    required List<ImportedMovement> financeMovements,
+    required List<UnvaluedExchange> unvaluedForPreview,
+    required bool cryptoFxUnavailable,
+    required Account account,
+    required String accountId,
+    required BrokerProfile profile,
+  }) async {
     final rejects = <ImportedMovement>[];
     final candidates = <ImportedMovement>[];
-    for (final m in plan.movements) {
+    for (final m in [...plan.movements, ...financeMovements]) {
       (m.isRejected ? rejects : candidates).add(m);
     }
 
@@ -2131,6 +2388,15 @@ class AccountController extends ChangeNotifier {
           quantityDelta: (newQty - prevQty).toString(),
         ));
       } else {
+        // I-2 (revue adversariale) : `m.sourceRow`/`m.sourceRowIndex` sont
+        // repris TELS QUELS depuis le mouvement candidat — pour un mouvement
+        // issu de `finalizeCryptoExchanges` (sell/buy/dépôt en nature),
+        // `sourceRowIndex` porte déjà `UnvaluedExchange.sourceLines.first`
+        // (jamais -1 en pratique, ces listes ne sont jamais vides), donc le
+        // rejet garde un numéro de ligne lisible même si `sourceRow` lui-même
+        // reste vide (voir `finalizeCryptoExchanges`, qui n'a plus la ligne
+        // brute à ce stade). Le libellé du motif est posé côté UI
+        // (`statement_import_page._rejectReasonLabel`).
         rejects.add(ImportedMovement.rejected(
           sourceRow: m.sourceRow,
           sourceRowIndex: m.sourceRowIndex,
@@ -2292,7 +2558,8 @@ class AccountController extends ChangeNotifier {
       rejects: rejects,
       newAssets: newAssets,
       projectedDeltas: projectedDeltas,
-      unvaluedExchanges: plan.unvaluedExchanges,
+      unvaluedExchanges: unvaluedForPreview,
+      cryptoFxUnavailable: cryptoFxUnavailable,
       unbalancedInternalTransfers: resolvedUnbalancedInternalTransfers,
       chainRuptures: plan.chainRuptures,
       quantityGaps: plan.quantityGaps,

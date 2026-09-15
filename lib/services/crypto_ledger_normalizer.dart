@@ -538,20 +538,211 @@ class CryptoLedgerNormalizer {
     );
   }
 
-  /// STUB — lot 2 (conception interne) : consommera [plan.unvaluedExchanges] et une
-  /// table de valorisations résolues (`importKey → montant EUR net, signes opposés
-  /// exacts`) pour produire les mouvements `sell`+`buy` manquants. NON implémenté au
-  /// lot 1 — la valorisation (FX historique frankfurter, cascade
-  /// fichier→cours→manuel) est hors périmètre de ce lot ; cette signature ne fait
-  /// que « préparer la couture ».
+  /// Transforme les [UnvaluedExchange] de [plan] DONT une valorisation est
+  /// disponible dans [valuations] (clé = `UnvaluedExchange.importKey`, cf.
+  /// `CryptoValuationService.resolve`) en mouvements complets `sell`+`buy` (kind
+  /// `'exchange'`) ou `adjustment` à coût (kind `'depositInKind'`) — chantier
+  /// B16, lot 2, conception interne PUR : aucune I/O, la résolution
+  /// FX/lisibilité/spread a DÉJÀ eu lieu en amont (`CryptoValuationService`,
+  /// appelée par `AccountController`).
+  ///
+  /// Un [UnvaluedExchange] SANS entrée dans [valuations] (arbitrage manuel —
+  /// spread excessif, jambes illisibles, FX indisponible…) n'émet RIEN ici :
+  /// il reste exclusivement dans `plan.unvaluedExchanges`, jamais dans le
+  /// résultat de cette méthode (l'appelant les distingue par simple
+  /// différence d'ensemble, cf. `AccountController._previewCryptoImport`).
+  /// Deux gardes SUPPLÉMENTAIRES, avant toute émission (voir leurs
+  /// commentaires au fil du corps) : B-1 (clé `importKey` partagée par ≥ 2
+  /// entrées, jamais émise même valorisée) et B-2 (jambe payée/reçue au code
+  /// de la devise du compte, jamais émise — buy/position `EUR` fabriqué).
+  ///
+  /// RÈGLE N4 (piège conception interne) — UNE valeur par opération : pour un
+  /// échange, `amount(sell)` et `amount(buy)` sont la MÊME [Decimal]
+  /// (`valuation.amountEur`) en signes EXACTEMENT opposés — négation LITTÉRALE,
+  /// jamais un recalcul indépendant depuis chaque jambe — pour un cash net
+  /// rigoureusement nul.
+  ///
+  /// `fee` reste TOUJOURS `null` sur les mouvements émis ici : les frais en
+  /// nature sont déjà absorbés dans les quantités NETTES portées par
+  /// [UnvaluedExchange] (`quantityPaid`/`quantityReceived`, calculées en amont
+  /// par `planCryptoImport` comme `amount − fee`) — les compter une seconde fois
+  /// via le champ `fee` compterait double (conception interne).
+  ///
+  /// [accountCurrency] fixe `currency`/`settlementCurrency` des mouvements émis :
+  /// le COÛT issu du journal crypto est TOUJOURS exprimé dans la devise DU COMPTE
+  /// (`valuation.amountEur`, converti via la série FX historique), JAMAIS dans une
+  /// devise de cotation native — c'est ce qui lève la réserve PRU/`-USD` du lot 1
+  /// (conception interne) : la COTATION d'un actif résolu en `<code>-USD` (étage 4
+  /// de la cascade `AccountController._resolveCryptoTicker`) continue de se
+  /// convertir à l'affichage, mais le PRU dérivé de CES mouvements n'a plus jamais
+  /// besoin de l'être, puisqu'il n'est jamais natif USD.
   static List<ImportedMovement> finalizeCryptoExchanges(
     CryptoImportPlan plan,
-    Map<String, Decimal> resolvedEurValuations,
-  ) {
-    throw UnimplementedError(
-      'finalizeCryptoExchanges (valorisation des échanges sans jambe fiat) '
-      'est du ressort du lot 2 — non implémenté au lot 1 (conception interne).',
-    );
+    Map<String, CryptoValuation> valuations, {
+    required String accountId,
+    required String accountCurrency,
+  }) {
+    final out = <ImportedMovement>[];
+
+    // B-1 (BLOQUANT, revue adversariale) : ceinture INDÉPENDANTE du pré-scan
+    // de `CryptoValuationService.resolve` — une clé partagée par ≥ 2
+    // `UnvaluedExchange` (dustsweeping N→1 dégénéré à `amountusd`
+    // partiellement illisible, ou dépôt en nature multi-jambes, cf.
+    // `_processExchangeGroup`/`_processDepositOrWithdrawal`) ne doit JAMAIS
+    // être émise ici, MÊME si une valorisation traîne malgré tout dans
+    // [valuations] pour cette clé (y compris une valorisation MANUELLE) :
+    // cette méthode itère sur les ENTRÉES et appliquerait sinon à CHACUNE
+    // l'UNIQUE valorisation retenue pour la clé — jambes émises au mauvais
+    // montant, clés `importKey` dupliquées en base (dédup en aval par
+    // importKey, pas de garde intra-lot).
+    final keyCounts = <String, int>{};
+    for (final u in plan.unvaluedExchanges) {
+      keyCounts[u.importKey] = (keyCounts[u.importKey] ?? 0) + 1;
+    }
+
+    for (final u in plan.unvaluedExchanges) {
+      if ((keyCounts[u.importKey] ?? 0) >= 2) {
+        continue; // clé partagée — jamais émis (B-1), reste manuel/visible.
+      }
+
+      // B-A (BLOQUANT, contre-vérification lot 2) : ceinture INDÉPENDANTE du
+      // pré-scan de `CryptoValuationService.resolve` — une entrée dont l'une
+      // des deux jambes est FIAT (typiquement étrangère à la devise du
+      // compte, ex. `USD` sur un compte `EUR`, cf. `_processExchangeGroup`
+      // branche `fiatLegs.isEmpty`) ne doit JAMAIS être émise ici, MÊME si une
+      // valorisation traîne malgré tout dans [valuations] pour cette clé (y
+      // compris une valorisation MANUELLE saisie avant ce correctif, ou
+      // injectée directement en test) : émettre fabriquerait un `sell`/`buy`
+      // du CODE FIAT lui-même — position crypto `USD` inventée, silencieuse
+      // (B-2 ci-dessous ne compare qu'à la devise DU COMPTE, pas à la nature
+      // fiat de la jambe).
+      if (u.codePaidIsFiat || u.codeReceivedIsFiat) {
+        continue; // jambe fiat (étrangère) — jamais émis (B-A).
+      }
+
+      // B-2 (BLOQUANT, revue adversariale) : garde EXPLICITE et INDÉPENDANTE
+      // de B-1 — dans la branche dégénérée du dustsweeping N→1 (répartition
+      // au prorata impossible, `amountusd` illisible quelque part dans le
+      // groupe), `codeReceived` peut valoir le CODE FIAT DU COMPTE (la jambe
+      // fiat du groupe, jamais un actif crypto). Émettre quand même
+      // fabriquerait un `buy` d'actif `EUR` : position inventée, espèces
+      // jamais créditées (la jambe `sell` de la contrepartie ne compense
+      // rien). Toute jambe (payée OU reçue) dont le code égale la devise du
+      // compte reste donc manuelle, comparaison insensible à la casse.
+      if (u.codeReceived.toUpperCase() == accountCurrency.toUpperCase() ||
+          (u.codePaid?.toUpperCase() == accountCurrency.toUpperCase())) {
+        continue; // devise du compte en jambe titre — jamais émis (B-2).
+      }
+
+      final valuation = valuations[u.importKey];
+      if (valuation == null) continue; // arbitrage manuel — rien à émettre.
+
+      // `valuationUsd`/`fxRate`/`fxDate` sont NULLABLES sur [CryptoValuation] pour
+      // couvrir le crochet `source:'manual'` (saisie EUR directe, sans équivalent
+      // USD/FX) — absents de `meta` plutôt que sérialisés en chaîne `'null'`
+      // (primitives JSON seulement, conception interne).
+      final meta = <String, dynamic>{
+        'valuationSource': valuation.source,
+        if (valuation.valuationUsd != null)
+          'valuationUsd': valuation.valuationUsd.toString(),
+        if (valuation.fxRate != null) 'fxRate': valuation.fxRate.toString(),
+        if (valuation.fxDate != null) 'fxDate': _isoDay(valuation.fxDate!),
+        if (valuation.spreadPct != null)
+          'valuationSpreadPct': valuation.spreadPct,
+        if (u.seq != null) 'seq': u.seq,
+      };
+      final sourceRowIndex = u.sourceLines.isNotEmpty ? u.sourceLines.first : -1;
+
+      switch (u.kind) {
+        case 'exchange':
+          final codePaid = u.codePaid!;
+          final codeReceived = u.codeReceived;
+          final quantityPaid = Decimal.parse(u.quantityPaid!);
+          final quantityReceived = Decimal.parse(u.quantityReceived);
+          final amountEur = valuation.amountEur; // TOUJOURS positif.
+
+          final sellUnitPrice =
+              (amountEur / quantityPaid).toDecimal(scaleOnInfinitePrecision: 12);
+          final sellImportKey = '${u.importKey}#sell:$codePaid';
+          out.add(ImportedMovement.candidate(
+            sourceRow: const [],
+            sourceRowIndex: sourceRowIndex,
+            transaction: AssetTransaction(
+              id: AssetTransaction.generateId(),
+              accountId: accountId,
+              symbol: null,
+              kind: TransactionKind.sell,
+              quantity: quantityPaid.toString(),
+              unitPrice: sellUnitPrice.toString(),
+              amount: amountEur.toString(), // +V_eur
+              currency: accountCurrency,
+              settlementCurrency: accountCurrency,
+              date: u.date,
+              meta: {...meta, 'importKey': sellImportKey},
+            ),
+            ledgerCode: codePaid,
+            needsAssetResolution: true,
+            importKey: sellImportKey,
+          ));
+
+          final buyUnitPrice = (amountEur / quantityReceived)
+              .toDecimal(scaleOnInfinitePrecision: 12);
+          final buyImportKey = '${u.importKey}#buy:$codeReceived';
+          out.add(ImportedMovement.candidate(
+            sourceRow: const [],
+            sourceRowIndex: sourceRowIndex,
+            transaction: AssetTransaction(
+              id: AssetTransaction.generateId(),
+              accountId: accountId,
+              symbol: null,
+              kind: TransactionKind.buy,
+              quantity: quantityReceived.toString(),
+              unitPrice: buyUnitPrice.toString(),
+              // Négation LITTÉRALE de la même Decimal que la jambe sell
+              // ci-dessus (règle N4) — jamais un recalcul indépendant.
+              amount: (-amountEur).toString(),
+              currency: accountCurrency,
+              settlementCurrency: accountCurrency,
+              date: u.date,
+              meta: {...meta, 'importKey': buyImportKey},
+            ),
+            ledgerCode: codeReceived,
+            needsAssetResolution: true,
+            importKey: buyImportKey,
+          ));
+          break;
+
+        case 'depositInKind':
+          final codeReceived = u.codeReceived;
+          final quantityReceived = Decimal.parse(u.quantityReceived);
+          final amountEur = valuation.amountEur;
+          final unitPrice = (amountEur / quantityReceived)
+              .toDecimal(scaleOnInfinitePrecision: 12);
+          final depositImportKey = '${u.importKey}#deposit:$codeReceived';
+          out.add(ImportedMovement.candidate(
+            sourceRow: const [],
+            sourceRowIndex: sourceRowIndex,
+            transaction: AssetTransaction(
+              id: AssetTransaction.generateId(),
+              accountId: accountId,
+              symbol: null,
+              kind: TransactionKind.adjustment,
+              quantity: quantityReceived.toString(),
+              unitPrice: unitPrice.toString(),
+              amount: null, // AUCUN cash : un dépôt ne touche pas les espèces.
+              currency: accountCurrency,
+              date: u.date,
+              meta: {...meta, 'importKey': depositImportKey},
+            ),
+            ledgerCode: codeReceived,
+            needsAssetResolution: true,
+            importKey: depositImportKey,
+          ));
+          break;
+      }
+    }
+
+    return out;
   }
 
   // ---------------------------------------------------------------------
@@ -672,6 +863,11 @@ class CryptoLedgerNormalizer {
         usdReceived: leg.valuationUsd?.toString(),
         sourceLines: [leg.sourceIndex],
         importKey: 'ref:$accountId:$refid',
+        seq: leg.seq,
+        // EN NATURE (branche ci-dessus, `_isFiat` déjà écartée plus haut) :
+        // jamais fiat — explicite plutôt qu'implicite sur le défaut (B-A,
+        // contre-vérification lot 2, tous les points de construction).
+        codeReceivedIsFiat: false,
       ));
       return;
     }
@@ -814,6 +1010,18 @@ class CryptoLedgerNormalizer {
         usdReceived: received.valuationUsd?.toString(),
         sourceLines: sourceLines,
         importKey: 'ref:$accountId:$refid',
+        seq: seq,
+        // B-A (BLOQUANT, contre-vérification lot 2) : CETTE branche est
+        // exactement celle où une jambe fiat ÉTRANGÈRE (ex. `USD` sur un
+        // compte `EUR`) peut se retrouver ici — `fiatLegs` ne retient que le
+        // fiat DANS la devise du compte (`_isAccountFiat`), donc un `NNN↔USD`
+        // atterrit dans CETTE branche avec `paid`/`received` posés par simple
+        // SIGNE, sans savoir que l'un des deux est en réalité du cash. Sans
+        // ce marquage, `CryptoValuationService.resolve` le valoriserait comme
+        // un actif ordinaire et `finalizeCryptoExchanges` fabriquerait une
+        // position crypto `USD` (`sell`/`buy`) — silencieuse.
+        codePaidIsFiat: _isFiat(paid, crypto),
+        codeReceivedIsFiat: _isFiat(received, crypto),
       ));
       return;
     }
@@ -897,6 +1105,16 @@ class CryptoLedgerNormalizer {
           usdReceived: fiatLeg.valuationUsd?.toString(),
           sourceLines: sourceLines,
           importKey: 'ref:$accountId:$refid',
+          seq: leg.seq,
+          // `leg` vient de `nonFiatLegs` (jamais fiat par construction) ;
+          // `fiatLeg` est TOUJOURS de la devise du COMPTE ici (`fiatLegs`
+          // filtré par `_isAccountFiat`, jamais étranger) — déjà bloqué par
+          // B-2 (`finalizeCryptoExchanges`, codeReceived == accountCurrency)
+          // ET par B-1 (clé `importKey` partagée par ≥ 2 entrées dans CETTE
+          // branche, toujours ≥ 2 legs ici) ; marqué fiat quand même par
+          // exhaustivité (B-A, tous les points de construction).
+          codePaidIsFiat: false,
+          codeReceivedIsFiat: true,
         ));
       }
       return;

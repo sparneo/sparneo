@@ -217,6 +217,19 @@ class ImportPreview {
   /// récompenses crypto (conception interne) — pour l'affichage seul.
   final int aggregatedRewardSourceRows;
 
+  /// `true` si la série FX historique (`ExchangeRateService. getDailyRatesToEur`)
+  /// était INDISPONIBLE (échec réseau/HTTP/parsing) au moment de résoudre les
+  /// échanges crypto sans jambe fiat (chantier B16, lot 2, conception interne) —
+  /// dans ce cas, [unvaluedExchanges] contient TOUS les échanges concernés (aucun
+  /// n'a pu être valorisé), chacun avec `manualReason == 'fxUnavailable'` ; le
+  /// reste du fichier (rewards, dépôts/retraits, trades à jambe fiat) est TOUJOURS
+  /// normalisé normalement — **aucune coercition, rien n'est bloqué globalement**.
+  /// Sert à l'écran à afficher un bandeau dédié (« Réessayer / Saisir les valeurs /
+  /// N'importer que le reste », conception interne) plutôt que de laisser croire à
+  /// un simple lot d'échanges ambigus. `false` par défaut (comportement inchangé
+  /// pour tout appelant non-crypto).
+  final bool cryptoFxUnavailable;
+
   const ImportPreview({
     this.globalRejectReason,
     this.toCreate = const [],
@@ -232,6 +245,7 @@ class ImportPreview {
     this.quantityGaps = const [],
     this.replacements = const [],
     this.aggregatedRewardSourceRows = 0,
+    this.cryptoFxUnavailable = false,
   });
 
   /// Reconstruction PARTIELLE — I-3 (revue adversariale) : les points d'appel
@@ -258,6 +272,7 @@ class ImportPreview {
     List<QuantityGap>? quantityGaps,
     List<AggregateReplacement>? replacements,
     int? aggregatedRewardSourceRows,
+    bool? cryptoFxUnavailable,
   }) {
     return ImportPreview(
       globalRejectReason: globalRejectReason ?? this.globalRejectReason,
@@ -276,6 +291,7 @@ class ImportPreview {
       replacements: replacements ?? this.replacements,
       aggregatedRewardSourceRows:
           aggregatedRewardSourceRows ?? this.aggregatedRewardSourceRows,
+      cryptoFxUnavailable: cryptoFxUnavailable ?? this.cryptoFxUnavailable,
     );
   }
 }

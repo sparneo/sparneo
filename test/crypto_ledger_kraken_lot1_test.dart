@@ -22,6 +22,8 @@ import 'dart:typed_data';
 
 import 'package:decimal/decimal.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
+import 'package:http/testing.dart';
 
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/model/account.dart';
@@ -31,11 +33,14 @@ import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
 import 'package:portfolio_tracker/model/crypto_import_plan.dart';
+import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/model/wallet.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/app_database.dart';
+import 'package:portfolio_tracker/services/crypto_valuation_service.dart';
+import 'package:portfolio_tracker/services/exchange_rate_service.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart';
 import 'package:portfolio_tracker/services/statement_import_service.dart';
@@ -437,7 +442,7 @@ void main() {
     test(
         'B-2 : échange avec jambe fiat ÉTRANGÈRE à la devise du compte (USD '
         'sur un compte EUR) → en attente de valorisation, JAMAIS écrite au '
-        'pair', () {
+        'pair', () async {
       final b = _LedgerBuilder();
       b.leg(refid: 'RB2', time: '2024-10-02 08:00:00', type: 'trade',
           subtype: 'tradespot', asset: 'USD', amount: '-50', subclass: 'fiat');
@@ -454,6 +459,105 @@ void main() {
       expect(ex.quantityPaid, equals('50'));
       expect(ex.codeReceived, equals('NNN'));
       expect(ex.quantityReceived, equals('1'));
+      // B-A (contre-vérification lot 2) : la jambe PAYÉE (USD) est bien
+      // marquée fiat, la jambe REÇUE (NNN, crypto) ne l'est pas.
+      expect(ex.codePaidIsFiat, isTrue);
+      expect(ex.codeReceivedIsFiat, isFalse);
+
+      // ---- Angle mort de la contre-vérification : le test s'arrêtait ICI,
+      // à `plan.movements` — jamais poussé jusqu'à `finalizeCryptoExchanges`,
+      // où `CryptoValuationService.resolve` valorisait `USD` comme un actif
+      // ordinaire (étage 1, spread nul de sa propre jambe) et où le `sell`
+      // qui en résultait fabriquait une position `crypto:USD` silencieuse
+      // (exclue des `quantityGaps`, qui écartent USD comme fiat). ----
+
+      // AUCUN mock HTTP fourni : la jambe fiat est écartée AVANT toute
+      // tentative FX (`candidates` reste vide) — si le service tentait
+      // malgré tout un appel réseau, ce test échouerait avec une exception
+      // réseau (même garde « zéro appel » que les autres tests lot 2 de ce
+      // fichier, vérifiée en creux).
+      final resolution = await CryptoValuationService().resolve(plan.unvaluedExchanges);
+      expect(resolution.valuations, isEmpty);
+      final manual = resolution.manual.singleWhere((m) => m.source.importKey == ex.importKey);
+      expect(manual.reason, equals(CryptoValuationManualReason.foreignFiat));
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        resolution.valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, isEmpty); // zéro mouvement émis — aucun `USD` fabriqué.
+
+      // Ceinture INDÉPENDANTE de `finalizeCryptoExchanges` (B-A point 3) :
+      // même si une valorisation traînait malgré tout dans la map (ex. une
+      // saisie manuelle antérieure au correctif), RIEN n'est émis pour cette
+      // clé — la garde ne dépend pas de `resolve` en amont.
+      final forcedValuations = {
+        ex.importKey: CryptoValuation(amountEur: Decimal.parse('999'), source: 'manual'),
+      };
+      final finalizedDespiteValuation = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        forcedValuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalizedDespiteValuation, isEmpty);
+
+      // Saisie manuelle INOPÉRANTE (B-A point 4, ceinture contrôleur) —
+      // `AccountController.applyManualCryptoValuations` refuse cette clé,
+      // testé directement sur le plan PUR (sans passer par le contrôleur,
+      // qui exige une base/un compte seedés hors périmètre de ce test) via
+      // le même critère (`codePaidIsFiat || codeReceivedIsFiat`) que celui
+      // appliqué côté contrôleur.
+      expect(ex.codePaidIsFiat || ex.codeReceivedIsFiat, isTrue);
+    });
+
+    test(
+        'B-A : échange avec jambe fiat ÉTRANGÈRE REÇUE (crypto NNN payé, USD '
+        'reçu sur un compte EUR) → même garde dans l\'AUTRE sens, JAMAIS '
+        'émis', () async {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RBA1', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '-1', subclass: 'crypto');
+      b.leg(refid: 'RBA1', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USD', amount: '50', subclass: 'fiat');
+      final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
+
+      expect(plan.movements.any((m) => m.ledgerCode == 'NNN'), isFalse);
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+      final ex = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'exchange');
+      expect(ex.codePaid, equals('NNN'));
+      expect(ex.quantityPaid, equals('1'));
+      expect(ex.codeReceived, equals('USD'));
+      expect(ex.quantityReceived, equals('50'));
+      // Cette fois c'est la jambe REÇUE qui porte le fiat étranger.
+      expect(ex.codePaidIsFiat, isFalse);
+      expect(ex.codeReceivedIsFiat, isTrue);
+
+      final resolution = await CryptoValuationService().resolve(plan.unvaluedExchanges);
+      expect(resolution.valuations, isEmpty);
+      final manual = resolution.manual.singleWhere((m) => m.source.importKey == ex.importKey);
+      expect(manual.reason, equals(CryptoValuationManualReason.foreignFiat));
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        resolution.valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, isEmpty);
+
+      final forcedValuations = {
+        ex.importKey: CryptoValuation(amountEur: Decimal.parse('999'), source: 'manual'),
+      };
+      final finalizedDespiteValuation = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        forcedValuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalizedDespiteValuation, isEmpty);
     });
 
     test(
@@ -656,6 +760,7 @@ void main() {
       AppDatabase db,
       String accountId, {
       MarketDataService? marketService,
+      ExchangeRateService? exchangeService,
     }) async {
       final storage = AccountStorage(database: db);
       final ctrl = AccountController(
@@ -664,6 +769,13 @@ void main() {
         ledgerService: LedgerService(database: db),
         transactionStorage: TransactionStorage(database: db),
         marketService: marketService ?? _NoNetworkMarketDataService(),
+        // Instance DÉDIÉE par défaut (`forTesting`, jamais le singleton
+        // applicatif) : le cache mémoire de `getDailyRatesToEur` est sinon
+        // PARTAGÉ entre tests de ce même fichier (même processus), un test
+        // FX réussi pouvant alors faire lire en cache un test FX-en-échec
+        // ultérieur portant sur la même devise/période — piège singleton
+        // déjà noté ailleurs (mode courbe/garde qualité).
+        exchangeService: exchangeService ?? ExchangeRateService.forTesting(),
       );
       await ctrl.initAccounts();
       return ctrl;
@@ -1012,6 +1124,664 @@ void main() {
       expect(newByCode['TTT']!.proposedSymbol, equals('crypto:TTT'));
       expect(newByCode['TTT']!.quotable, isFalse);
       expect(fakeMarket.callLog.contains('TTT-USD'), isFalse);
+    });
+
+    // -----------------------------------------------------------------------
+    // LOT 2 — intégration bout-en-bout (contrôleur) : résolution FX/spread/
+    // lisibilité, finalisation des échanges, cascade ticker, idempotence du
+    // ré-import, garde de non-double-comptage des écarts de quantité.
+    // -----------------------------------------------------------------------
+
+    /// Corps de réponse frankfurter minimal (mêmes clés que l'API réelle).
+    String frankfurterBody(Map<String, double> ratesByDay) {
+      final entries = ratesByDay.entries
+          .map((e) => '"${e.key}":{"EUR":${e.value}}')
+          .join(',');
+      return '{"amount":1.0,"base":"USD","rates":{$entries}}';
+    }
+
+    /// Grand livre synthétique : UNE ligne fiat (dépôt EUR) + un échange SANS
+    /// jambe fiat (AAA payé, STB stable reçu, `amountusd` lisible sur les
+    /// deux jambes, écart < 10 %) — le cas nominal étage 1 du lot 2.
+    Uint8List exchangeCsv() {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RD1', time: '2024-01-01 08:00:00', type: 'deposit',
+          asset: 'EUR', amount: '1000', subclass: 'fiat');
+      b.leg(refid: 'RE1', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE1', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '198', subclass: 'stable_coin',
+          amountusd: '198');
+      return b.toCsvBytes();
+    }
+
+    test('lot 2 : échange valorisé étage 1 → sell+buy émis, montants opposés, meta complète', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-a';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(exchangeCsv(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.unvaluedExchanges, isEmpty); // valorisé, plus en attente.
+      expect(preview.cryptoFxUnavailable, isFalse);
+
+      final sell = preview.toCreate.firstWhere((m) => m.ledgerCode == 'AAA');
+      final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'STB');
+      expect(sell.transaction!.kind, equals(TransactionKind.sell));
+      expect(buy.transaction!.kind, equals(TransactionKind.buy));
+      // Jambe payée retenue (200 USD) × 0,9 = 180 EUR — montants EXACTEMENT opposés
+      // (règle N4, conception interne).
+      expect(sell.transaction!.amount, equals('180'));
+      expect(buy.transaction!.amount, equals('-180'));
+      expect(sell.transaction!.fee, isNull);
+      expect(buy.transaction!.fee, isNull);
+      // unitPrice = V_eur / quantité, scale 12.
+      // Division exacte (180/2) : `Decimal.toString()` ne pousse pas de
+      // zéros de remplissage jusqu'à l'échelle 12 quand le reste est nul —
+      // seule la division INEXACTE ci-dessous (180/198) exhibe l'échelle 12.
+      expect(sell.transaction!.unitPrice, equals('90')); // 180/2
+      expect(buy.transaction!.unitPrice,
+          equals((Decimal.parse('180') / Decimal.parse('198'))
+              .toDecimal(scaleOnInfinitePrecision: 12)
+              .toString()));
+      // Meta de traçabilité complète.
+      final meta = sell.transaction!.meta!;
+      expect(meta['valuationSource'], equals('statement'));
+      expect(meta['valuationUsd'], equals('200'));
+      expect(meta['fxRate'], equals('0.9'));
+      expect(meta['fxDate'], equals('2024-01-05'));
+      // Écart (198-200)/200 = -1 % < seuil, restitué pour l'affichage.
+      expect(Decimal.parse(meta['valuationSpreadPct'] as String),
+          equals(Decimal.parse('-0.01')));
+      // Clés de rôle stables (conception interne).
+      expect(sell.importKey, equals('ref:$accountId:RE1#sell:AAA'));
+      expect(buy.importKey, equals('ref:$accountId:RE1#buy:STB'));
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+    });
+
+    test('lot 2 : écart de spread > 10 % → AUCUN mouvement émis, reste en manuel avec motif', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-b';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE2', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE2', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '250', subclass: 'stable_coin',
+          amountusd: '250'); // écart +25 %.
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'AAA'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'STB'), isFalse);
+      expect(preview.unvaluedExchanges, hasLength(1));
+      final u = preview.unvaluedExchanges.single;
+      expect(u.manualReason, equals('spread'));
+      expect(Decimal.parse(u.valuationSpreadPct!), equals(Decimal.parse('0.25')));
+    });
+
+    test('lot 2 : amountusd illisible ("-") sur les deux jambes → manuel, motif unreadable', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-c';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE3', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto');
+      b.leg(refid: 'RE3', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '198', subclass: 'stable_coin');
+
+      // AUCUN mock HTTP fourni : si le service tentait malgré tout un appel
+      // réseau, `http.runWithClient` sans client déclencherait une erreur —
+      // la garde « aucune ligne valorisable → zéro appel » est donc vérifiée
+      // EN CREUX ici (le test échouerait sinon avec une exception réseau).
+      final preview =
+          await ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId);
+
+      expect(preview.toCreate, isEmpty);
+      expect(preview.unvaluedExchanges, hasLength(1));
+      expect(preview.unvaluedExchanges.single.manualReason, equals('unreadable'));
+    });
+
+    test('lot 2 : FX indisponible → TOUS les échanges en manuel (fxUnavailable), le reste du fichier passe normalement', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-d';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final mockClient = MockClient((request) async {
+        return http.Response('erreur serveur', 500);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(exchangeCsv(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.cryptoFxUnavailable, isTrue);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'AAA'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'STB'), isFalse);
+      expect(preview.unvaluedExchanges, hasLength(1));
+      expect(preview.unvaluedExchanges.single.manualReason, equals('fxUnavailable'));
+      // Le reste du fichier (ici le dépôt EUR) passe normalement — AUCUNE
+      // coercition globale (conception interne).
+      expect(
+        preview.toCreate.any((m) => m.transaction!.kind == TransactionKind.deposit),
+        isTrue,
+      );
+    }, timeout: const Timeout(Duration(seconds: 15))); // 3 tentatives avec backoff.
+
+    test('lot 2 : ré-import du même fichier valorisé → tout en doublons, zéro nouveau (idempotence)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-e';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final bytes = exchangeCsv();
+
+      final preview1 = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+      final err1 = await ctrl.confirmStatementImport(preview1, accountId: accountId);
+      expect(err1, isNull);
+
+      final preview2 = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      // Clés `#sell:`/`#buy:` STABLES (calculées AVANT toute valorisation, invariant
+      // absolu conception interne) ⇒ ré-import reconnu comme doublon.
+      expect(preview2.toCreate.any((m) => m.ledgerCode == 'AAA'), isFalse);
+      expect(preview2.toCreate.any((m) => m.ledgerCode == 'STB'), isFalse);
+      expect(preview2.duplicates.where((m) => m.ledgerCode == 'AAA'), hasLength(1));
+      expect(preview2.duplicates.where((m) => m.ledgerCode == 'STB'), hasLength(1));
+    });
+
+    test('lot 2 : dépôt en nature valorisé → adjustment à coût, PRU impacté, AUCUN mouvement d\'espèces', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-f';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE4', time: '2024-01-05 08:00:00', type: 'transfer',
+          subtype: 'spotfromfutures', asset: 'III', amount: '2', subclass: 'crypto',
+          amountusd: '120');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+      expect(preview.unvaluedExchanges, isEmpty);
+      final deposit = preview.toCreate.firstWhere((m) => m.ledgerCode == 'III');
+      expect(deposit.transaction!.kind, equals(TransactionKind.adjustment));
+      expect(deposit.transaction!.quantity, equals('2'));
+      expect(deposit.transaction!.amount, isNull); // AUCUN cash.
+      // unitPrice = 120×0,9 / 2 = 54 (division exacte, pas de zéros de
+      // remplissage jusqu'à l'échelle 12 — cf. commentaire du test précédent).
+      expect(deposit.transaction!.unitPrice, equals('54'));
+      expect(deposit.importKey, equals('ref:$accountId:RE4#deposit:III'));
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+
+      final positions = await AccountStorage(database: db).getPositions(accountId);
+      final iii = positions.firstWhere((p) => p.asset.ledgerCode == 'III');
+      expect(iii.quantity, equals('2'));
+      expect(iii.averageBuyPrice, equals(54.0)); // PRU IMPACTÉ par le coût déclaré.
+
+      // Cash INCHANGÉ : un dépôt en nature ne touche jamais les espèces.
+      final journal = await TransactionStorage(database: db).getByAccount(accountId);
+      expect(journal.every((t) => t.amount == null), isTrue);
+    });
+
+    test(
+        'lot 2 : oracle/écart de quantité — aucun double comptage après émission des '
+        'mouvements d\'échange (I-1 crédite la quantité au plan, finalizeCryptoExchanges '
+        'ne la recompte pas)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-g';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(exchangeCsv(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      // `quantityGaps` est calculé PENDANT `planCryptoImport` (AVANT toute
+      // valorisation lot 2, cf. I-1) — il reste vide que l'échange finisse
+      // valorisé (mouvements réels émis) ou non : la quantité était déjà
+      // connue et créditée à ce stade, jamais recomptée ici.
+      expect(preview.quantityGaps, isEmpty);
+    });
+
+    // Récompenses toujours à coût 0 (agrégat mensuel SANS unitPrice) — garde
+    // de non-régression explicite : le correctif lot 2 (adjustment à coût
+    // pour un dépôt en nature) ne doit JAMAIS affecter l'agrégat mensuel de
+    // récompenses (unitPrice reste null, cf. addReward/CryptoLedgerNormalizer).
+    test('lot 2 : agrégat mensuel de récompenses reste à coût 0 (PRU nul), même après un dépôt en nature valorisé', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-h';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE5', time: '2024-01-05 08:00:00', type: 'transfer',
+          subtype: 'spotfromfutures', asset: 'III', amount: '2', subclass: 'crypto',
+          amountusd: '120');
+      b.leg(refid: 'RW9', time: '2024-01-06 09:00:00', type: 'staking',
+          asset: 'RWD', wallet: 'earn/flexible', amount: '1', subclass: 'crypto');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+
+      final positions = await AccountStorage(database: db).getPositions(accountId);
+      final rwd = positions.firstWhere((p) => p.asset.ledgerCode == 'RWD');
+      expect(rwd.quantity, equals('1'));
+      expect(rwd.averageBuyPrice, isNull); // coût 0 / PRU inconnu, INCHANGÉ.
+    });
+
+    // ----------------------------------------------------------------------- LOT 2
+    // UI — applyManualCryptoValuations (conception interne) : saisie manuelle du
+    // montant EUR d'un échange resté en arbitrage → sell+ buy émis avec des montants
+    // EXACTEMENT opposés, `source:'manual'`, SANS reparser le fichier ni retoucher
+    // le réseau ; puis idempotence d'un second cycle aperçu+saisie identique (clés
+    // `#sell:`/`#buy:` stables, même mécanisme que l'étage 1 — conception interne).
+    // -----------------------------------------------------------------------
+
+    test(
+        'lot 2 UI : applyManualCryptoValuations — saisie manuelle émet '
+        'sell+buy à montants opposés (source manual), sans I/O ; un second '
+        'cycle aperçu+saisie IDENTIQUE reconnaît un doublon (idempotence)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-manual';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      // Écart de spread > 10 % (25 %, même motif que le test « écart de
+      // spread » ci-dessus) : reste en arbitrage manuel après l'étage 1.
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE6', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE6', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '250', subclass: 'stable_coin',
+          amountusd: '250');
+      final bytes = b.toCsvBytes();
+
+      // Le SEUL échange du fichier a un spread > seuil : il est écarté AVANT
+      // même la récupération FX (`CryptoValuationService.resolve`, aucune
+      // ligne valorisable ⇒ zéro appel réseau) — le mock reste défensif,
+      // jamais sollicité.
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      Future<ImportPreview> preview() => http.runWithClient(
+            () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+            () => mockClient,
+          );
+
+      final preview1 = await preview();
+      expect(preview1.unvaluedExchanges, hasLength(1));
+      final key = preview1.unvaluedExchanges.single.importKey;
+      expect(preview1.unvaluedExchanges.single.manualReason, equals('spread'));
+
+      // Saisie manuelle : 225 EUR — SANS aucun mock HTTP actif (le plan et
+      // l'étage 1 déjà résolu restent en cache sur le contrôleur, cf.
+      // `_lastCrypto*`) : aucune I/O, ni réseau ni base, pour cette étape.
+      final applied1 = await ctrl.applyManualCryptoValuations({key: '225'});
+      expect(applied1, isNotNull);
+      expect(applied1!.unvaluedExchanges, isEmpty);
+
+      final sell1 = applied1.toCreate.firstWhere((m) => m.ledgerCode == 'AAA');
+      final buy1 = applied1.toCreate.firstWhere((m) => m.ledgerCode == 'STB');
+      expect(sell1.transaction!.kind, equals(TransactionKind.sell));
+      expect(buy1.transaction!.kind, equals(TransactionKind.buy));
+      // Montants EXACTEMENT opposés (règle N4, conception interne) — la MÊME Decimal
+      // saisie, jamais un recalcul indépendant par jambe.
+      expect(sell1.transaction!.amount, equals('225'));
+      expect(buy1.transaction!.amount, equals('-225'));
+      expect(sell1.transaction!.fee, isNull);
+      expect(buy1.transaction!.fee, isNull);
+      // Provenance ET absence de toute trace USD/FX (saisie EUR directe,
+      // aucun équivalent USD connu — `CryptoValuation.valuationUsd`/`fxRate`/
+      // `fxDate` restent `null`, donc ABSENTS de `meta`, cf. doc de
+      // `finalizeCryptoExchanges` point 6 : primitives JSON seulement).
+      final sellMeta = sell1.transaction!.meta!;
+      expect(sellMeta['valuationSource'], equals('manual'));
+      expect(sellMeta.containsKey('valuationUsd'), isFalse);
+      expect(sellMeta.containsKey('fxRate'), isFalse);
+      expect(sellMeta.containsKey('fxDate'), isFalse);
+      expect(sell1.importKey, equals('ref:$accountId:RE6#sell:AAA'));
+      expect(buy1.importKey, equals('ref:$accountId:RE6#buy:STB'));
+
+      final err1 = await ctrl.confirmStatementImport(applied1, accountId: accountId);
+      expect(err1, isNull);
+
+      // Second cycle COMPLET (aperçu frais depuis le même fichier, puis MÊME saisie
+      // manuelle) : le moteur ne « mémorise » rien de la saisie précédente (aucune
+      // coercition, conception interne) — l'échange retombe en arbitrage manuel
+      // identique, c'est la DÉDUP par `importKey` (clés `#sell:`/`#buy:` stables,
+      // calculées AVANT toute valorisation) qui absorbe le doublon lors de la
+      // reconstruction de l'aperçu.
+      final preview2 = await preview();
+      expect(preview2.unvaluedExchanges, hasLength(1));
+      final applied2 =
+          await ctrl.applyManualCryptoValuations({key: '225'});
+      expect(applied2, isNotNull);
+      expect(applied2!.toCreate.any((m) => m.ledgerCode == 'AAA'), isFalse);
+      expect(applied2.toCreate.any((m) => m.ledgerCode == 'STB'), isFalse);
+      expect(applied2.duplicates.where((m) => m.ledgerCode == 'AAA'), hasLength(1));
+      expect(applied2.duplicates.where((m) => m.ledgerCode == 'STB'), hasLength(1));
+
+      // Base intacte : UNE seule paire sell/buy pour cette clé, pas deux.
+      final journal = await TransactionStorage(database: db).getByAccount(accountId);
+      expect(journal.where((t) => t.meta?['importKey'] == sell1.importKey), hasLength(1));
+      expect(journal.where((t) => t.meta?['importKey'] == buy1.importKey), hasLength(1));
+    });
+
+    test(
+        'lot 2 UI : applyManualCryptoValuations sans aperçu crypto préalable '
+        '(cache vide) → null, aucune exception', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-nocontext';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final result =
+          await ctrl.applyManualCryptoValuations({'ref:x:Y': '100'});
+      expect(result, isNull);
+    });
+
+    // -----------------------------------------------------------------------
+    // B-1 (BLOQUANT, revue adversariale) : dustsweeping N→1 DÉGÉNÉRÉ (au moins
+    // un `amountusd` illisible parmi les jambes payées) émet PLUSIEURS
+    // `UnvaluedExchange` sous la MÊME `importKey` (repli « une entrée par
+    // jambe payée », `CryptoLedgerNormalizer._processExchangeGroup`) —
+    // AVANT le correctif, `finalizeCryptoExchanges` aurait appliqué à CHACUNE
+    // l'unique valorisation retenue pour cette clé dans la map (jambes émises
+    // au mauvais montant, clés dupliquées en base).
+    // -----------------------------------------------------------------------
+    test(
+        'lot 2 B-1 (revue adversariale) : dustsweeping N→1 dégénéré '
+        '(amountusd partiellement illisible) → AUCUN mouvement émis, 2 '
+        'entrées manuelles motif ambiguousGroup, saisie manuelle inopérante, '
+        'ré-import stable', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-b1';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      // CCC : amountusd lisible (10). DDD : amountusd OMIS → littéral '-'
+      // (illisible, même convention que les autres tests N2 de ce fichier).
+      // `weightsReadable` devient faux pour le groupe entier : repli dégénéré
+      // « une entrée par jambe payée », MÊME importKey `ref:$accountId:RDEG`
+      // pour CCC et DDD — c'est CE partage de clé que B-1 corrige.
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RDEG', time: '2024-01-05 10:00:00', type: 'spend',
+          subtype: 'dustsweeping', asset: 'CCC', amount: '-5', subclass: 'crypto',
+          amountusd: '10');
+      b.leg(refid: 'RDEG', time: '2024-01-05 10:00:00', type: 'spend',
+          subtype: 'dustsweeping', asset: 'DDD', amount: '-3', subclass: 'crypto');
+      b.leg(refid: 'RDEG', time: '2024-01-05 10:00:00', type: 'receive',
+          subtype: 'dustsweeping', asset: 'EUR', amount: '30', subclass: 'fiat',
+          amountusd: '30');
+      final bytes = b.toCsvBytes();
+
+      // AUCUN mock HTTP fourni : le groupe entier part en arbitrage manuel
+      // dès le pré-scan de multiplicité de `CryptoValuationService.resolve`
+      // (AVANT toute tentative FX, `candidates` reste vide) — si le service
+      // tentait malgré tout un appel réseau, `http.runWithClient` sans client
+      // déclencherait une erreur (garde vérifiée en creux, même patron que le
+      // test « amountusd illisible » ci-dessus).
+      final preview = await ctrl.previewStatementImport(
+        bytes,
+        profile,
+        accountId: accountId,
+      );
+
+      // AVANT B-1 : une valorisation unique aurait pu être appliquée à tort
+      // aux DEUX entrées. APRÈS : rien n'est émis pour ce groupe.
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'CCC'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'DDD'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'EUR'), isFalse);
+      expect(preview.unvaluedExchanges, hasLength(2));
+      expect(
+        preview.unvaluedExchanges
+            .every((u) => u.manualReason == 'ambiguousGroup'),
+        isTrue,
+      );
+      expect(
+        preview.unvaluedExchanges.map((u) => u.importKey).toSet(),
+        equals({'ref:$accountId:RDEG'}),
+      );
+
+      // Saisie manuelle sur la clé partagée : REFUSÉE (B-1.3, ceinture
+      // contrôleur) — le groupe reste intégralement manuel, motif inchangé.
+      final key = preview.unvaluedExchanges.first.importKey;
+      final applied = await ctrl.applyManualCryptoValuations({key: '999'});
+      expect(applied, isNotNull);
+      expect(applied!.toCreate.any((m) => m.ledgerCode == 'CCC'), isFalse);
+      expect(applied.toCreate.any((m) => m.ledgerCode == 'DDD'), isFalse);
+      expect(applied.unvaluedExchanges, hasLength(2));
+      expect(
+        applied.unvaluedExchanges
+            .every((u) => u.manualReason == 'ambiguousGroup'),
+        isTrue,
+      );
+
+      // Ré-import STABLE : rien n'ayant été journalisé pour ce groupe, un
+      // second aperçu depuis le même fichier retombe EXACTEMENT sur le même
+      // état (aucune coercition, aucune dérive entre deux tentatives).
+      final preview2 = await ctrl.previewStatementImport(
+        bytes,
+        profile,
+        accountId: accountId,
+      );
+      expect(preview2.unvaluedExchanges, hasLength(2));
+      expect(
+        preview2.unvaluedExchanges
+            .every((u) => u.manualReason == 'ambiguousGroup'),
+        isTrue,
+      );
+    });
+
+    // -----------------------------------------------------------------------
+    // B-A (BLOQUANT, contre-vérification lot 2) : jambe fiat ÉTRANGÈRE (ex.
+    // `USD` sur un compte `EUR`) traitée comme un actif — cf. le pendant
+    // « moteur pur » de ce test dans le groupe « Lot 1 Kraken — revue
+    // adversariale » (fixture B-2, poussée jusqu'à `finalizeCryptoExchanges`)
+    // ; celui-ci couvre le circuit CONTRÔLEUR complet : aperçu →
+    // `manualReason == 'foreignFiat'` → saisie manuelle refusée.
+    // -----------------------------------------------------------------------
+    test(
+        'lot 2 B-A (contre-vérification) : échange à jambe fiat ÉTRANGÈRE '
+        '(USD sur un compte EUR) → AUCUN mouvement émis, motif foreignFiat, '
+        'saisie manuelle inopérante', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-ba';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RBA2', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USD', amount: '-50', subclass: 'fiat');
+      b.leg(refid: 'RBA2', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
+      final bytes = b.toCsvBytes();
+
+      // AUCUN mock HTTP fourni : la jambe fiat est écartée AVANT toute
+      // tentative FX — même garde « zéro appel » que les tests voisins.
+      final preview = await ctrl.previewStatementImport(
+        bytes,
+        profile,
+        accountId: accountId,
+      );
+
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'USD'), isFalse);
+      expect(preview.unvaluedExchanges, hasLength(1));
+      final ex = preview.unvaluedExchanges.single;
+      expect(ex.manualReason, equals('foreignFiat'));
+
+      // Saisie manuelle : REFUSÉE (B-A, ceinture contrôleur) — l'échange
+      // reste intégralement manuel, motif inchangé.
+      final applied = await ctrl.applyManualCryptoValuations({ex.importKey: '999'});
+      expect(applied, isNotNull);
+      expect(applied!.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
+      expect(applied.toCreate.any((m) => m.ledgerCode == 'USD'), isFalse);
+      expect(applied.unvaluedExchanges, hasLength(1));
+      expect(applied.unvaluedExchanges.single.manualReason, equals('foreignFiat'));
+
+      // Ré-import STABLE : rien n'ayant été journalisé, un second aperçu
+      // retombe exactement sur le même état.
+      final preview2 = await ctrl.previewStatementImport(
+        bytes,
+        profile,
+        accountId: accountId,
+      );
+      expect(preview2.unvaluedExchanges, hasLength(1));
+      expect(preview2.unvaluedExchanges.single.manualReason, equals('foreignFiat'));
+    });
+  });
+
+  group('Lot 2 — revue adversariale B-1/B-2 (moteur pur, finalizeCryptoExchanges)', () {
+    test(
+        'B-2 (BLOQUANT) : codeReceived == devise du compte, clé UNIQUE → '
+        'ZÉRO mouvement émis (aucun buy EUR fabriqué)', () {
+      // Reproduit à la main la forme dégénérée que
+      // `_processExchangeGroup` peut produire : `codeReceived` porte la
+      // devise DU COMPTE (jamais un actif titre) — construction directe pour
+      // isoler CETTE garde de la garde B-1 (clé ici volontairement UNIQUE).
+      final plan = CryptoImportPlan(
+        unvaluedExchanges: [
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 1, 5),
+            codePaid: 'CCC',
+            quantityPaid: '5',
+            codeReceived: 'EUR', // devise du compte, jamais un actif titre.
+            quantityReceived: '30',
+            sourceLines: const [7],
+            importKey: 'ref:acc1:RB2',
+          ),
+        ],
+      );
+      final valuations = {
+        'ref:acc1:RB2':
+            CryptoValuation(amountEur: Decimal.parse('30'), source: 'statement'),
+      };
+
+      final out = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+
+      expect(out, isEmpty);
+    });
+
+    test(
+        'B-1 (BLOQUANT) : ceinture indépendante de finalizeCryptoExchanges — '
+        'clé partagée par 2 entrées, MÊME avec une valorisation présente dans '
+        'la map → ZÉRO mouvement émis', () {
+      final u1 = UnvaluedExchange(
+        kind: 'exchange',
+        date: DateTime(2024, 1, 5),
+        codePaid: 'CCC',
+        quantityPaid: '5',
+        codeReceived: 'STB',
+        quantityReceived: '20',
+        sourceLines: const [7],
+        importKey: 'ref:acc1:RB1', // clé PARTAGÉE.
+      );
+      final u2 = UnvaluedExchange(
+        kind: 'exchange',
+        date: DateTime(2024, 1, 5),
+        codePaid: 'DDD',
+        quantityPaid: '3',
+        codeReceived: 'STB',
+        quantityReceived: '10',
+        sourceLines: const [8],
+        importKey: 'ref:acc1:RB1', // MÊME clé que u1.
+      );
+      final plan = CryptoImportPlan(unvaluedExchanges: [u1, u2]);
+      // Valorisation malgré tout présente dans la map (ex. une entrée
+      // manuelle antérieure au correctif, ou un futur appelant qui
+      // n'appliquerait pas le pré-scan de `resolve`) : ne doit JAMAIS être
+      // appliquée — la ceinture est INDÉPENDANTE de `resolve`.
+      final valuations = {
+        'ref:acc1:RB1':
+            CryptoValuation(amountEur: Decimal.parse('999'), source: 'manual'),
+      };
+
+      final out = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+
+      expect(out, isEmpty);
     });
   });
 }

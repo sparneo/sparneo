@@ -1275,6 +1275,106 @@ void main() {
       expect(totalGain.totalGain, closeTo(200.0, 1e-9));
     });
 
+    // -------------------------------------------------------------------
+    // I-A (contre-vérification B16 lot 2) : (b bis) appliquait `usdToEurRate`
+    // dès que `asset.isUsd`, sans le garde-fou posé en (b) ligne ~933 — un
+    // `buy`/`sell` crypto à `ledgerCode` non-null (coût TOUJOURS déjà en EUR,
+    // cf. `CryptoLedgerNormalizer.finalizeCryptoExchanges`) sur un compte NON
+    // ANCRÉ se faisait reconvertir une seconde fois : capital investi
+    // faussé (18 000 au lieu de 20 000 avec les montants ci-dessous), et donc
+    // « Valeur − Capital investi == gain total » cassé.
+    // -------------------------------------------------------------------
+    test(
+        'buy crypto -USD (ledgerCode != null) SUR COMPTE NON ANCRÉ : coût '
+        'DÉJÀ EUR jamais reconverti en (b bis), seule la VALEUR (cotation '
+        'native) passe par usdToEurRate — invariant Valeur − Capital == gain '
+        'préservé', () {
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'BTC-USD',
+        kind: TransactionKind.buy,
+        quantity: '1',
+        unitPrice: '20000', // déjà EUR (journal crypto, finalizeCryptoExchanges)
+        amount: '-20000',
+        currency: 'USD', // devise de COTATION du titre, pas celle du coût
+        date: DateTime(2024, 1, 2),
+      );
+      final hist = _histData(
+        'BTC-USD',
+        [DateTime(2024, 1, 1), DateTime(2024, 1, 2), DateTime(2024, 1, 10)],
+        [20000.0, 20000.0, 25000.0], // cotation NATIVE USD
+      );
+      final gridDates = [
+        DateTime(2024, 1, 1),
+        DateTime(2024, 1, 2),
+        DateTime(2024, 1, 10),
+      ];
+      final asset = Asset(symbol: 'BTC-USD', currency: 'USD', ledgerCode: 'BTC');
+
+      final flows = HistoryAggregator.buildExternalFlowsCurve(
+        txsBySymbol: {
+          'BTC-USD': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        symbolToData: {'BTC-USD': hist},
+        assetBySymbol: {'BTC-USD': asset},
+        gridDates: gridDates,
+        usdToEurRate: 0.9,
+      );
+
+      // 1 × 20 000 déjà EUR : AUCUNE conversion (AVANT le fix : 18 000, le
+      // coût se faisait reconvertir une seconde fois).
+      expect(flows, [0.0, 20000.0, 20000.0]);
+
+      final reconstructed = HistoryAggregator.reconstructRealNetWorth(
+        txsBySymbol: {
+          'BTC-USD': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        symbolToData: {'BTC-USD': hist},
+        assetBySymbol: {'BTC-USD': asset},
+        usdToEurRate: 0.9,
+        gridDates: gridDates,
+      );
+      // Valeur = qté × cotation NATIVE × fx = 1 × 25 000 × 0.9 = 22 500.
+      expect(reconstructed.values, [0.0, 18000.0, 22500.0]);
+
+      final gap = reconstructed.values.last - flows.last;
+      expect(gap, closeTo(2500.0, 1e-9));
+
+      // INVARIANT (convention AccountController : cashEur: 0 sur un compte
+      // non ancré) — l'écart des deux courbes doit coïncider avec le gain
+      // total base-coût de la carte (PRU JAMAIS reconverti, ledgerCode !=
+      // null — I-1 lot 2).
+      final position = PositionWithMarketData(
+        position: Position(
+          accountId: 'acc1',
+          asset: asset,
+          quantity: '1',
+          averageBuyPrice: 20000.0, // coût déclaré, déjà EUR
+        ),
+        currentPrice: 25000.0, // cotation native USD
+      );
+      final totalGain = HistoryAggregator.computeRealTotalGain(
+        positions: [position],
+        txsBySymbol: {
+          'BTC-USD': [buy],
+        },
+        txsByAccount: {
+          'acc1': [buy],
+        },
+        usdToEurRate: 0.9,
+        cashEur: 0.0,
+      );
+      expect(totalGain.totalGain, closeTo(gap, 1e-9));
+      expect(totalGain.totalGain, closeTo(2500.0, 1e-9));
+    });
+
     test('MIXTE : deux comptes du MÊME appel, un ANCRÉ un NON — chacun '
         'traité selon son PROPRE ancrage, testé PAR TRANSACTION via '
         '`tx.accountId` (même symbole détenu sur les deux)', () {
@@ -1714,8 +1814,9 @@ void main() {
       required String quantity,
       double? price,
       double? pru,
+      String? ledgerCode,
     }) {
-      final asset = Asset(symbol: symbol, currency: currency);
+      final asset = Asset(symbol: symbol, currency: currency, ledgerCode: ledgerCode);
       final position = Position(
         accountId: 'acc1',
         asset: asset,
@@ -2116,6 +2217,99 @@ void main() {
       // percent = 90/900×100 = 10.
       expect(result.totalGain, closeTo(90.0, 1e-9));
       expect(result.totalGainPercent, closeTo(10.0, 1e-9));
+    });
+
+    // -------------------------------------------------------------------
+    // I-1 (revue adversariale B16 lot 2) : un actif `-USD` à `ledgerCode`
+    // != null (crypto résolue par la cascade `AccountController.
+    // _resolveCryptoTicker`) porte un PRU/coût TOUJOURS déjà en EUR (jamais
+    // natif USD), alors que sa COTATION (`currentPrice`) reste native USD —
+    // seule la VALEUR (cours × qté) doit passer par `usdToEurRate`, jamais
+    // le PRU ni le gain réalisé issu du journal. Réserve levée à moitié au
+    // lot 2 (position_detail_page.dart), complétée ici côté agrégateur.
+    // -------------------------------------------------------------------
+    test(
+        'crypto -USD (ledgerCode != null) non-réalisé : PRU déjà EUR jamais '
+        'reconverti, VALEUR convertie normalement — invariant Valeur − '
+        'Capital == gain préservé', () {
+      final pos = makePos(
+        symbol: 'BTC-USD',
+        currency: 'USD',
+        quantity: '2',
+        price: 60000.0, // cours natif USD (cotation, se convertit toujours).
+        pru: 45000.0, // PRU DÉJÀ EN EUR (journal crypto), pas natif USD.
+        ledgerCode: 'BTC',
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: [pos],
+        txsBySymbol: const {},
+        txsByAccount: const {},
+        usdToEurRate: 0.9,
+      );
+
+      // Valeur = cours × qté × fx = 60000 × 2 × 0.9 = 108 000 (convertie,
+      // comme n'importe quelle position USD).
+      // Coût = PRU × qté = 45 000 × 2 = 90 000 (JAMAIS reconverti).
+      // gain = 108 000 − 90 000 = 18 000 (PAS (60000×0.9−45000)×2 = −18 000
+      // si le PRU avait été reconverti à tort — signe et magnitude inversés,
+      // exactement le piège documenté).
+      expect(result.totalGain, closeTo(18000.0, 1e-9));
+      // Invariant Valeur − Capital investi == gain total : capital dérivé
+      // indépendamment doit correspondre à la valeur de marché EUR connue
+      // moins le gain rapporté.
+      const expectedValueIncluded = 108000.0;
+      final capital = expectedValueIncluded - result.totalGain!;
+      expect(capital, closeTo(90000.0, 1e-6));
+      expect(result.totalGainPercent, closeTo(20.0, 1e-9)); // 18000/90000×100
+    });
+
+    test(
+        'crypto -USD (ledgerCode != null) réalisé : unitPrice du journal '
+        'déjà EUR, jamais reconverti malgré currency == USD', () {
+      final buy = AssetTransaction(
+        id: 'b1',
+        accountId: 'acc1',
+        symbol: 'BTC-USD',
+        kind: TransactionKind.buy,
+        quantity: '1',
+        unitPrice: '20000', // déjà EUR (V_eur / quantité, cf. finalizeCryptoExchanges).
+        amount: '-20000',
+        currency: 'USD',
+        date: DateTime(2024, 1, 1),
+      );
+      final sell = AssetTransaction(
+        id: 's1',
+        accountId: 'acc1',
+        symbol: 'BTC-USD',
+        kind: TransactionKind.sell,
+        quantity: '1',
+        unitPrice: '25000',
+        amount: '25000',
+        currency: 'USD',
+        date: DateTime(2024, 1, 10),
+      );
+
+      final result = HistoryAggregator.computeRealTotalGain(
+        positions: [
+          // Position SOLDÉE (quantité 0) conservée uniquement pour porter
+          // `currency`/`ledgerCode` — `ledgerCodeBySymbol` n'a pas de repli
+          // sur le journal (AssetTransaction ne porte pas `ledgerCode`, cf.
+          // commentaire de tête sur `ledgerCodeBySymbol`).
+          makePos(symbol: 'BTC-USD', currency: 'USD', quantity: '0', ledgerCode: 'BTC'),
+        ],
+        txsBySymbol: {
+          'BTC-USD': [buy, sell],
+        },
+        txsByAccount: {
+          'acc1': [buy, sell],
+        },
+        usdToEurRate: 0.9,
+      );
+
+      // realizedGain natif = (25000-20000)×1 = 5000, DÉJÀ en EUR — jamais
+      // ×0.9 malgré `currency == 'USD'` (sinon 4500, le piège documenté).
+      expect(result.totalGain, closeTo(5000.0, 1e-9));
     });
 
     test('invariant : valeur = capital + gains (dérivé de totalGain/totalGainPercent)', () {

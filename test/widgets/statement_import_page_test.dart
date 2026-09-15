@@ -117,6 +117,28 @@ class _FakeCryptoConfirmController extends AccountController {
   }
 }
 
+/// Fake SANS RÉSEAU qui capture les montants passés à
+/// [AccountController.applyManualCryptoValuations] (chantier B16, lot 2,
+/// conception interne) et renvoie [result] tel quel (aucune reconstruction
+/// réelle — ce fake teste UNIQUEMENT le câblage UI → contrôleur, la
+/// reconstruction elle-même est couverte par les tests d'intégration contrôleur
+/// de `crypto_ledger_kraken_lot1_test.dart`).
+class _FakeApplyManualValuationsController extends AccountController {
+  _FakeApplyManualValuationsController({this.result})
+      : super(initialAccountId: _accountId);
+
+  final ImportPreview? result;
+  Map<String, String>? capturedEurByImportKey;
+
+  @override
+  Future<ImportPreview?> applyManualCryptoValuations(
+    Map<String, String> eurByImportKey,
+  ) async {
+    capturedEurByImportKey = eurByImportKey;
+    return result;
+  }
+}
+
 Widget _host(
   ImportPreview? debugInitialPreview, {
   Set<String>? debugInitialSearchFailedKeys,
@@ -291,14 +313,28 @@ ImportedMovement _rejectedTechMovement() => ImportedMovement.rejected(
       label: 'Écriture',
     );
 
+/// I-2 (revue adversariale) : un ré-import de relevé crypto revalorise une
+/// opération déjà journalisée avec un montant différent — `sourceRowIndex`
+/// reste peuplé (repris de `UnvaluedExchange.sourceLines.first` par
+/// `finalizeCryptoExchanges`, cf. `crypto_ledger_normalizer.dart:640`) même
+/// si `sourceRow` lui-même est vide à ce stade du pipeline.
+ImportedMovement _rejectedCryptoCollisionMovement() => ImportedMovement.rejected(
+      sourceRow: const [],
+      sourceRowIndex: 12,
+      rejectReason: 'cryptoImportKeyCollision',
+    );
+
 // ---------------------------------------------------------------------------
 // Fixtures crypto (chantier B16, lot 1, passe UX) — synthétiques, sans lien
 // avec les fixtures Kraken réelles de crypto_ledger_kraken_lot1_test.dart
 // (hors périmètre UI, non lues ici).
 // ---------------------------------------------------------------------------
 
-/// Un échange entre crypto-monnaies non valorisé (modèle (b) fichier-d'abord)
-/// — exclu de `toCreate`, groupe « Échanges à valoriser ».
+/// Un échange entre crypto-monnaies resté en arbitrage MANUEL après la
+/// cascade de valorisation (chantier B16, lot 2, conception interne) — exclu
+/// de `toCreate`, groupe « Échanges à valoriser » avec son motif (« spread »
+/// ici, cas le plus riche à afficher : montre à la fois la trace ET l'écart
+/// chiffré) et son champ de saisie EUR.
 UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
       kind: 'exchange',
       date: DateTime(2024, 3, 5),
@@ -308,6 +344,52 @@ UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
       quantityReceived: '120',
       sourceLines: const [10, 11],
       importKey: 'ref:account-1:REFEXCH',
+      manualReason: 'spread',
+      valuationSpreadPct: '0.153',
+    );
+
+/// Motif « unreadable » (aucune jambe USD lisible sur le relevé) — dépôt en
+/// nature dégénéré (`codePaid`/`quantityPaid` `null`, conception interne), pour
+/// couvrir aussi le rendu de la forme « dépôt » du groupe manuel.
+UnvaluedExchange _unvaluedUnreadableFixture() => UnvaluedExchange(
+      kind: 'depositInKind',
+      date: DateTime(2024, 4, 1),
+      codeReceived: 'DOT',
+      quantityReceived: '10',
+      sourceLines: const [20],
+      importKey: 'ref:account-1:REFDEPOSIT',
+      manualReason: 'unreadable',
+    );
+
+/// Motif « fxUnavailable » (série FX historique indisponible pour la
+/// période) — TOUS les échanges du fichier en portent un à l'identique
+/// quand la panne survient (conception interne) ; un seul suffit ici.
+UnvaluedExchange _unvaluedFxUnavailableFixture() => UnvaluedExchange(
+      kind: 'exchange',
+      date: DateTime(2024, 5, 10),
+      codePaid: 'SOL',
+      quantityPaid: '2',
+      codeReceived: 'MATIC',
+      quantityReceived: '300',
+      sourceLines: const [30, 31],
+      importKey: 'ref:account-1:REFFX',
+      manualReason: 'fxUnavailable',
+    );
+
+/// Motif « ambiguousGroup » (B-1, revue adversariale B16 lot 2) : clé de
+/// dédup partagée par ≥ 2 entrées (dustsweeping N→1 dégénéré, dépôt en
+/// nature multi-jambes) — jamais valorisable, le champ de saisie EUR doit
+/// rester DÉSACTIVÉ pour cette entrée.
+UnvaluedExchange _unvaluedAmbiguousGroupFixture() => UnvaluedExchange(
+      kind: 'exchange',
+      date: DateTime(2024, 6, 1),
+      codePaid: 'CCC',
+      quantityPaid: '5',
+      codeReceived: 'EUR',
+      quantityReceived: '30',
+      sourceLines: const [40],
+      importKey: 'ref:account-1:REFAMBIG',
+      manualReason: 'ambiguousGroup',
     );
 
 /// Bilan de cohérence d'un actif dont les transferts internes ne nettent pas à
@@ -452,6 +534,91 @@ ImportedMovement _cryptoBuyMovement() => ImportedMovement.candidate(
       resolvedSymbol: 'BTC-EUR',
       importKey: 'ref:account-1:REFBUY',
     );
+
+/// Mouvement crypto FINALISÉ par `CryptoLedgerNormalizer.finalizeCryptoExchanges`
+/// (chantier B16, lot 2) — porte `meta['valuationSource']`, pour couvrir le
+/// sous-titre de provenance sur les tuiles de l'aperçu ([id]/[importKey]
+/// distincts de [_cryptoBuyMovement] pour coexister dans le même `toCreate`).
+ImportedMovement _cryptoMovementValued(
+  String id,
+  String importKey,
+  String valuationSource,
+) =>
+    ImportedMovement.candidate(
+      sourceRow: const [],
+      sourceRowIndex: 2,
+      transaction: AssetTransaction(
+        id: id,
+        accountId: _accountId,
+        symbol: 'ADA-EUR',
+        kind: TransactionKind.buy,
+        quantity: '100',
+        unitPrice: '0.5',
+        amount: '-50',
+        currency: 'EUR',
+        date: DateTime(2024, 3, 5),
+        meta: {'importKey': importKey, 'valuationSource': valuationSource},
+      ),
+      isin: null,
+      label: 'ADA',
+      ledgerCode: 'ADA',
+      resolvedSymbol: 'ADA-EUR',
+      importKey: importKey,
+    );
+
+/// Paire sell+buy d'UN échange valorisé (chantier B16, lot 2) — clés
+/// `#sell:`/`#buy:` dérivées de [baseKey] (même patron que
+/// `CryptoLedgerNormalizer.finalizeCryptoExchanges`), pour couvrir le
+/// regroupement « échanges DISTINCTS, pas mouvements » du groupe « Échanges
+/// valorisés » ([_valuedExchangeCount] côté page).
+List<ImportedMovement> _cryptoExchangePairValued(
+  String baseKey,
+  String valuationSource,
+) =>
+    [
+      ImportedMovement.candidate(
+        sourceRow: const [],
+        sourceRowIndex: 3,
+        transaction: AssetTransaction(
+          id: '$baseKey-sell',
+          accountId: _accountId,
+          symbol: 'AAA-EUR',
+          kind: TransactionKind.sell,
+          quantity: '2',
+          unitPrice: '90',
+          amount: '180',
+          currency: 'EUR',
+          date: DateTime(2024, 3, 5),
+          meta: {'importKey': '$baseKey#sell:AAA', 'valuationSource': valuationSource},
+        ),
+        isin: null,
+        label: 'AAA',
+        ledgerCode: 'AAA',
+        resolvedSymbol: 'AAA-EUR',
+        importKey: '$baseKey#sell:AAA',
+      ),
+      ImportedMovement.candidate(
+        sourceRow: const [],
+        sourceRowIndex: 3,
+        transaction: AssetTransaction(
+          id: '$baseKey-buy',
+          accountId: _accountId,
+          symbol: 'STB-EUR',
+          kind: TransactionKind.buy,
+          quantity: '120',
+          unitPrice: '1.5',
+          amount: '-180',
+          currency: 'EUR',
+          date: DateTime(2024, 3, 5),
+          meta: {'importKey': '$baseKey#buy:STB', 'valuationSource': valuationSource},
+        ),
+        isin: null,
+        label: 'STB',
+        ledgerCode: 'STB',
+        resolvedSymbol: 'STB-EUR',
+        importKey: '$baseKey#buy:STB',
+      ),
+    ];
 
 /// Aperçu crypto COMPLET rassemblant les six groupes (chantier B16, lot 1) —
 /// un seul mouvement ORDINAIRE dans `toCreate` pour que la branche principale
@@ -953,6 +1120,39 @@ void main() {
       // Le bouton « Fermer » reste présent (aucune écriture possible).
       expect(find.widgetWithText(FilledButton, 'Fermer'), findsOneWidget);
     });
+
+    testWidgets(
+        'I-2 (revue adversariale) : le rejet cryptoImportKeyCollision affiche '
+        'son libellé motivé et sa ligne source (au lieu d\'une tuile vide)',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: const [],
+        rejects: [_rejectedCryptoCollisionMovement()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Le groupe des rejets techniques est REPLIÉ par défaut (comportement
+      // pré-existant, cf. `_techRejectGroup`) — on le déplie pour atteindre
+      // le libellé motivé et le numéro de ligne source.
+      await tester.tap(find.text('Lignes rejetées (1)'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Ce relevé revalorise une opération déjà importée avec un autre '
+          'montant — l\'existant est conservé ; supprimez l\'ancien '
+          'mouvement du journal pour ré-importer celle-ci',
+        ),
+        findsOneWidget,
+      );
+      // `sourceRowIndex` reste peuplé même quand `sourceRow` est vide à ce
+      // stade du pipeline (repris de `UnvaluedExchange.sourceLines.first`).
+      expect(find.text('Ligne 12'), findsOneWidget);
+    });
   });
 
   group('StatementImportPage — place et confiance de la résolution', () {
@@ -1356,10 +1556,16 @@ void main() {
       expect(find.text('Récompenses mises à jour (1)'), findsOneWidget);
 
       // Échanges à valoriser : DÉPLIÉ par défaut — la trace (ligne source,
-      // codes et quantités des deux parties) est visible sans interaction,
-      // et sans aucun champ de saisie (pas de valorisation en lot 1).
+      // codes et quantités des deux parties), le motif chiffré et le champ
+      // de saisie EUR sont visibles sans interaction (lot 2 : valorisation
+      // manuelle désormais possible depuis cet écran).
       expect(find.text('Ligne(s) 10, 11 : 0.5 ETH → 120 ADA'), findsOneWidget);
-      expect(find.byType(TextField), findsNothing);
+      expect(
+        find.text('Écart de 15.3 % entre les deux jambes du relevé.'),
+        findsOneWidget,
+      );
+      expect(find.byType(TextField), findsOneWidget);
+      expect(find.widgetWithText(FilledButton, 'Appliquer'), findsOneWidget);
 
       // Mouvements internes : le résidu et la bascule (défaut OFF) sont
       // visibles sans interaction (pas un ExpansionTile replié).
@@ -1615,6 +1821,250 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.textContaining('ont été mises à jour'), findsNothing);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Chantier B16, lot 2 (conception interne) — valorisation manuelle des échanges
+  // crypto restés en arbitrage, bandeau FX indisponible et sous-titre de provenance
+  // sur les mouvements finalisés.
+  // ---------------------------------------------------------------------------
+
+  group('StatementImportPage — valorisation manuelle des échanges (B16 lot 2)',
+      () {
+    testWidgets(
+        'les trois motifs sont rendus, chacun avec son champ EUR ; une '
+        'saisie invalide affiche une erreur SUR CE champ, une saisie valide '
+        '(virgule française) et l\'application n\'impactent que les clés '
+        'renseignées', (tester) async {
+      final controller = _FakeApplyManualValuationsController(
+        result: ImportPreview(
+          toCreate: [_cryptoBuyMovement()],
+          // Après application : seul « spread » (montant renseigné) a quitté
+          // le groupe — « unreadable » (saisie invalide) et « fxUnavailable »
+          // (laissé vide) y restent, avec leur motif D'ORIGINE.
+          unvaluedExchanges: [
+            _unvaluedUnreadableFixture(),
+            _unvaluedFxUnavailableFixture(),
+          ],
+        ),
+      );
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedUnreadableFixture(),
+          _unvaluedExchangeFixture(), // motif spread
+          _unvaluedFxUnavailableFixture(),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Échanges à valoriser (3)'), findsOneWidget);
+      expect(find.text('Valeur du relevé illisible.'), findsOneWidget);
+      expect(
+        find.text('Écart de 15.3 % entre les deux jambes du relevé.'),
+        findsOneWidget,
+      );
+      expect(find.text('Taux de change historique indisponible.'), findsOneWidget);
+      expect(find.byType(TextField), findsNWidgets(3));
+
+      // Saisie invalide sur le champ « unreadable ».
+      await tester.enterText(find.byType(TextField).at(0), 'abc');
+      // Saisie valide (virgule décimale française) sur le champ « spread ».
+      await tester.enterText(find.byType(TextField).at(1), '150,50');
+      // Champ « fxUnavailable » laissé VIDE.
+      await tester.pump();
+
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.pumpAndSettle();
+
+      // Seule la clé valide et renseignée est transmise au contrôleur — la
+      // vide et l'invalide n'atteignent JAMAIS applyManualCryptoValuations.
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '150.50'},
+      );
+
+      // L'aperçu affiché reflète le résultat renvoyé par le contrôleur : le
+      // compteur du groupe et le bandeau « positions provisoires » retombent
+      // à 2 (les deux entrées non résolues), le champ « spread » a disparu.
+      expect(find.text('Échanges à valoriser (2)'), findsOneWidget);
+      expect(find.byType(TextField), findsNWidgets(2));
+    });
+
+    testWidgets(
+        'B-1 (revue adversariale) : motif ambiguousGroup rendu, champ de '
+        'saisie DÉSACTIVÉ pour cette entrée', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedExchangeFixture(), // motif spread, ACTIF — contrôle négatif.
+          _unvaluedAmbiguousGroupFixture(),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Groupe indivisible — à ressaisir manuellement dans le journal.'),
+        findsOneWidget,
+      );
+      expect(find.byType(TextField), findsNWidgets(2));
+      // Le champ « spread » (premier, motif ACTIF) reste activé...
+      expect(tester.widget<TextField>(find.byType(TextField).at(0)).enabled, isTrue);
+      // ...celui de l'entrée ambiguousGroup est désactivé : une saisie n'y
+      // serait de toute façon jamais appliquée (AccountController.
+      // applyManualCryptoValuations la refuse aussi, ceinture indépendante).
+      expect(tester.widget<TextField>(find.byType(TextField).at(1)).enabled, isFalse);
+    });
+
+    testWidgets(
+        'une saisie invalide affiche « Montant invalide » sur le champ et '
+        'AUCUN appel au contrôleur si rien de valide n\'est saisi',
+        (tester) async {
+      final controller = _FakeApplyManualValuationsController(result: null);
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedUnreadableFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(find.byType(TextField).first, '0');
+      await tester.pump();
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.pumpAndSettle();
+
+      // Zéro n'est PAS strictement positif : invalide, comme le motive la
+      // garde de [AccountController.applyManualCryptoValuations].
+      expect(find.text('Montant invalide'), findsOneWidget);
+      expect(controller.capturedEurByImportKey, isNull);
+      // L'aperçu affiché n'a pas changé (aucune reconstruction déclenchée).
+      expect(find.text('Échanges à valoriser (1)'), findsOneWidget);
+    });
+
+    testWidgets(
+        'bandeau FX indisponible : visible SEULEMENT si '
+        'cryptoFxUnavailable, en tête des groupes crypto', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedFxUnavailableFixture()],
+        cryptoFxUnavailable: true,
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          'Le service de taux de change historique est injoignable — les '
+          'échanges entre crypto-monnaies sont passés en saisie manuelle. Le '
+          'reste du relevé est importé normalement.',
+        ),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextButton, 'Réessayer'), findsOneWidget);
+
+      // Contrôle négatif : SANS cryptoFxUnavailable (défaut false), le
+      // bandeau n'apparaît pas — même avec des échanges manuels présents.
+      await tester.pumpWidget(_host(ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedFxUnavailableFixture()],
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('service de taux de change historique'),
+        findsNothing,
+      );
+    });
+
+    testWidgets(
+        'groupe « Échanges valorisés » : REPLIÉ, dans le groupe dédié (PAS '
+        'seulement dans « À créer »), sous-titre de provenance « relevé » / '
+        '« manuellement » / rien sur un mouvement ordinaire',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoBuyMovement(), // aucun meta['valuationSource'] : contrôle négatif.
+          _cryptoMovementValued('tx-statement', 'ref:acc:STMT', 'statement'),
+          _cryptoMovementValued('tx-manual', 'ref:acc:MANUAL', 'manual'),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Groupe dédié (conception interne), REPLIÉ par défaut. Vue FILTRÉE de
+      // `toCreate` — PAS une exclusion (même patron que « Récompenses regroupées »/«
+      // Récompenses mises à jour ») : le groupe « À créer » (toujours DÉPLIÉ) montre
+      // déjà CES DEUX mouvements, donc leur sous-titre est visible UNE fois chacun
+      // avant même de déplier « Échanges valorisés ».
+      expect(find.text('Échanges valorisés (2)'), findsOneWidget);
+      expect(find.text('Valorisé d\'après le relevé'), findsOneWidget);
+      expect(find.text('Valorisé manuellement'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Échanges valorisés (2)'));
+      await tester.tap(find.text('Échanges valorisés (2)'));
+      await tester.pumpAndSettle();
+
+      // Une fois déplié, CHAQUE mouvement apparaît DEUX fois à l'écran (« À
+      // créer » + « Échanges valorisés ») — confirme que le groupe dédié
+      // liste bien ces mouvements, sans les retirer d'ailleurs.
+      expect(find.text('Valorisé d\'après le relevé'), findsNWidgets(2));
+      expect(find.text('Valorisé manuellement'), findsNWidgets(2));
+    });
+
+    testWidgets(
+        'groupe « Échanges valorisés » : compte les ÉCHANGES DISTINCTS, pas '
+        'les mouvements (une paire sell+buy du même échange compte UNE fois)',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoBuyMovement(), // contrôle négatif : jamais compté ici.
+          ..._cryptoExchangePairValued('ref:acc:EX1', 'statement'),
+          _cryptoMovementValued('tx-deposit', 'ref:acc:EX2#deposit:III', 'manual'),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // 3 mouvements valorisés, mais 2 ÉCHANGES distincts (EX1 sell+buy = 1,
+      // EX2 deposit = 1). Groupe « À créer » toujours DÉPLIÉ : ces 3
+      // mouvements y sont déjà visibles avant même de déplier le groupe dédié.
+      expect(find.text('Échanges valorisés (2)'), findsOneWidget);
+      expect(find.text('Valorisé d\'après le relevé'), findsNWidgets(2));
+      expect(find.text('Valorisé manuellement'), findsOneWidget);
+
+      await tester.ensureVisible(find.text('Échanges valorisés (2)'));
+      await tester.tap(find.text('Échanges valorisés (2)'));
+      await tester.pumpAndSettle();
+
+      // Déplié : CHAQUE mouvement apparaît deux fois (« À créer » + groupe
+      // dédié) — vue filtrée, jamais une exclusion.
+      expect(find.text('Valorisé d\'après le relevé'), findsNWidgets(4));
+      expect(find.text('Valorisé manuellement'), findsNWidgets(2));
     });
   });
 }

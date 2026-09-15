@@ -2469,6 +2469,10 @@
   "@importRejectCryptoMigrationNotBalanced": {
     "description": "Reject reason label (crypto ledger import)"
   },
+  "importRejectCryptoImportKeyCollision": "This statement revalues an operation already imported with a different amount — the existing one is kept; remove the old journal movement to re-import this one",
+  "@importRejectCryptoImportKeyCollision": {
+    "description": "Reject reason label (crypto ledger import): a re-import found the same dedup key already in the journal, but with different content, and it is not a monthly reward aggregate replacement"
+  },
 
   "importStep4Heading": "Resolve new assets",
   "@importStep4Heading": {
@@ -2648,9 +2652,9 @@
       "count": { "type": "int" }
     }
   },
-  "importUnvaluedExchangesExplain": "These crypto-to-crypto exchanges will be importable in a future version, or once valued.",
+  "importUnvaluedExchangesExplain": "These crypto-to-crypto exchanges could not be valued automatically. Enter a euro amount for each of them: they will be imported as soon as that amount is filled in.",
   "@importUnvaluedExchangesExplain": {
-    "description": "Explanatory text under the 'exchanges to value' group title"
+    "description": "Explanatory text under the 'exchanges to value' group title (B16 lot 2: manual valuation is now available, unlike lot 1 where this group was purely informational)"
   },
   "importUnvaluedExchangeLine": "Row(s) {lines}: {paidQuantity} {paidCode} → {receivedQuantity} {receivedCode}",
   "@importUnvaluedExchangeLine": {
@@ -2670,6 +2674,56 @@
       "lines": { "type": "String" },
       "receivedQuantity": { "type": "String" },
       "receivedCode": { "type": "String" }
+    }
+  },
+  "importUnvaluedReasonUnreadable": "The statement's value is unreadable.",
+  "@importUnvaluedReasonUnreadable": {
+    "description": "Manual-valuation reason (B16 lot 2, doc 20 §5.1.7d): neither leg of the exchange had a readable USD amount on the statement"
+  },
+  "importUnvaluedReasonSpread": "Gap of {percent}% between the two legs of the statement.",
+  "@importUnvaluedReasonSpread": {
+    "description": "Manual-valuation reason: both legs were readable but diverge by more than the 10% threshold — a suspicious statement value, not treated as an ordinary market spread",
+    "placeholders": {
+      "percent": { "type": "String" }
+    }
+  },
+  "importUnvaluedReasonFxUnavailable": "Historical exchange rate unavailable.",
+  "@importUnvaluedReasonFxUnavailable": {
+    "description": "Manual-valuation reason: the historical USD→EUR rate series could not be fetched for the period covered by this exchange"
+  },
+  "importUnvaluedReasonAmbiguousGroup": "Indivisible group — re-enter manually in the journal.",
+  "@importUnvaluedReasonAmbiguousGroup": {
+    "description": "Manual-valuation reason (B-1, adversarial review): this exchange shares its dedup key with at least one other entry in the same import (degenerate N-to-1 dustsweeping, or multi-leg in-kind deposit) and can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
+  },
+  "importUnvaluedReasonForeignFiat": "Foreign-currency leg — cannot be journalized yet, re-enter manually in the journal if needed.",
+  "@importUnvaluedReasonForeignFiat": {
+    "description": "Manual-valuation reason (B-A, lot 2 counter-review): one leg of this exchange is a foreign fiat currency (e.g. USD on a EUR account) — no conversion is available at this stage, so it can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
+  },
+  "importUnvaluedAmountFieldLabel": "Amount (EUR)",
+  "@importUnvaluedAmountFieldLabel": {
+    "description": "Label of the editable EUR amount field on a manual crypto-exchange valuation row (B16 lot 2)"
+  },
+  "importUnvaluedApplyButton": "Apply",
+  "@importUnvaluedApplyButton": {
+    "description": "Button at the bottom of the 'exchanges to value' group that applies the EUR amounts entered so far, without waiting for final import confirmation"
+  },
+  "importCryptoFxUnavailableBanner": "The historical exchange rate service is unreachable — exchanges between crypto-currencies have been switched to manual entry. The rest of the statement is imported normally.",
+  "@importCryptoFxUnavailableBanner": {
+    "description": "Banner shown above the crypto groups when ImportPreview.cryptoFxUnavailable is true (doc 20 §5.1.7c) — explains why every crypto exchange landed in manual arbitration and reassures that the rest of the file (rewards, deposits/withdrawals, fiat-leg trades) was still imported"
+  },
+  "importValuationSourceStatement": "Valued from the statement",
+  "@importValuationSourceStatement": {
+    "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'statement' (B16 lot 2 stage 1 — resolved automatically from the statement's own USD valuation column)"
+  },
+  "importValuationSourceManual": "Valued manually",
+  "@importValuationSourceManual": {
+    "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'manual' (B16 lot 2 — EUR amount entered by the user in the 'exchanges to value' group)"
+  },
+  "importGroupValuedExchanges": "Valued exchanges ({count})",
+  "@importGroupValuedExchanges": {
+    "description": "Section title for the collapsed, read-only group listing crypto exchanges that WERE valued (stage 1 statement or manual entry) and are part of toCreate — a filtered view for readability, same pattern as importGroupAggregatedRewards/importGroupReplacements, doc 20 §5.5 point 3. {count} counts distinct exchanges (sell+buy legs of the same exchange count once), not raw movements.",
+    "placeholders": {
+      "count": { "type": "int" }
     }
   },
 

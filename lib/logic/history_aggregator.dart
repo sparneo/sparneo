@@ -916,7 +916,15 @@ class HistoryAggregator {
           } else {
             // `costDelta` est en devise de COTATION (cf. en-tête
             // `position_projection`) — même conversion que la base de coût.
-            final fx = (asset?.isUsd ?? false) ? usdToEurRate : 1.0;
+            // SAUF pour un actif à `ledgerCode` (I-1, revue adversariale B16
+            // lot 2) : son coût journalisé est TOUJOURS déjà en EUR (devise
+            // du compte, cf. `CryptoLedgerNormalizer.finalizeCryptoExchanges`),
+            // jamais natif USD, même quand `Asset.currency == 'USD'` pour que
+            // la COTATION (elle) se convertisse — reconvertir ici ferait une
+            // sur-conversion silencieuse du capital investi.
+            final needsFx =
+                (asset?.isUsd ?? false) && asset?.ledgerCode == null;
+            final fx = needsFx ? usdToEurRate : 1.0;
             contrib = step.costDelta * fx;
           }
           final day = _dateOnlyUtc(step.date);
@@ -965,8 +973,17 @@ class HistoryAggregator {
         final gross = num_(tx.quantity) * num_(tx.unitPrice);
         final fee = num_(tx.fee);
         // Devise de COTATION (le couple quantité/prix unitaire vit dans la
-        // devise du titre, cf. en-tête `position_projection`).
-        final fx = (asset?.isUsd ?? false) ? usdToEurRate : 1.0;
+        // devise du titre, cf. en-tête `position_projection`) — SAUF pour un
+        // actif à `ledgerCode` (I-A, contre-vérification lot 2 : même
+        // prédicat qu'en (b) ligne ~933) : son coût journalisé (`unitPrice`
+        // issu de `CryptoLedgerNormalizer.finalizeCryptoExchanges`) est
+        // TOUJOURS déjà en EUR, jamais natif USD, même quand
+        // `Asset.currency == 'USD'` pour que la COTATION (elle) se convertisse
+        // à l'affichage — reconvertir ici sur-convertirait silencieusement ce
+        // flux externe, cassant `Valeur − Capital investi == gain total` pour
+        // un compte NON ancré portant une position crypto `-USD`.
+        final needsFx = (asset?.isUsd ?? false) && asset?.ledgerCode == null;
+        final fx = needsFx ? usdToEurRate : 1.0;
         final contrib = tx.kind == TransactionKind.buy
             ? (gross + fee) * fx
             : -(gross - fee) * fx;
@@ -1342,9 +1359,25 @@ class HistoryAggregator {
     var valueIncluded = cashEur;
 
     // (1) Non-réalisé — positions à PRU connu seulement.
+    //
+    // I-1 (revue adversariale B16 lot 2) : `PositionWithMarketData.
+    // unrealizedGain` fait une soustraction NAÏVE `(currentPrice − pru) ×
+    // qty`, dans l'hypothèse implicite que les deux termes partagent la même
+    // devise — hypothèse FAUSSE pour un actif à `ledgerCode` résolu en
+    // `<code>-USD` : `currentPrice` est un cours natif USD, mais `pru`
+    // (`Asset.averageBuyPrice`) est déjà EN EUR (cf. doc `finalizeCryptoExchanges`).
+    // Réutiliser ce getter puis multiplier par `fx` ne ferait donc QUE
+    // reconvertir une valeur déjà incohérente. Le calcul est refait ICI
+    // terme à terme (jamais dans le getter partagé, réutilisé ailleurs sans
+    // cette hypothèse) : la VALEUR (cours × qté) se convertit TOUJOURS selon
+    // `isUsd` (cotation), le PRU ne se convertit QUE s'il n'est pas déjà en
+    // EUR (`ledgerCode == null`) — cf. l'invariant de tête de fichier
+    // (Valeur − Capital investi == gain total), qui exige ce raisonnement
+    // terme à terme plutôt qu'un simple facteur global sur `unrealizedGain`.
     for (final pos in positions) {
-      final unrealized = pos.unrealizedGain;
-      if (unrealized == null) {
+      final pru = pos.averageBuyPrice;
+      final currentPrice = pos.currentPrice;
+      if (pru == null || currentPrice == null) {
         // Ne signaler la réserve « partiel » que pour un avoir EFFECTIVEMENT
         // DÉTENU (cf. doc ci-dessus) — une position soldée sans PRU stocké
         // n'amputera JAMAIS totalGain (son gain vient du terme (2)), la
@@ -1358,16 +1391,27 @@ class HistoryAggregator {
         }
         continue;
       }
-      final fx = pos.asset.isUsd ? usdToEurRate : 1.0;
-      totalGain += unrealized * fx;
-      valueIncluded += pos.totalValue * fx;
+      final qty = double.tryParse(pos.quantity) ?? 0;
+      final isUsd = pos.asset.isUsd;
+      final pruAlreadyEur = isUsd && pos.asset.ledgerCode != null;
+      final currentPriceEur = isUsd ? currentPrice * usdToEurRate : currentPrice;
+      final pruEur = pruAlreadyEur ? pru : (isUsd ? pru * usdToEurRate : pru);
+      totalGain += (currentPriceEur - pruEur) * qty;
+      valueIncluded += currentPriceEur * qty;
     }
 
     // Devise de cotation par symbole : position ACTUELLE si elle existe
     // (autoritative), sinon repli 1ʳᵉ transaction du journal (titre soldé
-    // sans position résiduelle — même motif que les contrôleurs).
+    // sans position résiduelle — même motif que les contrôleurs). Le
+    // `ledgerCode` (I-1) n'a PAS de repli symétrique : il vit sur `Asset`,
+    // jamais sur `AssetTransaction` — un symbole crypto totalement soldé et
+    // absent de [positions] retombe donc sur la conversion USD→EUR classique
+    // (limite assumée, cas marginal : aucune position crypto détenue).
     final currencyBySymbol = <String, String>{
       for (final p in positions) p.symbol: p.asset.currency,
+    };
+    final ledgerCodeBySymbol = <String, String?>{
+      for (final p in positions) p.symbol: p.asset.ledgerCode,
     };
 
     // (2) Réalisé — rejeu PAR SYMBOLE, indépendant de l'état courant.
@@ -1376,7 +1420,13 @@ class HistoryAggregator {
       final symbol = entry.key;
       final realized = replayLedger(entry.value).realizedGain;
       final currency = currencyBySymbol[symbol] ?? entry.value.first.currency;
-      final fx = currency.toUpperCase() == 'USD' ? usdToEurRate : 1.0;
+      final isUsd = currency.toUpperCase() == 'USD';
+      // I-1 (revue adversariale) : un gain réalisé issu du journal crypto
+      // (`ledgerCode != null`) est calculé par `replayLedger` à partir
+      // d'`unitPrice` TOUJOURS déjà en EUR (même raisonnement que `costDelta`
+      // plus haut) — ne jamais le reconvertir, même pour une cotation USD.
+      final needsFx = isUsd && ledgerCodeBySymbol[symbol] == null;
+      final fx = needsFx ? usdToEurRate : 1.0;
       totalGain += realized * fx;
     }
 
