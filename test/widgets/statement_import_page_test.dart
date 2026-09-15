@@ -331,11 +331,16 @@ ImportedMovement _rejectedCryptoCollisionMovement() => ImportedMovement.rejected
 // (hors périmètre UI, non lues ici).
 // ---------------------------------------------------------------------------
 
-/// Un échange entre crypto-monnaies resté en arbitrage MANUEL après la
-/// cascade de valorisation (chantier B16, lot 2, conception interne) — exclu
-/// de `toCreate`, groupe « Échanges à valoriser » avec son motif (« spread »
-/// ici, cas le plus riche à afficher : montre à la fois la trace ET l'écart
-/// chiffré) et son champ de saisie EUR.
+/// Un échange entre crypto-monnaies resté en arbitrage MANUEL après la cascade de
+/// valorisation (chantier B16, lot 2, conception interne) — exclu de `toCreate`,
+/// groupe « Échanges à valoriser » avec son motif (« spread » ici, cas le plus
+/// riche à afficher : montre à la fois la trace ET l'écart chiffré) et son champ
+/// de saisie EUR. [usdPaid]/[usdReceived] portés directement ici (amendement
+/// drive lot 2 (suite) pour un écart cohérent avec [valuationSpreadPct]
+/// (`(225−195)/195 ≈ 0.153`) — mais SANS suggestion EUR : reste le contrôle
+/// négatif « spread SANS choix » (le choix binaire exige les DEUX paires usd+eur,
+/// cf. [_unvaluedExchangeFixtureWithSuggestions]), qui garde donc le champ de
+/// saisie simple.
 UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
       kind: 'exchange',
       date: DateTime(2024, 3, 5),
@@ -343,6 +348,8 @@ UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
       quantityPaid: '0.5',
       codeReceived: 'ADA',
       quantityReceived: '120',
+      usdPaid: '195.00',
+      usdReceived: '225.00',
       sourceLines: const [10, 11],
       importKey: 'ref:account-1:REFEXCH',
       manualReason: 'spread',
@@ -350,8 +357,10 @@ UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
     );
 
 /// Même échange que [_unvaluedExchangeFixture], AVEC les deux suggestions EUR
-/// calculées par `CryptoValuationService` (amendement drive lot 2 (suite) —
-/// sert à exercer la ligne « Valeur cédée… » et les boutons « Utiliser… ».
+/// calculées par `CryptoValuationService` (amendement drive lot 2 (suite) — avec
+/// les `usdPaid`/`usdReceived` déjà portés par la fixture de base, les quatre
+/// montants sont réunis : sert à exercer le choix binaire « Valeur cédée / Valeur
+/// reçue » et le champ dérogatoire.
 UnvaluedExchange _unvaluedExchangeFixtureWithSuggestions() =>
     _unvaluedExchangeFixture().copyWith(
       suggestedPaidEur: '180',
@@ -1913,16 +1922,18 @@ void main() {
       expect(find.byType(TextField), findsNWidgets(2));
     });
 
-    // -------------------------------------------------------------------
-    // Amendement drive lot 2 (suite) : suggestions EUR en un clic sur une entrée
-    // motif `spread` — la ligne de suggestions ne se rend que quand elles existent,
-    // un tap sur « Utiliser… » PRÉREMPLIT le champ (sans rien appliquer tout seul),
-    // et « Appliquer » transmet bien ce montant au contrôleur.
+    // ------------------------------------------------------------------- Amendement
+    // drive lot 2 (suite) : choix binaire présélectionné (« Valeur cédée » / «
+    // Valeur reçue ») remplaçant l'ancienne ligne de suggestions + boutons «
+    // Utiliser… » — un clic direct sur « Appliquer », SANS aucune interaction,
+    // valorise déjà l'échange à sa valeur par défaut ; le champ EUR devient
+    // dérogatoire pour ces entrées.
     // -------------------------------------------------------------------
 
     testWidgets(
-        'suggestions EUR : la ligne et les deux boutons se rendent quand '
-        'elles existent, ABSENTS sinon (contrôle négatif)', (tester) async {
+        'le choix cédée/reçue se rend avec les montants USD/EUR corrects, '
+        'ABSENT sinon (contrôle négatif : champ « Montant (EUR) » classique)',
+        (tester) async {
       final preview = ImportPreview(
         toCreate: [_cryptoBuyMovement()],
         unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
@@ -1933,25 +1944,46 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      final paidLabel = Formatters.formatEur(180);
-      final receivedLabel = Formatters.formatEur(207.5);
+      // Les deux options du choix, montants USD (2 décimales, valeur
+      // absolue) et EUR déjà formatés.
+      final paidUsd = Formatters.formatMoney(195, 'USD');
+      final paidEur = Formatters.formatEur(180);
+      final receivedUsd = Formatters.formatMoney(225, 'USD');
+      final receivedEur = Formatters.formatEur(207.5);
+      expect(find.byType(RadioListTile<bool>), findsNWidgets(2));
       expect(
-        find.text(
-          'Valeur cédée selon le relevé : $paidLabel · Valeur reçue : $receivedLabel',
-        ),
+        find.text('Valeur cédée : $paidUsd (≈ $paidEur)'),
         findsOneWidget,
       );
       expect(
-        find.widgetWithText(OutlinedButton, 'Utiliser $paidLabel'),
+        find.text('Valeur reçue : $receivedUsd (≈ $receivedEur)'),
         findsOneWidget,
       );
+      // Chaque option porte bien sa valeur (première = « cédée » = `true`,
+      // seconde = « reçue » = `false`)...
+      final paidTile = tester
+          .widget<RadioListTile<bool>>(find.byType(RadioListTile<bool>).at(0));
+      final receivedTile = tester
+          .widget<RadioListTile<bool>>(find.byType(RadioListTile<bool>).at(1));
+      expect(paidTile.value, isTrue);
+      expect(receivedTile.value, isFalse);
+      // ...et « Valeur cédée » (`true`) est bien l'option SÉLECTIONNÉE par
+      // défaut (valeur portée par le `RadioGroup` ambiant, cf. [_unvaluedChoiceRow]).
+      final group = tester.widget<RadioGroup<bool>>(find.byType(RadioGroup<bool>));
+      expect(group.groupValue, isTrue);
+      // Champ dérogatoire (libellé distinct de l'entrée sans choix ci-dessous).
       expect(
-        find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'),
-        findsOneWidget,
+        tester.widget<TextField>(find.byType(TextField).first).decoration!.labelText,
+        'Autre montant (EUR)',
       );
 
-      // Contrôle négatif : la fixture SANS suggestions (même motif spread,
-      // même écart) ne rend NI la ligne NI les boutons.
+      // Contrôle négatif : la fixture SANS suggestions (mêmes usdPaid/
+      // usdReceived, même écart, mais suggestedPaidEur/suggestedReceivedEur
+      // absents) ne rend PAS le choix et garde le champ classique.
+      // Démontage COMPLET d'abord : l'aperçu initial n'est lu qu'à
+      // l'initState — re-pumper _host sur l'état vivant garderait l'ancien
+      // aperçu, et rejouer la navigation arrow_back sortirait de l'étape.
+      await tester.pumpWidget(const SizedBox());
       await tester.pumpWidget(_host(ImportPreview(
         toCreate: [_cryptoBuyMovement()],
         unvaluedExchanges: [_unvaluedExchangeFixture()],
@@ -1960,14 +1992,53 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      expect(find.textContaining('Valeur cédée selon le relevé'), findsNothing);
-      expect(find.byType(OutlinedButton), findsNothing);
+      expect(find.byType(RadioListTile<bool>), findsNothing);
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).decoration!.labelText,
+        'Montant (EUR)',
+      );
     });
 
     testWidgets(
-        'un tap sur « Utiliser… » PRÉREMPLIT le champ (rien d\'appliqué '
-        'tout seul) ; « Appliquer » transmet ENSUITE ce montant EXACT au '
-        'contrôleur', (tester) async {
+        '« Appliquer » SANS AUCUNE interaction transmet suggestedPaidEur '
+        '(défaut « Valeur cédée ») ; une entrée d\'un AUTRE motif laissée '
+        'vide n\'est TOUJOURS PAS transmise', (tester) async {
+      final controller = _FakeApplyManualValuationsController(
+        result: ImportPreview(
+          toCreate: [_cryptoBuyMovement()],
+          unvaluedExchanges: [_unvaluedUnreadableFixture()],
+        ),
+      );
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedExchangeFixtureWithSuggestions(),
+          _unvaluedUnreadableFixture(), // autre motif, laissé vide.
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.pumpAndSettle();
+
+      // Seule l'entrée AVEC choix est transmise, à sa valeur par défaut
+      // « cédée » (Decimal BRUT '180', pas '180,00 €' reformaté) — l'entrée
+      // « unreadable » (autre motif, sans choix, laissée vide) reste absente
+      // de la map, comportement historique inchangé.
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '180'},
+      );
+    });
+
+    testWidgets(
+        'basculer sur « Valeur reçue » PUIS Appliquer transmet '
+        'suggestedReceivedEur', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
       );
@@ -1981,22 +2052,13 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      // Champ vide avant tout tap.
-      expect(tester.widget<TextField>(find.byType(TextField).first).controller!.text, isEmpty);
-
-      final receivedLabel = Formatters.formatEur(207.5);
+      final receivedUsd = Formatters.formatMoney(225, 'USD');
+      final receivedEur = Formatters.formatEur(207.5);
       await tester.ensureVisible(
-        find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'),
+        find.text('Valeur reçue : $receivedUsd (≈ $receivedEur)'),
       );
-      await tester.tap(find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'));
+      await tester.tap(find.text('Valeur reçue : $receivedUsd (≈ $receivedEur)'));
       await tester.pump();
-
-      // Le champ est PRÉREMPLI, RIEN n'a encore été appliqué au contrôleur.
-      expect(
-        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
-        equals('207.5'),
-      );
-      expect(controller.capturedEurByImportKey, isNull);
 
       await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
       await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
@@ -2005,6 +2067,37 @@ void main() {
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '207.5'},
+      );
+    });
+
+    testWidgets(
+        'le champ dérogatoire rempli PRIME sur le choix, peu importe '
+        'l\'option sélectionnée', (tester) async {
+      final controller = _FakeApplyManualValuationsController(
+        result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
+      );
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Défaut « Valeur cédée » laissé sélectionné — seule la saisie change.
+      await tester.enterText(find.byType(TextField).first, '99,90');
+      await tester.pump();
+
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.pumpAndSettle();
+
+      // Le montant SAISI l'emporte sur la suggestion '180' du choix.
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '99.90'},
       );
     });
 

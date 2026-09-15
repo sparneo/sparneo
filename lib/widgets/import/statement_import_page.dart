@@ -193,6 +193,18 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// du groupe (chaque échange s'applique indépendamment).
   final Set<String> _manualValuationInvalidKeys = {};
 
+  /// Sélection du choix binaire « valeur cédée / valeur reçue » (amendement drive
+  /// lot 2 (suite), clé = `UnvaluedExchange.importKey` — `true` = valeur CÉDÉE
+  /// sélectionnée (défaut, cf. [_unvaluedChoiceRow]), `false` = valeur REÇUE.
+  /// Peuplée PARESSEUSEMENT (même patron que [_manualValuationControllers])
+  /// uniquement pour les entrées qui rendent le choix (motif `spread` avec les
+  /// quatre montants USD/EUR complets). Aucun contrôleur associé — rien à disposer —
+  /// mais purgée au même moment que
+  /// [_manualValuationControllers]/[_manualValuationInvalidKeys] dans
+  /// [_applyManualCryptoValuations] pour qu'une entrée ultérieure réutilisant la
+  /// même clé ne trouve pas un choix obsolète.
+  final Map<String, bool> _unvaluedChoicePaidByKey = {};
+
   /// `true` pendant [_applyManualCryptoValuations] (bouton « Appliquer » du
   /// groupe « Échanges à valoriser ») — désactive le bouton, évite un double
   /// appel concurrent.
@@ -2136,6 +2148,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     // même mouvement fiat fabriqué (`AccountController.
     // applyManualCryptoValuations` la refuse déjà, ceinture indépendante).
     final isForeignFiat = u.manualReason == 'foreignFiat';
+    final hasChoice = _unvaluedHasChoice(u);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(
@@ -2155,11 +2168,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.colorScheme.error),
                   ),
-                if (u.suggestedPaidEur != null || u.suggestedReceivedEur != null)
-                  _unvaluedSuggestionRow(l10n, key, u),
               ],
             ),
           ),
+          if (hasChoice) _unvaluedChoiceRow(l10n, key, u),
           Padding(
             padding: const EdgeInsets.only(right: 16, bottom: 4),
             child: TextField(
@@ -2167,7 +2179,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
               enabled: !isAmbiguousGroup && !isForeignFiat,
               keyboardType: const TextInputType.numberWithOptions(decimal: true),
               decoration: InputDecoration(
-                labelText: l10n.importUnvaluedAmountFieldLabel,
+                // Champ dérogatoire quand un choix est déjà présélectionné (amendement drive lot
+                // 2 (suite) : libellé distinct pour signaler qu'il PRIME sur le choix ci-dessus
+                // s'il est rempli, plutôt que le libellé générique « Montant (EUR) » qui
+                // laisserait croire qu'aucune valeur par défaut n'existe.
+                labelText: hasChoice
+                    ? l10n.importUnvaluedOverrideAmountFieldLabel
+                    : l10n.importUnvaluedAmountFieldLabel,
                 isDense: true,
                 border: const OutlineInputBorder(),
                 errorText: isInvalid ? l10n.invalidAmount : null,
@@ -2187,47 +2205,77 @@ class _StatementImportPageState extends State<StatementImportPage> {
     );
   }
 
-  /// Ligne de suggestions EUR (amendement drive lot 2 (suite) — rendue UNIQUEMENT
-  /// quand [CryptoValuationService] a pu convertir les deux valeurs du relevé
-  /// (motif `spread`, taux FX résolu) : les deux montants déjà formatés, et un
-  /// bouton par montant qui PRÉREMPLIT le champ de saisie EUR de [key] —
-  /// l'utilisateur doit toujours cliquer « Appliquer » ensuite, aucune valorisation
-  /// n'est écrite ici.
-  Widget _unvaluedSuggestionRow(
+  /// `true` si [u] porte les quatre montants nécessaires au choix binaire
+  /// cédée/reçue (amendement drive lot 2 (suite) : les deux valeurs USD SOURCE du
+  /// relevé ET les deux suggestions EUR déjà converties — en pratique posées
+  /// ensemble par [CryptoValuationService] pour un motif `spread`, mais garde
+  /// défensive séparée plutôt que de présumer cette corrélation. Partagée entre
+  /// [_unvaluedExchangeTile] (rendu du choix) et [_applyManualCryptoValuations]
+  /// (repli sur la suggestion par défaut si le champ dérogatoire est vide) pour
+  /// que les deux endroits restent TOUJOURS d'accord sur ce qui affiche le choix.
+  bool _unvaluedHasChoice(UnvaluedExchange u) =>
+      u.usdPaid != null &&
+      u.usdReceived != null &&
+      u.suggestedPaidEur != null &&
+      u.suggestedReceivedEur != null;
+
+  /// Choix binaire « valeur cédée / valeur reçue » (amendement drive lot 2 (suite),
+  /// remplace l'ancienne ligne de suggestions + boutons « Utiliser… ») — rendu
+  /// UNIQUEMENT par [_unvaluedExchangeTile] quand les quatre montants USD/EUR sont
+  /// là. Présélectionne « cédée » ([_unvaluedChoicePaidByKey] défaut `true`) : un
+  /// clic direct sur « Appliquer », SANS aucune interaction ici, valorise déjà
+  /// l'échange à sa valeur par défaut — cf. [_applyManualCryptoValuations]. Le
+  /// champ de saisie EUR de la ligne reste disponible juste en dessous, mais
+  /// devient dérogatoire (n'écrase ce choix que s'il est rempli).
+  Widget _unvaluedChoiceRow(
     AppLocalizations l10n,
     String key,
     UnvaluedExchange u,
   ) {
-    final paidLabel = _eurAmountLabel(u.suggestedPaidEur);
-    final receivedLabel = _eurAmountLabel(u.suggestedReceivedEur);
+    final paidUsd = _usdAmountLabel(u.usdPaid);
+    final paidEur = _eurAmountLabel(u.suggestedPaidEur);
+    final receivedUsd = _usdAmountLabel(u.usdReceived);
+    final receivedEur = _eurAmountLabel(u.suggestedReceivedEur);
+    // Défensif : les quatre montants sont garantis non-null par [hasChoice]
+    // dans l'appelant, mais un échec de parsing (jamais vu en pratique pour
+    // des valeurs produites par CryptoValuationService) retomberait ici sur
+    // une absence de rendu plutôt qu'un libellé « null » affiché à l'écran.
+    if (paidUsd == null ||
+        paidEur == null ||
+        receivedUsd == null ||
+        receivedEur == null) {
+      return const SizedBox.shrink();
+    }
+    final paidSelected = _unvaluedChoicePaidByKey.putIfAbsent(key, () => true);
     return Padding(
-      padding: const EdgeInsets.only(top: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          if (paidLabel != null && receivedLabel != null)
-            Text(l10n.importUnvaluedSuggestionLine(paidLabel, receivedLabel)),
-          Wrap(
-            spacing: 8,
-            runSpacing: 4,
-            children: [
-              if (u.suggestedPaidEur != null && paidLabel != null)
-                OutlinedButton(
-                  onPressed: () =>
-                      _useSuggestedAmount(key, u.suggestedPaidEur!),
-                  child: Text(l10n.importUnvaluedUseSuggestionButton(paidLabel)),
-                ),
-              if (u.suggestedReceivedEur != null && receivedLabel != null)
-                OutlinedButton(
-                  onPressed: () =>
-                      _useSuggestedAmount(key, u.suggestedReceivedEur!),
-                  child: Text(
-                    l10n.importUnvaluedUseSuggestionButton(receivedLabel),
-                  ),
-                ),
-            ],
-          ),
-        ],
+      padding: const EdgeInsets.only(top: 2, bottom: 4),
+      // `RadioGroup` (pas `groupValue`/`onChanged` sur chaque `RadioListTile`,
+      // dépréciés depuis Flutter 3.32) : porte la sélection pour les deux
+      // options ci-dessous.
+      child: RadioGroup<bool>(
+        groupValue: paidSelected,
+        onChanged: (v) => setState(() => _unvaluedChoicePaidByKey[key] = v!),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            RadioListTile<bool>(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title:
+                  Text(l10n.importUnvaluedChoicePaidLabel(paidUsd, paidEur)),
+              value: true,
+            ),
+            RadioListTile<bool>(
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              title: Text(
+                l10n.importUnvaluedChoiceReceivedLabel(
+                    receivedUsd, receivedEur),
+              ),
+              value: false,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2243,30 +2291,35 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return Formatters.formatEur(v);
   }
 
-  /// Écrit [suggestedEur] (chaîne Decimal brute, point décimal — cohérente
-  /// avec la validation de [_applyManualCryptoValuations], qui accepte aussi
-  /// bien le point que la virgule) dans le champ de saisie de [key] — un
-  /// clic sur « Utiliser… » ne fait QUE préremplir, il n'applique rien tout
-  /// seul (l'utilisateur reste maître du bouton « Appliquer »).
-  void _useSuggestedAmount(String key, String suggestedEur) {
-    final controller = _manualValuationControllers.putIfAbsent(
-      key,
-      () => TextEditingController(),
-    );
-    setState(() {
-      controller.text = suggestedEur;
-      _manualValuationInvalidKeys.remove(key);
-    });
+  /// Montant USD formaté (2 décimales, format français — « 180,00 $ »), à partir de
+  /// la chaîne source du relevé (amendement drive lot 2 (suite) — TOUJOURS en valeur
+  /// absolue : ces colonnes source portent parfois un signe (jambe payée vs reçue),
+  /// qui n'apporte rien à l'affichage du choix (le libellé « cédée »/« reçue » porte
+  /// déjà la direction). `null` si non parsable (défensif, symétrique à
+  /// [_eurAmountLabel]).
+  String? _usdAmountLabel(String? raw) {
+    if (raw == null) return null;
+    final v = double.tryParse(raw);
+    if (v == null) return null;
+    return Formatters.formatMoney(v.abs(), 'USD');
   }
 
-  /// Applique au contrôleur les montants EUR actuellement saisis dans le
-  /// groupe « Échanges à valoriser » (bouton « Appliquer », chantier B16, lot
-  /// 2) : une entrée VIDE est simplement ignorée (l'échange reste manuel,
-  /// aucune erreur affichée — l'utilisateur n'a pas encore renseigné cette
-  /// ligne) ; une entrée NON vide mais invalide (pas un [Decimal] strictement
-  /// positif, cf. [AccountController.applyManualCryptoValuations]) marque
-  /// SEULEMENT ce champ en erreur, sans bloquer les autres lignes valides du
-  /// même groupe. Aucun appel au contrôleur si rien de valide n'a été saisi.
+  /// Applique au contrôleur les montants EUR actuellement saisis (ou choisis) dans
+  /// le groupe « Échanges à valoriser » (bouton « Appliquer », chantier B16, lot 2)
+  /// : pour une entrée SANS choix (autre motif, ou `spread` sans les quatre montants
+  /// — cf. [_unvaluedHasChoice]), comportement HISTORIQUE inchangé — une saisie VIDE
+  /// est simplement ignorée (l'échange reste manuel, aucune erreur affichée). Pour
+  /// une entrée AVEC choix (amendement drive lot 2 (suite) : le champ dérogatoire,
+  /// s'il est rempli, PRIME toujours sur le choix (même validation que le
+  /// comportement historique) ; s'il est vide, la valeur Decimal BRUTE de l'option
+  /// sélectionnée ([UnvaluedExchange.suggestedPaidEur] ou
+  /// [UnvaluedExchange.suggestedReceivedEur], jamais reformatée) est transmise telle
+  /// quelle — plus de `continue` silencieux dans ce cas, un clic sur « Appliquer »
+  /// SANS AUCUNE saisie valorise déjà ces lignes. Dans tous les cas, une entrée NON
+  /// vide mais invalide (pas un [Decimal] strictement positif, cf.
+  /// [AccountController.applyManualCryptoValuations]) marque SEULEMENT ce champ en
+  /// erreur, sans bloquer les autres lignes valides du même groupe. Aucun appel au
+  /// contrôleur si rien de valide n'a été saisi.
   Future<void> _applyManualCryptoValuations() async {
     final preview = _preview;
     if (preview == null) return;
@@ -2275,7 +2328,18 @@ class _StatementImportPageState extends State<StatementImportPage> {
     final invalid = <String>{};
     for (final u in preview.unvaluedExchanges) {
       final raw = _manualValuationControllers[u.importKey]?.text.trim() ?? '';
-      if (raw.isEmpty) continue;
+      if (raw.isEmpty) {
+        if (!_unvaluedHasChoice(u)) continue;
+        // Champ dérogatoire vide sur une entrée AVEC choix : repli sur la
+        // suggestion sélectionnée, en Decimal BRUT — jamais le montant
+        // reformaté (`_eurAmountLabel`), qui perdrait la précision exacte
+        // calculée par `CryptoValuationService`.
+        final paidSelected =
+            _unvaluedChoicePaidByKey.putIfAbsent(u.importKey, () => true);
+        toApply[u.importKey] =
+            (paidSelected ? u.suggestedPaidEur : u.suggestedReceivedEur)!;
+        continue;
+      }
       final normalized = raw.replaceAll(',', '.');
       final amount = Decimal.tryParse(normalized);
       if (amount == null || amount <= Decimal.zero) {
@@ -2312,6 +2376,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return gone;
       });
       _manualValuationInvalidKeys.removeWhere((key) => !remainingKeys.contains(key));
+      // Même purge pour la sélection du choix (amendement drive lot 2 (suite) : une
+      // entrée qui quitte le groupe ne doit pas laisser une sélection obsolète
+      // derrière elle, au cas où une future entrée réutiliserait la même clé.
+      _unvaluedChoicePaidByKey.removeWhere((key, _) => !remainingKeys.contains(key));
     });
   }
 
