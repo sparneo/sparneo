@@ -1967,10 +1967,11 @@ void main() {
           .widget<RadioListTile<bool>>(find.byType(RadioListTile<bool>).at(1));
       expect(paidTile.value, isTrue);
       expect(receivedTile.value, isFalse);
-      // ...et « Valeur cédée » (`true`) est bien l'option SÉLECTIONNÉE par
-      // défaut (valeur portée par le `RadioGroup` ambiant, cf. [_unvaluedChoiceRow]).
+      // ...et « Valeur reçue » (`false`) est bien l'option SÉLECTIONNÉE par défaut (valeur
+      // portée par le `RadioGroup` ambiant, cf. [_unvaluedChoiceRow] — décision auteur au
+      // drive.
       final group = tester.widget<RadioGroup<bool>>(find.byType(RadioGroup<bool>));
-      expect(group.groupValue, isTrue);
+      expect(group.groupValue, isFalse);
       // Champ dérogatoire (libellé distinct de l'entrée sans choix ci-dessous).
       expect(
         tester.widget<TextField>(find.byType(TextField).first).decoration!.labelText,
@@ -2000,8 +2001,8 @@ void main() {
     });
 
     testWidgets(
-        '« Appliquer » SANS AUCUNE interaction transmet suggestedPaidEur '
-        '(défaut « Valeur cédée ») ; une entrée d\'un AUTRE motif laissée '
+        '« Appliquer » SANS AUCUNE interaction transmet suggestedReceivedEur '
+        '(défaut « Valeur reçue ») ; une entrée d\'un AUTRE motif laissée '
         'vide n\'est TOUJOURS PAS transmise', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(
@@ -2027,18 +2028,18 @@ void main() {
       await tester.pumpAndSettle();
 
       // Seule l'entrée AVEC choix est transmise, à sa valeur par défaut
-      // « cédée » (Decimal BRUT '180', pas '180,00 €' reformaté) — l'entrée
+      // « reçue » (Decimal BRUT '207.5', pas '207,50 €' reformaté) — l'entrée
       // « unreadable » (autre motif, sans choix, laissée vide) reste absente
       // de la map, comportement historique inchangé.
       expect(
         controller.capturedEurByImportKey,
-        {'ref:account-1:REFEXCH': '180'},
+        {'ref:account-1:REFEXCH': '207.5'},
       );
     });
 
     testWidgets(
-        'basculer sur « Valeur reçue » PUIS Appliquer transmet '
-        'suggestedReceivedEur', (tester) async {
+        'basculer sur « Valeur cédée » PUIS Appliquer transmet '
+        'suggestedPaidEur', (tester) async {
       final controller = _FakeApplyManualValuationsController(
         result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
       );
@@ -2052,12 +2053,12 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      final receivedUsd = Formatters.formatMoney(225, 'USD');
-      final receivedEur = Formatters.formatEur(207.5);
+      final paidUsd = Formatters.formatMoney(195, 'USD');
+      final paidEur = Formatters.formatEur(180);
       await tester.ensureVisible(
-        find.text('Valeur reçue : $receivedUsd (≈ $receivedEur)'),
+        find.text('Valeur cédée : $paidUsd (≈ $paidEur)'),
       );
-      await tester.tap(find.text('Valeur reçue : $receivedUsd (≈ $receivedEur)'));
+      await tester.tap(find.text('Valeur cédée : $paidUsd (≈ $paidEur)'));
       await tester.pump();
 
       await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
@@ -2066,7 +2067,7 @@ void main() {
 
       expect(
         controller.capturedEurByImportKey,
-        {'ref:account-1:REFEXCH': '207.5'},
+        {'ref:account-1:REFEXCH': '180'},
       );
     });
 
@@ -2086,7 +2087,7 @@ void main() {
       await tester.tap(find.byIcon(Icons.arrow_back));
       await tester.pumpAndSettle();
 
-      // Défaut « Valeur cédée » laissé sélectionné — seule la saisie change.
+      // Défaut « Valeur reçue » laissé sélectionné — seule la saisie change.
       await tester.enterText(find.byType(TextField).first, '99,90');
       await tester.pump();
 
@@ -2094,7 +2095,7 @@ void main() {
       await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
       await tester.pumpAndSettle();
 
-      // Le montant SAISI l'emporte sur la suggestion '180' du choix.
+      // Le montant SAISI l'emporte sur la suggestion '207.5' du choix.
       expect(
         controller.capturedEurByImportKey,
         {'ref:account-1:REFEXCH': '99.90'},

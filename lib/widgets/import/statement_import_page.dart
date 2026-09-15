@@ -2222,11 +2222,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// Choix binaire « valeur cédée / valeur reçue » (amendement drive lot 2 (suite),
   /// remplace l'ancienne ligne de suggestions + boutons « Utiliser… ») — rendu
   /// UNIQUEMENT par [_unvaluedExchangeTile] quand les quatre montants USD/EUR sont
-  /// là. Présélectionne « cédée » ([_unvaluedChoicePaidByKey] défaut `true`) : un
-  /// clic direct sur « Appliquer », SANS aucune interaction ici, valorise déjà
-  /// l'échange à sa valeur par défaut — cf. [_applyManualCryptoValuations]. Le
-  /// champ de saisie EUR de la ligne reste disponible juste en dessous, mais
-  /// devient dérogatoire (n'écrase ce choix que s'il est rempli).
+  /// là. Présélectionne « REÇUE » ([_unvaluedChoicePaidByKey] défaut `false`,
+  /// décision auteur au drive : « c'est ce que l'utilisateur a eu au final » —
+  /// assumée DISTINCTE de l'étage automatique, qui retient lui la jambe payée quand
+  /// les valeurs concordent, §5.1.7b) : un clic direct sur « Appliquer », SANS
+  /// aucune interaction ici, valorise déjà l'échange à sa valeur par défaut — cf.
+  /// [_applyManualCryptoValuations]. Le champ de saisie EUR de la ligne reste
+  /// disponible juste en dessous, mais devient dérogatoire (n'écrase ce choix que
+  /// s'il est rempli).
   Widget _unvaluedChoiceRow(
     AppLocalizations l10n,
     String key,
@@ -2246,7 +2249,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
         receivedEur == null) {
       return const SizedBox.shrink();
     }
-    final paidSelected = _unvaluedChoicePaidByKey.putIfAbsent(key, () => true);
+    final paidSelected = _unvaluedChoicePaidByKey.putIfAbsent(key, () => false);
     return Padding(
       padding: const EdgeInsets.only(top: 2, bottom: 4),
       // `RadioGroup` (pas `groupValue`/`onChanged` sur chaque `RadioListTile`,
@@ -2335,7 +2338,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
         // reformaté (`_eurAmountLabel`), qui perdrait la précision exacte
         // calculée par `CryptoValuationService`.
         final paidSelected =
-            _unvaluedChoicePaidByKey.putIfAbsent(u.importKey, () => true);
+            _unvaluedChoicePaidByKey.putIfAbsent(u.importKey, () => false);
         toApply[u.importKey] =
             (paidSelected ? u.suggestedPaidEur : u.suggestedReceivedEur)!;
         continue;
