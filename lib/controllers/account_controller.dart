@@ -2131,6 +2131,124 @@ class AccountController extends ChangeNotifier {
         a.meta?['aggregatedRows'] == b.meta?['aggregatedRows'];
   }
 
+  /// Enrichit les `transferOut` de [plan] porteurs de `meta['valuationUsd']`
+  /// (retrait crypto en nature à jambe USD lisible, cf.
+  /// `CryptoLedgerNormalizer._processDepositOrWithdrawal`) d'un équivalent EUR
+  /// INFORMATIF — demande auteur, drive B16 (« voir l'équivalent en cash [d'un
+  /// retrait] »). Pose `meta['valueEur']`/`meta['fxRate']`/ `meta['fxDate']` (mêmes
+  /// clés que la valorisation des échanges, cf.
+  /// `CryptoLedgerNormalizer._valuationMeta`) sur les mouvements concernés, SANS
+  /// toucher au reste du plan.
+  ///
+  /// Zéro appel réseau si AUCUN `transferOut` du plan ne porte
+  /// `valuationUsd` (comportement bit-identique à avant cette méthode pour
+  /// un relevé qui n'en produit pas, ou pour un profil non-crypto qui
+  /// n'appelle jamais cette méthode).
+  ///
+  /// BEST-EFFORT STRICT (B4, jamais de coercition) : une série FX
+  /// indisponible ([ExchangeRateUnavailable]) laisse [plan] STRICTEMENT
+  /// INCHANGÉ — contrairement à la valorisation des échanges ci-dessous (qui
+  /// bascule tout en arbitrage manuel avec bandeau dédié), un retrait en
+  /// nature reste un mouvement COMPLET sans son équivalent EUR : la quantité
+  /// et le journal ne doivent jamais dépendre de cet appel pour exister.
+  /// Fenêtre FX INDÉPENDANTE de celle appelée par [_cryptoValuationService]
+  /// (couche privée à ce service, non réutilisable telle quelle) — mais MÊME
+  /// service/MÊME cache mémoire ([_exchangeService]), donc aucun coût réseau
+  /// supplémentaire quand les deux fenêtres se recouvrent (cas courant : les
+  /// dates d'un relevé Kraken sont contiguës).
+  Future<CryptoImportPlan> _enrichCryptoWithdrawalsWithEurValuation(
+    CryptoImportPlan plan,
+  ) async {
+    final targetIndexes = <int>[
+      for (var i = 0; i < plan.movements.length; i++)
+        if (plan.movements[i].transaction?.kind == TransactionKind.transferOut &&
+            plan.movements[i].transaction!.meta?['valuationUsd'] != null)
+          i,
+    ];
+    if (targetIndexes.isEmpty) return plan;
+
+    var minDate = plan.movements[targetIndexes.first].transaction!.date;
+    var maxDate = minDate;
+    for (final i in targetIndexes.skip(1)) {
+      final d = plan.movements[i].transaction!.date;
+      if (d.isBefore(minDate)) minDate = d;
+      if (d.isAfter(maxDate)) maxDate = d;
+    }
+
+    final Map<DateTime, double> rates;
+    try {
+      rates = await _exchangeService.getDailyRatesToEur(
+        'USD',
+        from: minDate,
+        to: maxDate,
+      );
+    } on ExchangeRateUnavailable {
+      return plan; // best-effort — voir doc de tête, jamais bloquant.
+    }
+
+    final updatedMovements = [...plan.movements];
+    for (final i in targetIndexes) {
+      final m = updatedMovements[i];
+      final tx = m.transaction!;
+      final usd = Decimal.tryParse(tx.meta!['valuationUsd'].toString());
+      if (usd == null) continue; // défensif — jamais atteint en pratique.
+      final entry = _lastFxRateOnOrBefore(rates, tx.date);
+      if (entry == null) continue; // repli antérieur introuvable, best-effort.
+      final rateDecimal = Decimal.parse(entry.value.toString());
+      final valueEur = usd * rateDecimal;
+      updatedMovements[i] = ImportedMovement.candidate(
+        sourceRow: m.sourceRow,
+        sourceRowIndex: m.sourceRowIndex,
+        transaction: tx.copyWith(meta: {
+          ...tx.meta!,
+          'valueEur': valueEur.toString(),
+          'fxRate': entry.value.toString(),
+          'fxDate': _isoDayFx(entry.key),
+        }),
+        isin: m.isin,
+        label: m.label,
+        ledgerCode: m.ledgerCode,
+        needsAssetResolution: m.needsAssetResolution,
+        resolvedSymbol: m.resolvedSymbol,
+        importKey: m.importKey!,
+      );
+    }
+
+    return CryptoImportPlan(
+      globalRejectReason: plan.globalRejectReason,
+      movements: updatedMovements,
+      unvaluedExchanges: plan.unvaluedExchanges,
+      unbalancedInternalTransfers: plan.unbalancedInternalTransfers,
+      chainRuptures: plan.chainRuptures,
+      quantityGaps: plan.quantityGaps,
+      aggregatedRewardSourceRows: plan.aggregatedRewardSourceRows,
+    );
+  }
+
+  /// Dernier jour ouvré ≤ [date] PRÉSENT dans [rates] — JAMAIS d'interpolation
+  /// (même politique que `CryptoValuationService._lastRateOnOrBefore`, dont
+  /// c'est une duplication VOLONTAIRE et minime : méthode PRIVÉE à son
+  /// fichier, inaccessible ici — cf. l'en-tête de `crypto_ledger_normalizer.
+  /// dart` pour la même doctrine de duplication assumée).
+  MapEntry<DateTime, double>? _lastFxRateOnOrBefore(
+    Map<DateTime, double> rates,
+    DateTime date, {
+    int maxLookback = 15,
+  }) {
+    var d = DateTime(date.year, date.month, date.day);
+    for (var i = 0; i <= maxLookback; i++) {
+      final v = rates[d];
+      if (v != null) return MapEntry(d, v);
+      d = d.subtract(const Duration(days: 1));
+    }
+    return null;
+  }
+
+  static String _isoDayFx(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
+
   Future<ImportPreview> _previewCryptoImport(
     Uint8List bytes,
     BrokerProfile profile, {
@@ -2138,7 +2256,7 @@ class AccountController extends ChangeNotifier {
     required String accountId,
   }) async {
     final parsed = StatementImportService.parseWithLineNumbers(bytes, profile);
-    final plan = StatementImportService.planCryptoImport(
+    var plan = StatementImportService.planCryptoImport(
       parsed.rows,
       profile,
       accountCurrency: account.currency,
@@ -2149,6 +2267,16 @@ class AccountController extends ChangeNotifier {
     if (plan.globalRejectReason != null) {
       return ImportPreview(globalRejectReason: plan.globalRejectReason);
     }
+
+    // ---- Demande auteur, drive B16 (« l'équivalent en cash d'un retrait ») :
+    // équivalent EUR informatif des `transferOut` porteurs de
+    // `meta['valuationUsd']` (cf. `CryptoLedgerNormalizer.
+    // _processDepositOrWithdrawal`) — INDÉPENDANT de la valorisation des échanges
+    // ci-dessous (un relevé peut n'avoir AUCUN échange non valorisé et pourtant des
+    // retraits en nature à équiper). Best-effort STRICT : FX indisponible → `plan`
+    // REVIENT INCHANGÉ, l'import ne doit JAMAIS échouer pour ça (voir doc de la
+    // méthode).
+    plan = await _enrichCryptoWithdrawalsWithEurValuation(plan);
 
     // ---- LOT 2 : valorisation étage 1 « fichier » des échanges crypto sans jambe
     // fiat (conception interne). Zéro appel si le fichier n'en a aucun

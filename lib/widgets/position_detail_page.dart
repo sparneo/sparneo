@@ -1390,6 +1390,21 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     String subtitle;
     if (tx.quantity != null && tx.unitPrice != null) {
       subtitle = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
+    } else if (tx.kind == TransactionKind.transferOut && tx.quantity != null) {
+      // Retrait crypto EN NATURE (import B16) : aucun `unitPrice`, donc la
+      // condition ci-dessus est toujours fausse ici — sans cette branche dédiée, la
+      // quantité retirée ne s'affichait JAMAIS sur la fiche position (seul le
+      // libellé du kind apparaissait). Demande auteur, drive B16 (« voir la
+      // quantité de crypto retirée et l'équivalent en cash ») : équivalent EUR
+      // (`meta['valueEur']`, best-effort — cf. `AccountController.
+      // _enrichCryptoWithdrawalsWithEurValuation`) quand disponible, même motif que
+      // account_journal_page.dart.
+      final raw = tx.meta?['valueEur'];
+      final eurValue = raw is String ? double.tryParse(raw) : null;
+      subtitle = eurValue == null
+          ? tx.quantity!
+          : '${tx.quantity} '
+              '${l10n.cryptoTransferOutApproxEur(Formatters.formatEur(eurValue))}';
     } else {
       subtitle = _kindLabel(l10n, tx.kind);
     }

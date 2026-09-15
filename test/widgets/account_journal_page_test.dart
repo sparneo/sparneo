@@ -29,6 +29,7 @@ import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
 import 'package:portfolio_tracker/services/ledger_service.dart';
 import 'package:portfolio_tracker/services/transaction_storage.dart';
+import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/account_journal_page.dart';
 
 const _accountId = 'account-1';
@@ -562,6 +563,95 @@ void main() {
         // Sous-titre : la nature l'emporte quand qté × prix n'informe pas
         // (unitPrice absent ici) — pas de « × » affiché.
         expect(find.textContaining('×'), findsNothing);
+      },
+    );
+
+    // ------------------------------------------------------------------- Demande
+    // auteur, drive B16 (« voir la quantité de crypto retirée et l'équivalent en
+    // cash ») : tuile d'un transferOut EN NATURE.
+    // -------------------------------------------------------------------
+
+    testWidgets(
+      'transferOut avec meta[\'valueEur\'] : quantité ET « ≈ X € » affichés',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-transferout-eur',
+          accountId: _accountId,
+          symbol: 'BTC-EUR',
+          kind: TransactionKind.transferOut,
+          quantity: '0.015',
+          currency: 'EUR',
+          date: DateTime(2024, 4, 1),
+          meta: const {
+            'valuationUsd': '900',
+            'valueEur': '810',
+            'fxRate': '0.9',
+            'fxDate': '2024-04-01',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        final eurLabel = Formatters.formatEur(810);
+        expect(find.text('0.015 (≈ $eurLabel)'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'transferOut SANS meta[\'valueEur\'] (FX indisponible ou jambe USD '
+      'illisible) : quantité SEULE, pas de « ≈ »',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-transferout-noeur',
+          accountId: _accountId,
+          symbol: 'BTC-EUR',
+          kind: TransactionKind.transferOut,
+          quantity: '0.02',
+          currency: 'EUR',
+          date: DateTime(2024, 4, 2),
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(find.text('0.02'), findsOneWidget);
+        expect(find.textContaining('≈'), findsNothing);
+      },
+    );
+
+    // ------------------------------------------------------------------- Demande
+    // auteur, drive B16 (« voir les dépôts en crypto ») : la puce « Dépôt » fait
+    // remonter l'adjustment inKindDeposit — la tuile affiche déjà quantité × coût
+    // (branche `hasQtyPrice` existante).
+    // -------------------------------------------------------------------
+
+    testWidgets(
+      'dépôt en nature (adjustment inKindDeposit) : filtre « Dépôt » le '
+      'remonte, tuile affiche quantité × prix (coût EUR)',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-inkind-deposit',
+          accountId: _accountId,
+          symbol: 'BTC-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '0.5',
+          unitPrice: '45000',
+          currency: 'EUR',
+          date: DateTime(2024, 4, 3),
+          meta: const {'inKindDeposit': true, 'valuationSource': 'statement'},
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        // Tuile : quantité × prix déjà affichés (branche hasQtyPrice).
+        expect(find.text('0.5 × 45000 EUR'), findsOneWidget);
+
+        // Filtre « Dépôt » : la tuile reste visible (cas spécial filterJournal).
+        await tester.tap(find.text('Dépôt'));
+        await tester.pumpAndSettle();
+        expect(find.text('0.5 × 45000 EUR'), findsOneWidget);
       },
     );
   });

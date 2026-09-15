@@ -37,6 +37,16 @@ import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 /// des dizaines de retraits réels dans le relevé. Aucun autre kind ne
 /// bénéficie de cet élargissement : `kind: buy` par exemple ne remonte jamais
 /// un `transferOut`, seulement les `buy`.
+///
+/// CAS SPÉCIAL SYMÉTRIQUE — [kind] == [TransactionKind.deposit] matche AUSSI
+/// tout [TransactionKind.adjustment] portant `meta['inKindDeposit'] == true`
+/// (décision auteur, drive B16, non rediscutable) : un dépôt crypto EN NATURE
+/// (l'actif « vient d'ailleurs », pas d'espèces en contrepartie — cf.
+/// `CryptoLedgerNormalizer.finalizeCryptoExchanges`, case `'depositInKind'`) est
+/// journalisé en `adjustment` VALORISÉ (quantité + coût EUR), jamais en
+/// `deposit` (réservé au cash). La clé dédiée `inKindDeposit` est INDISPENSABLE
+/// ici : un `adjustment` recouvre AUSSI un agrégat mensuel de récompenses ou un
+/// résidu de transfert interne, qui ne doivent JAMAIS fuiter sous « Dépôt ».
 List<AssetTransaction> filterJournal(
   List<AssetTransaction> txs, {
   TransactionKind? kind,
@@ -46,7 +56,10 @@ List<AssetTransaction> filterJournal(
     final kindOk = kind == null ||
         tx.kind == kind ||
         (kind == TransactionKind.withdrawal &&
-            tx.kind == TransactionKind.transferOut);
+            tx.kind == TransactionKind.transferOut) ||
+        (kind == TransactionKind.deposit &&
+            tx.kind == TransactionKind.adjustment &&
+            tx.meta?['inKindDeposit'] == true);
     final dateOk = notBefore == null || !tx.date.isBefore(notBefore);
     return kindOk && dateOk;
   }).toList();
@@ -258,6 +271,18 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
 
   String _formatTxDate(DateTime dt) =>
       '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
+
+  /// Équivalent EUR « (≈ X €) » d'un `transferOut` crypto, SI
+  /// `meta['valueEur']` est renseignée (cf. `AccountController.
+  /// _enrichCryptoWithdrawalsWithEurValuation`) — `null` sinon (FX
+  /// indisponible à l'import, ou retrait sans jambe USD lisible sur le
+  /// relevé : la quantité seule reste affichée, jamais bloquant).
+  String? _transferOutEurApprox(AppLocalizations l10n, AssetTransaction tx) {
+    final raw = tx.meta?['valueEur'];
+    final value = raw is String ? double.tryParse(raw) : null;
+    if (value == null) return null;
+    return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
+  }
 
   // ---------------------------------------------------------------------------
   // Création d'un mouvement d'espèces (le journal est le seul point d'entrée
@@ -682,6 +707,17 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
           (double.tryParse(tx.quantity!) ?? 0) != 0 &&
           (double.tryParse(tx.unitPrice!) ?? 0) != 0;
       subtitle = meaningfulNumbers ? '$nature · $qtyPrice' : nature;
+    } else if (tx.kind == TransactionKind.transferOut && tx.quantity != null) {
+      // Retrait crypto EN NATURE (import B16) : aucun `unitPrice` (pas de notion de
+      // prix pour une sortie sans contrepartie), donc `hasQtyPrice` est TOUJOURS faux
+      // ici — sans cette branche dédiée, la quantité retirée ne s'affichait JAMAIS,
+      // seul le libellé du kind (« Transfert de titres (sortie) ») apparaissait.
+      // Demande auteur, drive B16 : quantité + équivalent EUR (`meta['valueEur']`,
+      // best-effort — cf.
+      // `AccountController._enrichCryptoWithdrawalsWithEurValuation`) quand
+      // disponible.
+      final approx = _transferOutEurApprox(l10n, tx);
+      subtitle = approx == null ? tx.quantity! : '${tx.quantity} $approx';
     } else if (hasQtyPrice) {
       subtitle = qtyPrice;
     } else {

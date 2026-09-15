@@ -792,7 +792,17 @@ class CryptoLedgerNormalizer {
               amount: null, // AUCUN cash : un dépôt ne touche pas les espèces.
               currency: accountCurrency,
               date: u.date,
-              meta: {...meta, 'importKey': depositImportKey},
+              meta: {
+                ...meta,
+                // Demande auteur, drive B16 (« voir les dépôts en crypto ») : clé DÉDIÉE —
+                // `meta['valuationSource']` seul ne distingue PAS ce dépôt en nature d'une
+                // jambe `sell`/`buy` d'échange (les deux portent la même valeur, cf.
+                // `_valuationMeta`). Sans elle, `filterJournal` ne pourrait pas faire remonter
+                // CET `adjustment` précis sous la puce « Dépôt » sans fuiter les autres
+                // (agrégats de récompenses, résidus de transferts internes).
+                'inKindDeposit': true,
+                'importKey': depositImportKey,
+              },
             ),
             ledgerCode: codeReceived,
             needsAssetResolution: true,
@@ -1045,7 +1055,8 @@ class CryptoLedgerNormalizer {
     }
 
     // Sortie en nature : transferOut, quantité = |net| (le frais de retrait
-    // sort aussi), aucun cash, aucune valorisation requise.
+    // sort aussi), aucun cash, aucune valorisation requise (le mouvement
+    // journalisé reste complet SANS elle — B4, jamais bloquant).
     final quantity = net.abs();
     final role = 'transferOut:${leg.baseAsset}';
     final importKey =
@@ -1058,7 +1069,20 @@ class CryptoLedgerNormalizer {
       quantity: quantity.toString(),
       currency: accountCurrency,
       date: leg.date,
-      meta: {'seq': leg.seq, 'importKey': importKey},
+      meta: {
+        'seq': leg.seq,
+        'importKey': importKey,
+        // Demande auteur, drive B16 (« voir la quantité de crypto retirée et
+        // l'équivalent en cash ») : la valeur USD de LA JAMBE (colonne `amountusd`,
+        // même source que pour un échange, cf. `_Leg. valuationUsd`) est posée ICI en
+        // valeur ABSOLUE quand elle est LISIBLE —
+        // `AccountController._previewCryptoImport` la convertit ensuite en EUR via la
+        // série FX historique (`meta['valueEur']`). Jamais bloquant : illisible
+        // (littéral `-`, N2) → cette clé est simplement absente, le mouvement reste
+        // inchangé (B4 : aucune coercition).
+        if (leg.valuationUsd != null)
+          'valuationUsd': leg.valuationUsd!.abs().toString(),
+      },
     );
     movements.add(ImportedMovement.candidate(
       sourceRow: leg.source,

@@ -1703,6 +1703,14 @@
     "description": "Transaction kind: securities transferred out of the account (e.g. PEA to CTO), not a market sale — reduces quantity at cost basis, no realized gain, no cash"
   },
 
+  "cryptoTransferOutApproxEur": "(≈ {eur})",
+  "@cryptoTransferOutApproxEur": {
+    "description": "Author request, B16 drive 09/15 ('see the cash equivalent of a withdrawal'): appended after the raw quantity on an in-kind crypto withdrawal's journal tile (account_journal_page.dart / position_detail_page.dart), only when an informative EUR equivalent could be computed (meta['valueEur'], best-effort — see AccountController._enrichCryptoWithdrawalsWithEurValuation). Absent when unavailable (FX unreachable, or no readable USD leg on the statement) — the quantity alone is then shown, never blocking. The placeholder is an already-formatted currency string (Formatters.formatEur), not a raw number.",
+    "placeholders": {
+      "eur": { "type": "String" }
+    }
+  },
+
   "dividendAmountHint": "Optional if quantity and unit price are filled in",
   "@dividendAmountHint": {
     "description": "Helper text on the dividend amount field, explaining it is optional when quantity/unit price are provided instead"

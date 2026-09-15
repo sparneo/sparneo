@@ -21,6 +21,7 @@ AssetTransaction _tx({
   required TransactionKind kind,
   required DateTime date,
   String? symbol,
+  Map<String, dynamic>? meta,
 }) {
   return AssetTransaction(
     id: id,
@@ -29,6 +30,7 @@ AssetTransaction _tx({
     kind: kind,
     currency: 'EUR',
     date: date,
+    meta: meta,
   );
 }
 
@@ -54,9 +56,50 @@ void main() {
     date: d60ago,
     symbol: 'BTC-EUR',
   );
+  // Dépôt ON-CHAIN (import crypto B16, demande auteur : journalisé en NATURE,
+  // donc en adjustment VALORISÉ (meta['inKindDeposit'] == true), jamais en
+  // deposit (réservé au cash) — cf. cas spécial symétrique.
+  final inKindDeposit1 = _tx(
+    id: 'ikd1',
+    kind: TransactionKind.adjustment,
+    date: d60ago,
+    symbol: 'BTC-EUR',
+    meta: const {'inKindDeposit': true, 'valuationSource': 'statement'},
+  );
+  // Autres `adjustment` du même import crypto — ne doivent JAMAIS fuiter sous
+  // « Dépôt » : agrégat mensuel de récompenses (kind adjustment SANS la clé
+  // dédiée) et résidu de transfert interne (meta distincte,
+  // `internalTransferResidual`).
+  final rewardAggregate1 = _tx(
+    id: 'agg1',
+    kind: TransactionKind.adjustment,
+    date: d60ago,
+    meta: const {
+      'corporateAction': 'stakingReward',
+      'aggregation': 'monthly',
+    },
+  );
+  final internalResidual1 = _tx(
+    id: 'res1',
+    kind: TransactionKind.adjustment,
+    date: d60ago,
+    symbol: 'ETH-EUR',
+    meta: const {'internalTransferResidual': true, 'replaceable': true},
+  );
+  // `adjustment` sans meta du tout (mouvement saisi/importé AVANT que cette
+  // clé existe) — cas défensif, ne doit pas non plus fuiter.
+  final plainAdjustment1 =
+      _tx(id: 'padj1', kind: TransactionKind.adjustment, date: d60ago);
 
   final allTxs = [buy1, sell1, dividend1, deposit1, withdrawal1];
   final allTxsWithTransferOut = [...allTxs, transferOut1];
+  final allTxsWithInKindDeposit = [
+    ...allTxs,
+    inKindDeposit1,
+    rewardAggregate1,
+    internalResidual1,
+    plainAdjustment1,
+  ];
 
   // -------------------------------------------------------------------------
   group('filterJournal — aucun filtre', () {
@@ -134,6 +177,62 @@ void main() {
         expect(result, isNot(contains(transferOut1)));
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Décision auteur, drive B16 : la puce « Dépôt » matche AUSSI l'adjustment
+  // `inKindDeposit` (dépôt on-chain journalisé en nature à l'import crypto) — cas
+  // spécial SYMÉTRIQUE de withdrawal/transferOut, mais SANS fuite des autres
+  // adjustments (agrégats de récompenses, résidus de transferts internes,
+  // adjustment sans meta).
+  group('filterJournal — cas spécial deposit/inKindDeposit (import crypto B16)', () {
+    test(
+      'kind: deposit remonte le deposit espèces ET l\'adjustment '
+      'inKindDeposit, aucun autre adjustment',
+      () {
+        final result = filterJournal(
+          allTxsWithInKindDeposit,
+          kind: TransactionKind.deposit,
+        );
+        expect(result, containsAll([deposit1, inKindDeposit1]));
+        expect(result, hasLength(2));
+      },
+    );
+
+    test(
+      'les autres adjustments (agrégat de récompenses, résidu de transfert '
+      'interne, adjustment sans meta) ne fuitent JAMAIS sous « Dépôt »',
+      () {
+        final result = filterJournal(
+          allTxsWithInKindDeposit,
+          kind: TransactionKind.deposit,
+        );
+        expect(result, isNot(contains(rewardAggregate1)));
+        expect(result, isNot(contains(internalResidual1)));
+        expect(result, isNot(contains(plainAdjustment1)));
+      },
+    );
+
+    test(
+      'un autre kind (buy) ne fait PAS fuiter l\'inKindDeposit : le cas '
+      'spécial est strictement réservé à deposit',
+      () {
+        final result = filterJournal(
+          allTxsWithInKindDeposit,
+          kind: TransactionKind.buy,
+        );
+        expect(result, [buy1]);
+        expect(result, isNot(contains(inKindDeposit1)));
+      },
+    );
+
+    test('kind: withdrawal reste inchangé (non-régression) — n\'inclut aucun adjustment', () {
+      final result = filterJournal(
+        allTxsWithInKindDeposit,
+        kind: TransactionKind.withdrawal,
+      );
+      expect(result, [withdrawal1]);
+    });
   });
 
   // -------------------------------------------------------------------------

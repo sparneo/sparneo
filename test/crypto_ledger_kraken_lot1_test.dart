@@ -854,6 +854,57 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // Demande auteur, drive B16 (« voir la quantité de crypto retirée et
+  // l'équivalent en cash ») : meta['valuationUsd'] posée par le moteur PUR sur un
+  // `transferOut` (retrait en nature) quand la jambe porte une valeur USD lisible
+  // — `AccountController` la convertit ensuite en EUR (couvert dans le groupe «
+  // intégration AccountController » ci-dessous).
+  // -------------------------------------------------------------------------
+  group('Lot 1 Kraken — retrait en nature : meta valuationUsd (drive B16)', () {
+    test('amountusd lisible → meta[\'valuationUsd\'] posée en valeur ABSOLUE', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RWU1', time: '2024-05-01 08:00:00', type: 'withdrawal',
+          asset: 'PPP', amount: '-3', fee: '0.1', subclass: 'crypto', amountusd: '150');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.kind, equals(TransactionKind.transferOut));
+      // net = -3 - 0.1 = -3.1, quantité journalisée = |net| = 3.1.
+      expect(m.transaction!.quantity, equals('3.1'));
+      expect(m.transaction!.meta!['valuationUsd'], equals('150'));
+    });
+
+    test(
+        'amountusd littéral "-" (N2, illisible) → meta[\'valuationUsd\'] '
+        'ABSENTE, le retrait reste journalisé normalement (jamais bloquant)',
+        () {
+      final b = _LedgerBuilder();
+      // `amountusd` omis → défaut `'-'` du générateur (même convention que
+      // le N2 Kraken réel), volontairement PAS lisible.
+      b.leg(refid: 'RWU2', time: '2024-05-02 08:00:00', type: 'withdrawal',
+          asset: 'PPP', amount: '-2', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(m.transaction!.quantity, equals('2'));
+      expect(m.transaction!.meta!.containsKey('valuationUsd'), isFalse);
+    });
+
+    test(
+        'amountusd NÉGATIF (convention colonne signée) → valeur absolue '
+        'retenue, jamais le signe brut', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RWU3', time: '2024-05-03 08:00:00', type: 'withdrawal',
+          asset: 'PPP', amount: '-1', subclass: 'crypto', amountusd: '-75');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.meta!['valuationUsd'], equals('75'));
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Test 5 — refus global N1 (ancien format Kraken).
   // -------------------------------------------------------------------------
   test('N1 : ancien format Kraken (sans wallet/subclass/amountusd) → refus global motivé', () {
@@ -1758,6 +1809,11 @@ void main() {
       // remplissage jusqu'à l'échelle 12 — cf. commentaire du test précédent).
       expect(deposit.transaction!.unitPrice, equals('54'));
       expect(deposit.importKey, equals('ref:$accountId:RE4#deposit:III'));
+      // Demande auteur, drive B16 (« voir les dépôts en crypto ») : clé DÉDIÉE,
+      // distincte de `valuationSource` (qui ne distingue pas ce dépôt d'une jambe
+      // sell/buy d'échange) — `filterJournal` s'en sert pour faire remonter CET
+      // adjustment sous la puce « Dépôt ».
+      expect(deposit.transaction!.meta!['inKindDeposit'], isTrue);
 
       final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
       expect(err, isNull);
@@ -2195,6 +2251,133 @@ void main() {
       expect(applied.unvaluedExchanges, hasLength(1));
       expect(applied.unvaluedExchanges.single.manualReason, equals('fxUnavailable'));
     }, timeout: const Timeout(Duration(seconds: 15))); // 3 tentatives avec backoff.
+
+    // ----------------------------------------------------------------- Demande
+    // auteur, drive B16 (« voir l'équivalent en cash d'un retrait ») :
+    // `AccountController._enrichCryptoWithdrawalsWithEurValuation` convertit
+    // `meta['valuationUsd']` (posé par le moteur pur) en EUR via la série FX
+    // historique — INDÉPENDANT de la valorisation des échanges, best-effort strict
+    // (jamais bloquant).
+    // -----------------------------------------------------------------
+
+    test(
+        'retrait en nature à jambe USD lisible + FX dispo → meta valueEur/'
+        'fxRate/fxDate posée, quantité inchangée', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-withdrawal-eur-a';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RWE1', time: '2024-01-05 08:00:00', type: 'withdrawal',
+          asset: 'QQQ', amount: '-4', fee: '0.2', subclass: 'crypto',
+          amountusd: '400');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      final withdrawal = preview.toCreate.firstWhere((m) => m.ledgerCode == 'QQQ');
+      expect(withdrawal.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(withdrawal.transaction!.quantity, equals('4.2')); // |net| = 4 + 0.2 de frais.
+      final meta = withdrawal.transaction!.meta!;
+      expect(meta['valuationUsd'], equals('400'));
+      // 400 USD × 0,9 = 360 EUR.
+      expect(meta['valueEur'], equals('360'));
+      expect(meta['fxRate'], equals('0.9'));
+      expect(meta['fxDate'], equals('2024-01-05'));
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+      final journal = await TransactionStorage(database: db).getByAccount(accountId);
+      final saved = journal.singleWhere((t) => t.kind == TransactionKind.transferOut);
+      expect(saved.meta!['valueEur'], equals('360'));
+      // Un retrait en nature reste un mouvement d'ESPÈCES nul : aucun cash.
+      expect(saved.amount, isNull);
+    });
+
+    test(
+        'retrait en nature à jambe USD lisible mais FX INDISPONIBLE → import '
+        'PAS bloqué, meta valueEur simplement absente, quantité toujours '
+        'présente', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-withdrawal-eur-b';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RWE2', time: '2024-01-06 08:00:00', type: 'withdrawal',
+          asset: 'QQQ', amount: '-1', subclass: 'crypto', amountusd: '90');
+
+      final mockClient = MockClient((request) async {
+        return http.Response('erreur serveur', 500);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      final withdrawal = preview.toCreate.firstWhere((m) => m.ledgerCode == 'QQQ');
+      expect(withdrawal.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(withdrawal.transaction!.quantity, equals('1'));
+      // `valuationUsd` reste posée (calculée par le moteur PUR, zéro I/O) —
+      // seule la conversion EUR échoue.
+      expect(withdrawal.transaction!.meta!['valuationUsd'], equals('90'));
+      expect(withdrawal.transaction!.meta!.containsKey('valueEur'), isFalse);
+
+      // Best-effort STRICT : contrairement aux échanges, cet échec FX ne lève
+      // JAMAIS le bandeau `cryptoFxUnavailable` (aucun échange non valorisé
+      // dans ce relevé — seul l'équivalent EUR informatif du retrait manque).
+      expect(preview.cryptoFxUnavailable, isFalse);
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+    }, timeout: const Timeout(Duration(seconds: 15))); // 3 tentatives avec backoff.
+
+    test(
+        'ré-import du même retrait en nature (valueEur nouvellement posé) → '
+        'reconnu DOUBLON, jamais cryptoImportKeyCollision (idempotence '
+        'insensible à la meta)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-withdrawal-eur-c';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RWE3', time: '2024-01-07 08:00:00', type: 'withdrawal',
+          asset: 'QQQ', amount: '-2', subclass: 'crypto', amountusd: '200');
+      final bytes = b.toCsvBytes();
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-07': 0.85}), 200);
+      });
+
+      final preview1 = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+      final err1 = await ctrl.confirmStatementImport(preview1, accountId: accountId);
+      expect(err1, isNull);
+
+      final preview2 = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview2.toCreate.any((m) => m.ledgerCode == 'QQQ'), isFalse);
+      expect(preview2.duplicates.where((m) => m.ledgerCode == 'QQQ'), hasLength(1));
+      expect(preview2.rejects.any((m) => m.rejectReason == 'cryptoImportKeyCollision'),
+          isFalse);
+    });
   });
 
   group('Lot 2 — revue adversariale B-1/B-2 (moteur pur, finalizeCryptoExchanges)', () {
