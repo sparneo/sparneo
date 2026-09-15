@@ -2169,6 +2169,9 @@ class AccountController extends ChangeNotifier {
           // la valeur codée en dur du service — Kraken vaut déjà `0.10`
           // (comportement inchangé pour ce profil).
           maxLegValuationSpread: profile.crypto!.maxLegValuationSpread,
+          // Étage 1-ter (amendement drive lot 2 : liste de CONFIANCE du profil — vide
+          // pour tout profil qui ne la renseigne pas, comportement inchangé.
+          usdStableCodes: profile.crypto!.usdStableCodes,
         );
         _lastCryptoValuations.addAll(resolution.valuations);
         for (final m in resolution.manual) {

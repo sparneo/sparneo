@@ -178,9 +178,11 @@ class CryptoValuation {
   /// valorisation `'manual'`).
   final String? spreadPct;
 
-  /// `'statement'` (étage 1) / `'marketHistory'` (étage 2, hors lot 2) /
-  /// `'manual'` (saisie utilisateur, hors lot 2 — l'UI viendra plus tard,
-  /// l'API l'accepte déjà, cf. `finalizeCryptoExchanges`).
+  /// `'statement'` (étage 1) / `'stableLeg'` (étage 1-ter, repli « jambe stablecoin
+  /// dollar », amendement drive lot 2 — cf. `CryptoLedgerSpec. usdStableCodes`) /
+  /// `'marketHistory'` (étage 2, hors lot 2) / `'manual'` (saisie utilisateur, hors
+  /// lot 2 — l'UI viendra plus tard, l'API l'accepte déjà, cf.
+  /// `finalizeCryptoExchanges`).
   final String source;
 
   const CryptoValuation({

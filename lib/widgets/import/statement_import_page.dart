@@ -2587,10 +2587,21 @@ class _StatementImportPageState extends State<StatementImportPage> {
   Widget _buildDeltaSection(AppLocalizations l10n, ImportPreview preview) {
     final theme = Theme.of(context);
     final legacy = preview.legacySymbols.toSet();
-    final securityDeltas =
-        preview.projectedDeltas.where((d) => d.symbol != null).toList();
-    final cashDeltas =
-        preview.projectedDeltas.where((d) => d.symbol == null).toList();
+    // Retour auteur (drive lot 2) : une ligne « 0 → 0 » n'apprend rien — un
+    // actif acheté puis intégralement reconverti sur un compte neuf inondait
+    // le panneau de lignes nulles. On ne masque QUE le zéro-vers-zéro : une
+    // position existante VIDÉE par l'import (« 5 → 0 ») reste affichée, c'est
+    // une information qui compte. Même règle pour les espèces plus bas.
+    bool isZero(String? q) =>
+        (Decimal.tryParse(q ?? '0') ?? Decimal.zero) == Decimal.zero;
+    final securityDeltas = preview.projectedDeltas
+        .where((d) => d.symbol != null)
+        .where((d) => !isZero(d.quantityBefore) || !isZero(d.quantityAfter))
+        .toList();
+    final cashDeltas = preview.projectedDeltas
+        .where((d) => d.symbol == null)
+        .where((d) => (d.cashBefore ?? 0) != 0 || (d.cashAfter ?? 0) != 0)
+        .toList();
     final hasOstRejects =
         preview.rejects.any((m) => m.rejectReason == 'corporateActionReview');
 
@@ -3052,12 +3063,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
     );
   }
 
-  /// « Valorisé d'après le relevé » / « Valorisé manuellement » — discret,
-  /// SEULEMENT sur les mouvements crypto finalisés (`meta['valuationSource']`
-  /// posé par `CryptoLedgerNormalizer.finalizeCryptoExchanges`, valeurs
-  /// `'statement'`/`'manual'` au lot 2 ; `'marketHistory'`, hors périmètre de
-  /// ce lot, n'a PAS de libellé dédié ici). `null` sur tout autre mouvement
-  /// (aucun changement visible pour Bourse Direct/générique).
+  /// « Valorisé d'après le relevé » / « Valorisé d'après la contrepartie en
+  /// stablecoin dollar » / « Valorisé manuellement » — discret, SEULEMENT sur les
+  /// mouvements crypto finalisés (`meta['valuationSource']` posé par
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`, valeurs
+  /// `'statement'`/`'stableLeg'` (amendement drive lot 2/`'manual'` au lot 2 ;
+  /// `'marketHistory'`, hors périmètre de ce lot, n'a PAS de libellé dédié ici).
+  /// `null` sur tout autre mouvement (aucun changement visible pour Bourse
+  /// Direct/générique).
   String? _valuationSourceLabel(
     AppLocalizations l10n,
     Map<String, dynamic>? meta,
@@ -3065,6 +3078,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
     switch (meta?['valuationSource']) {
       case 'statement':
         return l10n.importValuationSourceStatement;
+      case 'stableLeg':
+        return l10n.importValuationSourceStableLeg;
       case 'manual':
         return l10n.importValuationSourceManual;
       default:

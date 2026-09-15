@@ -207,6 +207,138 @@ void main() {
       expect(resolution.valuations, hasLength(2));
     });
 
+    test(
+        'jambe stable STB déclarée + spread > 10 % → repli étage 1-ter, '
+        'valorisé à la quantité NETTE de STB, source stableLeg, spread consigné',
+        () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(
+          [
+            _exchange(
+              importKey: 'ref:a1:RSTB1',
+              date: DateTime(2024, 1, 5),
+              // codeReceived/quantityReceived par défaut : 'STB'/'99'.
+              usdPaid: '100',
+              usdReceived: '115', // écart +15 %, au-delà du seuil.
+            ),
+          ],
+          usdStableCodes: {'STB'},
+        ),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      final v = resolution.valuations['ref:a1:RSTB1']!;
+      // Quantité NETTE de la jambe STB (99), PAS la jambe payée USD (100).
+      expect(v.valuationUsd, equals(Decimal.parse('99')));
+      expect(v.amountEur, equals(Decimal.parse('89.1'))); // 99 × 0,9
+      expect(v.source, equals('stableLeg'));
+      // Écart calculé malgré le repli, consigné pour l'affichage.
+      expect(Decimal.parse(v.spreadPct!), equals(Decimal.parse('0.15')));
+    });
+
+    test(
+        'jambe stable STB déclarée + amountusd illisible des DEUX côtés → '
+        'même repli étage 1-ter, spread NON consigné (rien à comparer)',
+        () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(
+          [
+            _exchange(
+              importKey: 'ref:a1:RSTB2',
+              date: DateTime(2024, 1, 5),
+              // usdPaid/usdReceived absents (illisibles) par défaut.
+            ),
+          ],
+          usdStableCodes: {'STB'},
+        ),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      final v = resolution.valuations['ref:a1:RSTB2']!;
+      expect(v.valuationUsd, equals(Decimal.parse('99')));
+      expect(v.source, equals('stableLeg'));
+      expect(v.spreadPct, isNull);
+    });
+
+    test(
+        'AUCUNE jambe stable déclarée pour ce code + spread > 10 % → reste '
+        'manuel motif spread, INCHANGÉ (le repli 1-ter ne s\'applique pas)',
+        () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(
+          [
+            _exchange(
+              importKey: 'ref:a1:RNOSTB',
+              date: DateTime(2024, 1, 5),
+              usdPaid: '100',
+              usdReceived: '115', // écart +15 %.
+            ),
+          ],
+          // 'STB' n'y figure PAS : aucune jambe de confiance pour cet échange.
+          usdStableCodes: {'OTHERCOIN'},
+        ),
+        () => mockClient,
+      );
+
+      expect(resolution.valuations, isEmpty);
+      expect(resolution.manual, hasLength(1));
+      expect(resolution.manual.single.reason,
+          equals(CryptoValuationManualReason.spread));
+    });
+
+    test(
+        'jambe stable STB déclarée MAIS spread ≤ 10 % → étage 1 NORMAL '
+        '(jambe payée, source statement) — le repli 1-ter ne s\'applique '
+        'JAMAIS quand l\'étage 1 a réussi', () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(
+          [
+            _exchange(
+              importKey: 'ref:a1:RSTB3',
+              date: DateTime(2024, 1, 5),
+              usdPaid: '100',
+              usdReceived: '105', // écart +5 %, sous le seuil.
+            ),
+          ],
+          usdStableCodes: {'STB'},
+        ),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      final v = resolution.valuations['ref:a1:RSTB3']!;
+      // Jambe PAYÉE (100), PAS la quantité de STB (99) — comportement de
+      // l'étage 1 inchangé.
+      expect(v.valuationUsd, equals(Decimal.parse('100')));
+      expect(v.source, equals('statement'));
+    });
+
     test('FX indisponible (échec réseau) → LÈVE ExchangeRateUnavailable, PROPAGÉE (pas de repli ici)', () async {
       final rateService = ExchangeRateService.forTesting();
       final mockClient = MockClient((request) async {

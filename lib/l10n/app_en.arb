@@ -2457,7 +2457,7 @@
   "@importRejectCryptoForeignFiatUnsupported": {
     "description": "Reject reason label (crypto ledger import)"
   },
-  "importRejectAmbiguousExchangeGroup": "Ambiguous exchange group — unexpected legs, re-enter manually",
+  "importRejectAmbiguousExchangeGroup": "Ambiguous exchange group — unexpected composition, re-enter manually",
   "@importRejectAmbiguousExchangeGroup": {
     "description": "Reject reason label (crypto ledger import)"
   },
@@ -2680,9 +2680,9 @@
   "@importUnvaluedReasonUnreadable": {
     "description": "Manual-valuation reason (B16 lot 2, doc 20 §5.1.7d): neither leg of the exchange had a readable USD amount on the statement"
   },
-  "importUnvaluedReasonSpread": "Gap of {percent}% between the two legs of the statement.",
+  "importUnvaluedReasonSpread": "The statement gives two different values for this exchange (a {percent}% gap) — enter the correct amount.",
   "@importUnvaluedReasonSpread": {
-    "description": "Manual-valuation reason: both legs were readable but diverge by more than the 10% threshold — a suspicious statement value, not treated as an ordinary market spread",
+    "description": "Manual-valuation reason (amendment, drive review 09/15): both legs were readable but diverge by more than the 10% threshold — a suspicious statement value, not treated as an ordinary market spread. Reworded from the jargon-y 'legs' phrasing after author feedback that it wasn't understandable.",
     "placeholders": {
       "percent": { "type": "String" }
     }
@@ -2695,9 +2695,9 @@
   "@importUnvaluedReasonAmbiguousGroup": {
     "description": "Manual-valuation reason (B-1, adversarial review): this exchange shares its dedup key with at least one other entry in the same import (degenerate N-to-1 dustsweeping, or multi-leg in-kind deposit) and can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
   },
-  "importUnvaluedReasonForeignFiat": "Foreign-currency leg — cannot be journalized yet, re-enter manually in the journal if needed.",
+  "importUnvaluedReasonForeignFiat": "Exchange involving a foreign currency (e.g. US dollar) — not supported yet, enter it manually in the journal if needed.",
   "@importUnvaluedReasonForeignFiat": {
-    "description": "Manual-valuation reason (B-A, lot 2 counter-review): one leg of this exchange is a foreign fiat currency (e.g. USD on a EUR account) — no conversion is available at this stage, so it can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
+    "description": "Manual-valuation reason (B-A, lot 2 counter-review; reworded amendment, drive review 09/15 to drop the 'leg' jargon): one side of this exchange is a foreign fiat currency (e.g. USD on a EUR account) — no conversion is available at this stage, so it can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
   },
   "importUnvaluedAmountFieldLabel": "Amount (EUR)",
   "@importUnvaluedAmountFieldLabel": {
@@ -2714,6 +2714,10 @@
   "importValuationSourceStatement": "Valued from the statement",
   "@importValuationSourceStatement": {
     "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'statement' (B16 lot 2 stage 1 — resolved automatically from the statement's own USD valuation column)"
+  },
+  "importValuationSourceStableLeg": "Valued from the dollar-stablecoin counterpart",
+  "@importValuationSourceStableLeg": {
+    "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'stableLeg' (B16 lot 2 amendment, stage 1-ter, drive review 09/15 — resolved from the net quantity of a trusted dollar-stablecoin counterparty leg when stage 1 failed as unreadable or over-spread)"
   },
   "importValuationSourceManual": "Valued manually",
   "@importValuationSourceManual": {

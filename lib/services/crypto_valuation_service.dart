@@ -9,15 +9,26 @@
 // en-app » (Binance, cotations historiques) reste HORS PÉRIMÈTRE de ce lot (lot
 // 4).
 //
-// CASCADE (conception interne) — pour CHAQUE [UnvaluedExchange]
-// :
+// CASCADE (conception interne, étage 1-ter amendement drive lot 2 — pour
+// CHAQUE [UnvaluedExchange] :
 //   1. Valeur USD retenue = jambe PAYÉE (`usdPaid`) si parseable, sinon jambe
-//      REÇUE (`usdReceived`) ; aucune des deux lisible → arbitrage manuel
-//      (`unreadable`), la série FX n'est même pas interrogée pour cette ligne.
+//      REÇUE (`usdReceived`) ; aucune des deux lisible → repli 1-ter (`2.`
+//      ci-dessous) avant tout arbitrage manuel.
 //   2. Si les DEUX jambes sont lisibles, écart relatif calculé
-//      (`(|usdReçu|−|usdPayé|)/|usdPayé|`) ; `|écart| > 10 %` → arbitrage
-//      manuel (`spread`) — une divergence de cet ordre signale une donnée
-//      douteuse, pas un spread de marché normal.
+//      (`(|usdReçu|−|usdPayé|)/|usdPayé|`) ; `|écart| > 10 %` → repli 1-ter
+//      avant tout arbitrage manuel — une divergence de cet ordre signale une
+//      donnée douteuse, pas un spread de marché normal.
+//   1-ter. ÉTAGE « jambe stablecoin dollar » (décision d'orchestration
+//      mesurée sur le réel : 22 des 27 cas en écart excessif du drive manuel
+//      portaient une jambe USDT/USDC) : quand l'étage 1 échoue pour motif
+//      `unreadable` ou `spread` ET que l'une des deux jambes (code APRÈS
+//      alias) figure dans `CryptoLedgerSpec.usdStableCodes` (liste de
+//      CONFIANCE du profil, jamais une heuristique par nom), la quantité
+//      NETTE de cette jambe (déjà positive) sert de valeur USD de repli,
+//      `source:'stableLeg'`. Ne s'applique JAMAIS si l'étage 1 a réussi
+//      (comportement inchangé), ni aux motifs `foreignFiat`/`ambiguousGroup`
+//      (gardes intactes, traitées avant), ni à un dépôt en nature
+//      (`kind != 'exchange'`, pas de contrepartie).
 //   3. FX : UNE SEULE récupération pour l'ENSEMBLE des lignes valorisables
 //      (min/max de leurs dates), via `ExchangeRateService.getDailyRatesToEur`
 //      — LÈVE [ExchangeRateUnavailable] en cas d'échec, PROPAGÉE TELLE QUELLE
@@ -162,12 +173,18 @@ class CryptoValuationService {
   /// quand tout part de toute façon en arbitrage manuel.
   ///
   /// [maxLegValuationSpread] : écart relatif maximal toléré entre les deux
-  /// jambes avant bascule en arbitrage manuel (motif `spread`) — provient de
-  /// [CryptoLedgerSpec.maxLegValuationSpread] du profil courant (M-1, revue
-  /// adversariale : n'est plus codé en dur ici).
+  /// jambes avant bascule en repli étage 1-ter / arbitrage manuel (motif
+  /// `spread`) — provient de [CryptoLedgerSpec.maxLegValuationSpread] du
+  /// profil courant (M-1, revue adversariale : n'est plus codé en dur ici).
+  ///
+  /// [usdStableCodes] : codes stablecoin dollar de CONFIANCE du profil
+  /// courant (amendement drive lot 2 — provient de
+  /// [CryptoLedgerSpec.usdStableCodes], vide par défaut (repli neutre,
+  /// comportement inchangé pour un appelant qui ne le fournit pas).
   Future<CryptoValuationResolution> resolve(
     List<UnvaluedExchange> unvalued, {
     double maxLegValuationSpread = _defaultMaxLegValuationSpread,
+    Set<String> usdStableCodes = const {},
   }) async {
     final spreadThreshold = Decimal.parse(maxLegValuationSpread.toString());
     final manual = <CryptoValuationManual>[];
@@ -207,10 +224,36 @@ class CryptoValuationService {
         continue;
       }
 
+      // Étage 1-ter (amendement drive lot 2 : quantité NETTE d'une jambe stablecoin
+      // dollar de CONFIANCE, calculée UNE FOIS ici et réutilisée comme repli par les
+      // deux branches d'échec de l'étage 1 ci-dessous (`unreadable`/`spread`) —
+      // jamais pour un dépôt en nature (pas de contrepartie à examiner). Les
+      // quantités stockées sur [UnvaluedExchange] sont déjà des magnitudes NETTES
+      // positives (cf. `CryptoLedgerNormalizer._processExchangeGroup`), directement
+      // utilisables comme valeur USD.
+      Decimal? stableLegUsd;
+      if (u.kind == 'exchange') {
+        if (u.codePaid != null &&
+            usdStableCodes.contains(u.codePaid) &&
+            u.quantityPaid != null) {
+          stableLegUsd = Decimal.tryParse(u.quantityPaid!)?.abs();
+        } else if (usdStableCodes.contains(u.codeReceived)) {
+          stableLegUsd = Decimal.tryParse(u.quantityReceived)?.abs();
+        }
+      }
+
       final usdPaid = _tryParseAbs(u.usdPaid);
       final usdReceived = _tryParseAbs(u.usdReceived);
       final selected = usdPaid ?? usdReceived;
       if (selected == null) {
+        if (stableLegUsd != null) {
+          candidates.add(_ValuationCandidate(
+            source: u,
+            valuationUsd: stableLegUsd,
+            valuationSource: 'stableLeg',
+          ));
+          continue;
+        }
         manual.add(CryptoValuationManual(
           source: u,
           reason: CryptoValuationManualReason.unreadable,
@@ -224,6 +267,15 @@ class CryptoValuationService {
             .toDecimal(scaleOnInfinitePrecision: 6);
         spreadStr = spread.toString();
         if (spread.abs() > spreadThreshold) {
+          if (stableLegUsd != null) {
+            candidates.add(_ValuationCandidate(
+              source: u,
+              valuationUsd: stableLegUsd,
+              spreadPct: spreadStr,
+              valuationSource: 'stableLeg',
+            ));
+            continue;
+          }
           manual.add(CryptoValuationManual(
             source: u,
             reason: CryptoValuationManualReason.spread,
@@ -284,7 +336,7 @@ class CryptoValuationService {
         fxRate: entry.value,
         fxDate: entry.key,
         spreadPct: c.spreadPct,
-        source: 'statement',
+        source: c.valuationSource,
       );
     }
 
@@ -321,9 +373,15 @@ class _ValuationCandidate {
   final Decimal valuationUsd;
   final String? spreadPct;
 
+  /// `'statement'` (étage 1, défaut) ou `'stableLeg'` (étage 1-ter, repli « jambe
+  /// stablecoin dollar », amendement drive lot 2 — reporté tel quel sur
+  /// [CryptoValuation.source].
+  final String valuationSource;
+
   const _ValuationCandidate({
     required this.source,
     required this.valuationUsd,
     this.spreadPct,
+    this.valuationSource = 'statement',
   });
 }

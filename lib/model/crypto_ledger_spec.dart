@@ -229,6 +229,19 @@ class CryptoLedgerSpec {
   /// §5.7 q.3).
   final double maxLegValuationSpread;
 
+  /// Codes stablecoin dollar de CONFIANCE pour l'étage 1-ter « jambe stablecoin »
+  /// du moteur de valorisation (amendement drive lot 2 — décision d'orchestration
+  /// mesurée sur le réel : 22 des 27 cas en écart excessif du drive manuel
+  /// portaient une jambe USDT/USDC). Une TABLE DÉCLARÉE PAR PROFIL, jamais une
+  /// heuristique par nom (« se termine en USDx ») : un stablecoin qui a perdu son
+  /// ancrage (ex. `UST`/`USTC`, séquelle Terra déjà gérée par [identityAliases])
+  /// n'y entre JAMAIS — ce serait valoriser un échange sur la foi d'une quantité
+  /// qui ne vaut plus 1 USD. Codes APRÈS alias (même convention que
+  /// [UnvaluedExchange. codePaid]/[codeReceived]). Vide par défaut (repli neutre,
+  /// aucun effet sur un profil qui ne renseigne pas ce champ). Kraken : `{'USDT',
+  /// 'USDC'}`.
+  final Set<String> usdStableCodes;
+
   CryptoLedgerSpec({
     required this.grouping,
     this.groupKeyColumn,
@@ -249,5 +262,6 @@ class CryptoLedgerSpec {
     this.valuationAmountColumn,
     this.valuationCurrency = 'USD',
     this.maxLegValuationSpread = 0.10,
+    this.usdStableCodes = const {},
   });
 }

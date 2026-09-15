@@ -1561,7 +1561,10 @@ void main() {
       // manuelle désormais possible depuis cet écran).
       expect(find.text('Ligne(s) 10, 11 : 0.5 ETH → 120 ADA'), findsOneWidget);
       expect(
-        find.text('Écart de 15.3 % entre les deux jambes du relevé.'),
+        find.text(
+          'Le relevé donne deux valeurs différentes pour cet échange '
+          '(écart de 15.3 %) — indiquez le montant correct.',
+        ),
         findsOneWidget,
       );
       expect(find.byType(TextField), findsOneWidget);
@@ -1866,7 +1869,10 @@ void main() {
       expect(find.text('Échanges à valoriser (3)'), findsOneWidget);
       expect(find.text('Valeur du relevé illisible.'), findsOneWidget);
       expect(
-        find.text('Écart de 15.3 % entre les deux jambes du relevé.'),
+        find.text(
+          'Le relevé donne deux valeurs différentes pour cet échange '
+          '(écart de 15.3 %) — indiquez le montant correct.',
+        ),
         findsOneWidget,
       );
       expect(find.text('Taux de change historique indisponible.'), findsOneWidget);

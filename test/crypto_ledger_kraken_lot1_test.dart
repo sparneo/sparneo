@@ -638,6 +638,15 @@ void main() {
     expect(plan.chainRuptures, isEmpty);
   });
 
+  test(
+      'lot 2 amendement (drive) : usdStableCodes du profil Kraken = '
+      '{USDT, USDC} — JAMAIS UST/USTC (ancrage perdu, séquelle Terra)', () {
+    final stable = profile.crypto!.usdStableCodes;
+    expect(stable, equals({'USDT', 'USDC'}));
+    expect(stable.contains('UST'), isFalse);
+    expect(stable.contains('USTC'), isFalse);
+  });
+
   // -------------------------------------------------------------------------
   // Test 4 — alias d'identité RÉELS du profil Kraken (ETH2→ETH, LUNA→LUNC)
   // appliqués AVANT le bilan de migration (§5.1.5/§5.2.0).
@@ -1241,6 +1250,57 @@ void main() {
       final u = preview.unvaluedExchanges.single;
       expect(u.manualReason, equals('spread'));
       expect(Decimal.parse(u.valuationSpreadPct!), equals(Decimal.parse('0.25')));
+    });
+
+    test(
+        'lot 2 amendement (drive) : spread > 10 % MAIS jambe USDT (liste de '
+        'confiance Kraken) → repli étage 1-ter, sort dans les mouvements '
+        '(PLUS dans les manuels)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-stableleg';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      // Même écart excessif que le test précédent (+25 %), mais la jambe
+      // reçue est un VRAI stablecoin de la liste de confiance embarquée dans
+      // `BrokerProfile.kraken()` (USDT), pas le code fictif 'STB'.
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE2B', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE2B', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USDT', amount: '250', subclass: 'stable_coin',
+          amountusd: '250'); // écart +25 %, au-delà du seuil de 10 %.
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      // Plus en attente d'arbitrage manuel : le repli 1-ter a valorisé
+      // l'échange automatiquement.
+      expect(preview.unvaluedExchanges, isEmpty);
+
+      final sell = preview.toCreate.firstWhere((m) => m.ledgerCode == 'AAA');
+      final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'USDT');
+      expect(sell.transaction!.kind, equals(TransactionKind.sell));
+      expect(buy.transaction!.kind, equals(TransactionKind.buy));
+      // Valorisé sur la quantité NETTE de la jambe USDT (250), PAS la jambe
+      // payée USD (200) : 250 × 0,9 = 225 EUR.
+      expect(sell.transaction!.amount, equals('225'));
+      expect(buy.transaction!.amount, equals('-225'));
+      final meta = sell.transaction!.meta!;
+      expect(meta['valuationSource'], equals('stableLeg'));
+      expect(Decimal.parse(meta['valuationSpreadPct'] as String),
+          equals(Decimal.parse('0.25')));
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
     });
 
     test('lot 2 : amountusd illisible ("-") sur les deux jambes → manuel, motif unreadable', () async {

@@ -440,6 +440,10 @@ class BrokerProfile {
         valuationCurrency: 'USD',
         rewards: RewardAggregation.monthly,
         maxLegValuationSpread: 0.10,
+        // Étage 1-ter (amendement drive lot 2 : liste de CONFIANCE, PAS UST/USTC
+        // (séquelle Terra, ancrage perdu) — cf. la doc de
+        // [CryptoLedgerSpec.usdStableCodes].
+        usdStableCodes: const {'USDT', 'USDC'},
         // Table de mapping complète (conception interne). `spend`/`receive` SANS
         // sous-type (42 paires crypto↔fiat + 3 crypto↔crypto) atteignent le REPLI
         // `'type'` seul (clé composite absente faute de sous-type sur ces lignes) —
