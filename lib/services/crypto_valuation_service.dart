@@ -29,6 +29,32 @@
 //      (comportement inchangé), ni aux motifs `foreignFiat`/`ambiguousGroup`
 //      (gardes intactes, traitées avant), ni à un dépôt en nature
 //      (`kind != 'exchange'`, pas de contrepartie).
+//   1-quater. ÉTAGE « jambe fiat ÉTRANGÈRE USD » (décision auteur,
+//      voie (ii) du design B16 lot 2) : un échange PROPRE à exactement 2
+//      jambes (garanti par construction dès qu'on atteint ce point — la clé
+//      partagée est déjà écartée en `ambiguousGroup` juste avant, et un
+//      groupe fiat↔fiat est déjà écarté en amont par le normalizer) dont
+//      UNE jambe est crypto et L'AUTRE est fiat ÉTRANGÈRE (`codePaidIsFiat`/
+//      `codeReceivedIsFiat`, exactement un des deux) EST valorisé
+//      AUTOMATIQUEMENT — MAIS SEULEMENT si le code de la jambe fiat vaut
+//      littéralement `USD` (seule devise câblée dans `ExchangeRateService` —
+//      toute autre devise étrangère, ex. GBP, reste `foreignFiat`). La
+//      quantité retenue est la QUANTITÉ NETTE de la jambe fiat elle-même
+//      (`UnvaluedExchange.quantityPaid`/`quantityReceived`, calculée en
+//      amont par le normalizer comme `amount − fee`), JAMAIS la colonne
+//      `amountusd` (qui n'a de sens que pour une jambe CRYPTO). DOCTRINE
+//      (M-1, revue adversariale) : contrairement à l'étage 1-ter ci-dessus
+//      (jambe stablecoin, simple REPLI après échec de l'étage 1, dont la
+//      quantité nette n'est jamais qu'une ESTIMATION substituée à une
+//      valorisation USD absente ou douteuse), la jambe USD ici est retenue
+//      SANS AUCUN recoupement avec `amountusd` — pour du vrai fiat, le net de
+//      la jambe EST LE CASH RÉELLEMENT RÉGLÉ, pas une approximation : il n'y
+//      a rien à recouper contre, la valeur EST la vérité-terrain. Émis
+//      `source:'fiatLeg'` — modèle d'ÉMISSION DIFFÉRENT du crypto↔crypto au
+//      lot ci-dessous (`finalizeCryptoExchanges` émet la SEULE jambe crypto
+//      avec du cash RÉEL, jamais la paire sell/buy opposée N4 — voir son
+//      en-tête de fichier) : AUCUNE position n'est jamais créée pour la
+//      jambe fiat elle-même (B-A intact).
 //   3. FX : UNE SEULE récupération pour l'ENSEMBLE des lignes valorisables
 //      (min/max de leurs dates), via `ExchangeRateService.getDailyRatesToEur`
 //      — LÈVE [ExchangeRateUnavailable] en cas d'échec, PROPAGÉE TELLE QUELLE
@@ -97,17 +123,20 @@ enum CryptoValuationManualReason {
 
   /// L'une des deux jambes ([UnvaluedExchange.codePaidIsFiat]/
   /// [UnvaluedExchange.codeReceivedIsFiat]) est FIAT — typiquement une jambe
-  /// ÉTRANGÈRE à la devise du compte (ex. `USD` sur un compte `EUR`,
-  /// `CryptoLedgerNormalizer._processExchangeGroup` branche
-  /// `fiatLegs.isEmpty`, B-A contre-vérification lot 2) : aucune conversion
-  /// n'est disponible à cet étage (voie « jambe fiat étrangère = cash
-  /// converti au taux historique » consignée comme cible FUTURE, hors
-  /// périmètre de ce lot) — valoriser quand même fabriquerait une position
-  /// crypto du CODE FIAT lui-même. Ces entrées ne sont donc JAMAIS
-  /// valorisées ici (aucune n'entre dans [CryptoValuationResolution.
-  /// valuations]) — à ressaisir manuellement DANS LE JOURNAL, exactement
-  /// comme [ambiguousGroup] (le champ de saisie EUR de l'aperçu est
-  /// désactivé pour ce motif aussi, cf. `statement_import_page.dart`).
+  /// ÉTRANGÈRE à la devise du compte (ex. `GBP` sur un compte `EUR`,
+  /// `CryptoLedgerNormalizer._processExchangeGroup` branche `fiatLegs.isEmpty`,
+  /// B-A contre-vérification lot 2) : aucune conversion n'est disponible à cet
+  /// étage — valoriser quand même fabriquerait une position crypto du CODE FIAT
+  /// lui-même. DEPUIS l'amendement (voie (ii), étage 1-quater ci-dessus), le cas
+  /// `USD` PROPRE (échange à exactement 2 jambes) n'atteint plus JAMAIS ce motif —
+  /// il est résolu automatiquement (`source:'fiatLeg'`) ; SEULES restent ici les
+  /// autres devises étrangères (aucune série FX câblée) et le cas dégénéré du
+  /// dustsweeping N→1 à jambe fiat étrangère mêlée (déjà `ambiguousGroup` avant
+  /// même d'atteindre ce contrôle, clé partagée). Ces entrées ne sont donc JAMAIS
+  /// valorisées ici (aucune n'entre dans [CryptoValuationResolution.valuations]) —
+  /// à ressaisir manuellement DANS LE JOURNAL, exactement comme [ambiguousGroup]
+  /// (le champ de saisie EUR de l'aperçu est désactivé pour ce motif aussi, cf.
+  /// `statement_import_page.dart`).
   foreignFiat('foreignFiat');
 
   final String wire;
@@ -243,7 +272,33 @@ class CryptoValuationService {
       // la valorisation USD de la jambe fiat elle-même (ex. `USD` valant
       // littéralement son propre montant), ce qui la rendrait « lisible » à
       // tort si on laissait la cascade normale la traiter.
+      //
+      // Étage 1-quater (amendement, voie (ii) — voir le commentaire de tête) : SEULE
+      // exception à la garde ci-dessus — un échange PROPRE (2 jambes, garanti à ce
+      // point par le pré-scan `ambiguousGroup` au-dessus) dont la jambe fiat vaut
+      // littéralement `USD` est retenu comme candidat, avec la quantité NETTE de la
+      // jambe fiat ELLE-MÊME (jamais `amountusd`, qui ne concerne que la jambe
+      // crypto) comme valeur USD à convertir. Toute autre situation (devise étrangère
+      // NON-USD, ou jambe fiat sans quantité exploitable — défensif) reste
+      // `foreignFiat`, comme avant.
       if (u.codePaidIsFiat || u.codeReceivedIsFiat) {
+        final fiatCode = u.codePaidIsFiat ? u.codePaid : u.codeReceived;
+        final fiatQuantityRaw =
+            u.codePaidIsFiat ? u.quantityPaid : u.quantityReceived;
+        final fiatQuantity =
+            fiatQuantityRaw == null ? null : Decimal.tryParse(fiatQuantityRaw)?.abs();
+        if (u.kind == 'exchange' &&
+            u.codePaidIsFiat != u.codeReceivedIsFiat &&
+            fiatCode != null &&
+            fiatCode.toUpperCase() == 'USD' &&
+            fiatQuantity != null) {
+          candidates.add(_ValuationCandidate(
+            source: u,
+            valuationUsd: fiatQuantity,
+            valuationSource: 'fiatLeg',
+          ));
+          continue;
+        }
         manual.add(CryptoValuationManual(
           source: u,
           reason: CryptoValuationManualReason.foreignFiat,
@@ -436,8 +491,9 @@ class _ValuationCandidate {
   final Decimal valuationUsd;
   final String? spreadPct;
 
-  /// `'statement'` (étage 1, défaut) ou `'stableLeg'` (étage 1-ter, repli « jambe
-  /// stablecoin dollar », amendement drive lot 2 — reporté tel quel sur
+  /// `'statement'` (étage 1, défaut), `'stableLeg'` (étage 1-ter, repli « jambe
+  /// stablecoin dollar », amendement drive lot 2 ou `'fiatLeg'` (étage 1-quater,
+  /// jambe fiat étrangère USD, amendement voie (ii)) — reporté tel quel sur
   /// [CryptoValuation.source].
   final String valuationSource;
 

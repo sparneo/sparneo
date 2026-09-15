@@ -533,8 +533,10 @@ void main() {
     });
 
     test(
-        'motif foreignFiat (jambe fiat) → AUCUNE suggestion, ZÉRO appel '
-        'réseau', () async {
+        'motif foreignFiat (jambe fiat NON-USD, ex. GBP — depuis l\'amendement '
+        '(voie ii), seule `USD` est valorisée automatiquement à '
+        'l\'étage 1-quater, cf. crypto_ledger_kraken_lot1_test.dart) → '
+        'AUCUNE suggestion, ZÉRO appel réseau', () async {
       final rateService = ExchangeRateService.forTesting();
       var callCount = 0;
       final mockClient = MockClient((request) async {
@@ -548,7 +550,7 @@ void main() {
           UnvaluedExchange(
             kind: 'exchange',
             date: DateTime(2024, 1, 5),
-            codePaid: 'USD',
+            codePaid: 'GBP',
             quantityPaid: '100',
             codeReceived: 'AAA',
             quantityReceived: '2',
@@ -631,6 +633,252 @@ void main() {
           .firstWhere((m) => m.source.importKey == 'ref:a1:RSUG5B');
       expect(spread.suggestedPaidEur, equals(Decimal.parse('90')));
       expect(spread.suggestedReceivedEur, equals(Decimal.parse('103.5')));
+    });
+  });
+
+  group(
+      'CryptoValuationService.resolve — étage 1-quater (amendement, '
+      'voie ii, jambe fiat ÉTRANGÈRE USD)', () {
+    test(
+        'échange PROPRE crypto↔USD (USD payé) → valorisé source `fiatLeg`, '
+        'quantité NETTE de la jambe USD (PAS `amountusd`), aucune '
+        'suggestion (motif non-manuel)', () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 1, 5),
+            codePaid: 'USD',
+            // Quantité NETTE de la jambe USD elle-même — DOIT être retenue
+            // telle quelle, PAS la colonne `amountusd` (`usdPaid` ci-dessous,
+            // volontairement DIFFÉRENTE pour distinguer les deux sources).
+            quantityPaid: '100',
+            codeReceived: 'AAA',
+            quantityReceived: '2',
+            usdPaid: '999', // jamais lu pour la jambe fiat elle-même.
+            sourceLines: const [5],
+            importKey: 'ref:a1:RFL1',
+            codePaidIsFiat: true,
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      final v = resolution.valuations['ref:a1:RFL1']!;
+      expect(v.source, equals('fiatLeg'));
+      expect(v.valuationUsd, equals(Decimal.parse('100')));
+      expect(v.fxRate, equals(0.9));
+      expect(v.fxDate, equals(DateTime(2024, 1, 5)));
+      expect(v.amountEur, equals(Decimal.parse('90'))); // 100 × 0,9
+      expect(v.spreadPct, isNull); // aucun spread pour une jambe fiat.
+    });
+
+    test(
+        'échange PROPRE crypto↔USD (USD reçu) → valorisé source `fiatLeg`, '
+        'même règle dans l\'AUTRE sens', () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-02-01': 0.85}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 2, 1),
+            codePaid: 'BBB',
+            quantityPaid: '4',
+            codeReceived: 'USD',
+            quantityReceived: '40',
+            sourceLines: const [5],
+            importKey: 'ref:a1:RFL2',
+            codeReceivedIsFiat: true,
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      final v = resolution.valuations['ref:a1:RFL2']!;
+      expect(v.source, equals('fiatLeg'));
+      expect(v.valuationUsd, equals(Decimal.parse('40')));
+      expect(v.amountEur, equals(Decimal.parse('34'))); // 40 × 0,85
+    });
+
+    test(
+        'FX indisponible pour une jambe fiat USD (échec réseau) → LÈVE '
+        'ExchangeRateUnavailable, PROPAGÉE (même politique que le chemin '
+        'ordinaire — aucune coercition, aucun repli foreignFiat silencieux)',
+        () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response('erreur', 500);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      await expectLater(
+        http.runWithClient(
+          () => service.resolve([
+            UnvaluedExchange(
+              kind: 'exchange',
+              date: DateTime(2024, 1, 5),
+              codePaid: 'USD',
+              quantityPaid: '100',
+              codeReceived: 'AAA',
+              quantityReceived: '2',
+              sourceLines: const [5],
+              importKey: 'ref:a1:RFL3',
+              codePaidIsFiat: true,
+            ),
+          ]),
+          () => mockClient,
+        ),
+        throwsA(isA<ExchangeRateUnavailable>()),
+      );
+    });
+
+    test(
+        'clé PARTAGÉE (B-1) impliquant une jambe fiat USD → reste '
+        '`ambiguousGroup`, JAMAIS résolue automatiquement même si USD, '
+        'ZÉRO appel réseau', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final shared = [
+        UnvaluedExchange(
+          kind: 'exchange',
+          date: DateTime(2024, 1, 5),
+          codePaid: 'CCC',
+          quantityPaid: '5',
+          codeReceived: 'USD',
+          quantityReceived: '30',
+          sourceLines: const [7],
+          importKey: 'ref:a1:RFL4', // clé PARTAGÉE.
+          codeReceivedIsFiat: true,
+        ),
+        UnvaluedExchange(
+          kind: 'exchange',
+          date: DateTime(2024, 1, 5),
+          codePaid: 'DDD',
+          quantityPaid: '3',
+          codeReceived: 'USD',
+          quantityReceived: '10',
+          sourceLines: const [8],
+          importKey: 'ref:a1:RFL4', // MÊME clé.
+          codeReceivedIsFiat: true,
+        ),
+      ];
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(shared),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(0));
+      expect(resolution.valuations, isEmpty);
+      expect(resolution.manual, hasLength(2));
+      expect(
+        resolution.manual
+            .every((m) => m.reason == CryptoValuationManualReason.ambiguousGroup),
+        isTrue,
+      );
+    });
+
+    test(
+        'T-3/I-2 : entrée à DEUX jambes fiat (double flag — jamais produite '
+        'par le moteur réel, robustesse défensive) → reste `foreignFiat`, '
+        'ZÉRO appel réseau, JAMAIS résolue automatiquement même si l\'une '
+        'des deux vaut littéralement USD', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 1, 5),
+            codePaid: 'USD',
+            quantityPaid: '50',
+            codeReceived: 'GBP',
+            quantityReceived: '40',
+            sourceLines: const [9],
+            importKey: 'ref:a1:RFL5',
+            codePaidIsFiat: true,
+            codeReceivedIsFiat: true,
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(0));
+      expect(resolution.valuations, isEmpty);
+      final m = resolution.manual.single;
+      expect(m.reason, equals(CryptoValuationManualReason.foreignFiat));
+    });
+
+    test(
+        'T-5 : un échange fiatLeg (USD) ET un échange crypto↔crypto '
+        'ordinaire partagent la MÊME fenêtre FX → UN SEUL appel réseau, les '
+        'DEUX valorisés', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(
+          _frankfurterBody({'2024-01-05': 0.9, '2024-02-10': 0.95}),
+          200,
+        );
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          _exchange(
+            importKey: 'ref:a1:RT5a',
+            date: DateTime(2024, 1, 5),
+            usdPaid: '10',
+          ),
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 2, 10),
+            codePaid: 'USD',
+            quantityPaid: '20',
+            codeReceived: 'BBB',
+            quantityReceived: '3',
+            sourceLines: const [9],
+            importKey: 'ref:a1:RT5b',
+            codePaidIsFiat: true,
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(1));
+      expect(resolution.manual, isEmpty);
+      final v1 = resolution.valuations['ref:a1:RT5a']!;
+      expect(v1.source, equals('statement'));
+      expect(v1.amountEur, equals(Decimal.parse('9'))); // 10 × 0,9
+      final v2 = resolution.valuations['ref:a1:RT5b']!;
+      expect(v2.source, equals('fiatLeg'));
+      expect(v2.amountEur, equals(Decimal.parse('19'))); // 20 × 0,95
     });
   });
 

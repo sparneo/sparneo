@@ -528,7 +528,7 @@
   "importUnvaluedReasonSpread": "Le relevé donne deux valeurs différentes pour cet échange (écart de {percent} %) — indiquez le montant correct.",
   "importUnvaluedReasonFxUnavailable": "Taux de change historique indisponible.",
   "importUnvaluedReasonAmbiguousGroup": "Groupe indivisible — à ressaisir manuellement dans le journal.",
-  "importUnvaluedReasonForeignFiat": "Échange impliquant une devise étrangère (ex. dollar) — non pris en charge pour l'instant, saisissez-le manuellement dans le journal si besoin.",
+  "importUnvaluedReasonForeignFiat": "Échange impliquant une devise étrangère (ex. livre sterling) — non pris en charge pour l'instant, saisissez-le manuellement dans le journal si besoin.",
   "importUnvaluedAmountFieldLabel": "Montant (EUR)",
   "importUnvaluedOverrideAmountFieldLabel": "Autre montant (EUR)",
   "importUnvaluedApplyButton": "Appliquer",
@@ -537,6 +537,7 @@
   "importCryptoFxUnavailableBanner": "Le service de taux de change historique est injoignable — les échanges entre crypto-monnaies sont passés en saisie manuelle. Le reste du relevé est importé normalement.",
   "importValuationSourceStatement": "Valorisé d'après le relevé",
   "importValuationSourceStableLeg": "Valorisé d'après la contrepartie en stablecoin dollar",
+  "importValuationSourceFiatLeg": "Valorisé d'après la contrepartie en dollars",
   "importValuationSourceManual": "Valorisé manuellement",
   "importGroupValuedExchanges": "Échanges valorisés ({count})",
 

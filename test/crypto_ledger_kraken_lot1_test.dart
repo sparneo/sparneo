@@ -440,9 +440,10 @@ void main() {
     });
 
     test(
-        'B-2 : échange avec jambe fiat ÉTRANGÈRE à la devise du compte (USD '
-        'sur un compte EUR) → en attente de valorisation, JAMAIS écrite au '
-        'pair', () async {
+        'amendement (voie ii) : échange PROPRE crypto↔USD (USD payé, '
+        'NNN reçu, jambe fiat ÉTRANGÈRE à la devise du compte EUR) → '
+        'valorisé AUTOMATIQUEMENT comme du cash (BUY unique), JAMAIS de '
+        'position USD fabriquée', () async {
       final b = _LedgerBuilder();
       b.leg(refid: 'RB2', time: '2024-10-02 08:00:00', type: 'trade',
           subtype: 'tradespot', asset: 'USD', amount: '-50', subclass: 'fiat');
@@ -450,8 +451,8 @@ void main() {
           subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
       final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
 
-      // Aucun mouvement écrit pour ce groupe (ni buy/sell au pair, ni rejet) :
-      // il part intégralement en attente de valorisation (lot 2, FX historique).
+      // Aucun mouvement écrit pour ce groupe au moteur PUR (ni au pair, ni
+      // rejet) : il part en `UnvaluedExchange`, à valoriser au lot 2.
       expect(plan.movements.any((m) => m.ledgerCode == 'NNN'), isFalse);
       expect(plan.movements.where((m) => m.isRejected), isEmpty);
       final ex = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'exchange');
@@ -464,22 +465,24 @@ void main() {
       expect(ex.codePaidIsFiat, isTrue);
       expect(ex.codeReceivedIsFiat, isFalse);
 
-      // ---- Angle mort de la contre-vérification : le test s'arrêtait ICI,
-      // à `plan.movements` — jamais poussé jusqu'à `finalizeCryptoExchanges`,
-      // où `CryptoValuationService.resolve` valorisait `USD` comme un actif
-      // ordinaire (étage 1, spread nul de sa propre jambe) et où le `sell`
-      // qui en résultait fabriquait une position `crypto:USD` silencieuse
-      // (exclue des `quantityGaps`, qui écartent USD comme fiat). ----
-
-      // AUCUN mock HTTP fourni : la jambe fiat est écartée AVANT toute
-      // tentative FX (`candidates` reste vide) — si le service tentait
-      // malgré tout un appel réseau, ce test échouerait avec une exception
-      // réseau (même garde « zéro appel » que les autres tests lot 2 de ce
-      // fichier, vérifiée en creux).
-      final resolution = await CryptoValuationService().resolve(plan.unvaluedExchanges);
-      expect(resolution.valuations, isEmpty);
-      final manual = resolution.manual.singleWhere((m) => m.source.importKey == ex.importKey);
-      expect(manual.reason, equals(CryptoValuationManualReason.foreignFiat));
+      // Étage 1-quater (amendement, voie ii) : SEULE exception à la garde B-A/B-2 —
+      // un échange PROPRE à 2 jambes dont la jambe fiat vaut littéralement `USD` est
+      // désormais valorisé automatiquement comme du cash converti au taux historique
+      // du jour. Mock FX couvrant EXACTEMENT cette fenêtre — un appel réseau
+      // inattendu ferait échouer `http.runWithClient` sans client actif.
+      final mockClient = MockClient((request) async {
+        return http.Response(
+          '{"amount":1.0,"base":"USD","rates":{"2024-10-02":{"EUR":0.8}}}',
+          200,
+        );
+      });
+      final resolution = await http.runWithClient(
+        () => CryptoValuationService().resolve(plan.unvaluedExchanges),
+        () => mockClient,
+      );
+      expect(resolution.manual, isEmpty);
+      final valuation = resolution.valuations[ex.importKey]!;
+      expect(valuation.source, equals('fiatLeg'));
 
       final finalized = StatementImportService.finalizeCryptoExchanges(
         plan,
@@ -487,12 +490,34 @@ void main() {
         accountId: 'acc1',
         accountCurrency: 'EUR',
       );
-      expect(finalized, isEmpty); // zéro mouvement émis — aucun `USD` fabriqué.
+      // UNE SEULE jambe émise — le modèle N4 (sell+buy à montants opposés)
+      // NE S'APPLIQUE PAS ici : USD payé, NNN reçu → BUY NNN, cash SORTANT,
+      // AUCUN mouvement pour la jambe USD elle-même.
+      expect(finalized, hasLength(1));
+      final buy = finalized.single;
+      expect(buy.transaction!.kind, equals(TransactionKind.buy));
+      expect(buy.ledgerCode, equals('NNN'));
+      expect(buy.transaction!.quantity, equals('1'));
+      // 50 (quantité NETTE de la jambe USD, PAS `amountusd`) × 0,8 = 40 EUR,
+      // cash SORTANT (négatif, achat).
+      expect(buy.transaction!.amount, equals('-40'));
+      expect(buy.transaction!.unitPrice, equals('40'));
+      expect(buy.importKey, equals('ref:acc1:RB2#buy:NNN'));
+      final meta = buy.transaction!.meta!;
+      expect(meta['valuationSource'], equals('fiatLeg'));
+      expect(meta['valuationUsd'], equals('50'));
+      expect(meta['fxRate'], equals('0.8'));
+      expect(meta['fxDate'], equals('2024-10-02'));
+      expect(meta.containsKey('valuationSpreadPct'), isFalse);
 
-      // Ceinture INDÉPENDANTE de `finalizeCryptoExchanges` (B-A point 3) :
-      // même si une valorisation traînait malgré tout dans la map (ex. une
-      // saisie manuelle antérieure au correctif), RIEN n'est émis pour cette
-      // clé — la garde ne dépend pas de `resolve` en amont.
+      // Invariant central B-A : AUCUNE position USD n'est jamais créée.
+      expect(finalized.any((m) => m.ledgerCode == 'USD'), isFalse);
+
+      // Ceinture INDÉPENDANTE de `finalizeCryptoExchanges` (B-A point 3,
+      // toujours vraie) : une valorisation de source DIFFÉRENTE de
+      // `'fiatLeg'` présente malgré tout dans la map (ex. `'manual'` saisi
+      // avant ce correctif, ou injecté directement en test) n'est JAMAIS
+      // appliquée à une entrée fiat — seule `'fiatLeg'` est acceptée.
       final forcedValuations = {
         ex.importKey: CryptoValuation(amountEur: Decimal.parse('999'), source: 'manual'),
       };
@@ -503,24 +528,17 @@ void main() {
         accountCurrency: 'EUR',
       );
       expect(finalizedDespiteValuation, isEmpty);
-
-      // Saisie manuelle INOPÉRANTE (B-A point 4, ceinture contrôleur) —
-      // `AccountController.applyManualCryptoValuations` refuse cette clé,
-      // testé directement sur le plan PUR (sans passer par le contrôleur,
-      // qui exige une base/un compte seedés hors périmètre de ce test) via
-      // le même critère (`codePaidIsFiat || codeReceivedIsFiat`) que celui
-      // appliqué côté contrôleur.
-      expect(ex.codePaidIsFiat || ex.codeReceivedIsFiat, isTrue);
     });
 
     test(
-        'B-A : échange avec jambe fiat ÉTRANGÈRE REÇUE (crypto NNN payé, USD '
-        'reçu sur un compte EUR) → même garde dans l\'AUTRE sens, JAMAIS '
-        'émis', () async {
+        'amendement (voie ii) : échange PROPRE crypto↔USD (NNN payé, '
+        'USD reçu, jambe fiat ÉTRANGÈRE à la devise du compte EUR) → même '
+        'garde dans l\'AUTRE sens, valorisé AUTOMATIQUEMENT (SELL unique), '
+        'JAMAIS de position USD fabriquée', () async {
       final b = _LedgerBuilder();
-      b.leg(refid: 'RBA1', time: '2024-10-02 08:00:00', type: 'trade',
+      b.leg(refid: 'RBA1', time: '2024-10-09 08:00:00', type: 'trade',
           subtype: 'tradespot', asset: 'NNN', amount: '-1', subclass: 'crypto');
-      b.leg(refid: 'RBA1', time: '2024-10-02 08:00:00', type: 'trade',
+      b.leg(refid: 'RBA1', time: '2024-10-09 08:00:00', type: 'trade',
           subtype: 'tradespot', asset: 'USD', amount: '50', subclass: 'fiat');
       final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
 
@@ -535,10 +553,18 @@ void main() {
       expect(ex.codePaidIsFiat, isFalse);
       expect(ex.codeReceivedIsFiat, isTrue);
 
-      final resolution = await CryptoValuationService().resolve(plan.unvaluedExchanges);
-      expect(resolution.valuations, isEmpty);
-      final manual = resolution.manual.singleWhere((m) => m.source.importKey == ex.importKey);
-      expect(manual.reason, equals(CryptoValuationManualReason.foreignFiat));
+      final mockClient = MockClient((request) async {
+        return http.Response(
+          '{"amount":1.0,"base":"USD","rates":{"2024-10-09":{"EUR":0.75}}}',
+          200,
+        );
+      });
+      final resolution = await http.runWithClient(
+        () => CryptoValuationService().resolve(plan.unvaluedExchanges),
+        () => mockClient,
+      );
+      expect(resolution.manual, isEmpty);
+      expect(resolution.valuations[ex.importKey]!.source, equals('fiatLeg'));
 
       final finalized = StatementImportService.finalizeCryptoExchanges(
         plan,
@@ -546,7 +572,24 @@ void main() {
         accountId: 'acc1',
         accountCurrency: 'EUR',
       );
-      expect(finalized, isEmpty);
+      expect(finalized, hasLength(1));
+      final sell = finalized.single;
+      expect(sell.transaction!.kind, equals(TransactionKind.sell));
+      expect(sell.ledgerCode, equals('NNN'));
+      expect(sell.transaction!.quantity, equals('1'));
+      // 50 × 0,75 = 37,5 EUR, cash ENTRANT (positif, vente).
+      expect(sell.transaction!.amount, equals('37.5'));
+      // T-2 (revue adversariale) : unitPrice côté sell, déjà couvert côté
+      // buy (test précédent) — quantité 1 → unitPrice == amount ici.
+      expect(sell.transaction!.unitPrice, equals('37.5'));
+      expect(sell.importKey, equals('ref:acc1:RBA1#sell:NNN'));
+      final meta = sell.transaction!.meta!;
+      expect(meta['valuationSource'], equals('fiatLeg'));
+      expect(meta['valuationUsd'], equals('50'));
+      expect(meta['fxRate'], equals('0.75'));
+      expect(meta['fxDate'], equals('2024-10-09'));
+
+      expect(finalized.any((m) => m.ledgerCode == 'USD'), isFalse);
 
       final forcedValuations = {
         ex.importKey: CryptoValuation(amountEur: Decimal.parse('999'), source: 'manual'),
@@ -558,6 +601,189 @@ void main() {
         accountCurrency: 'EUR',
       );
       expect(finalizedDespiteValuation, isEmpty);
+    });
+
+    test(
+        'T-1 (revue adversariale) : jambe USD avec FRAIS non nul → la '
+        'quantité NETTE (amount − fee) est retenue, JAMAIS `amount` brut ni '
+        '`amountusd` (USD payé, cash SORTANT)', () async {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RT1A', time: '2024-10-15 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USD', amount: '-50', fee: '0.1',
+          subclass: 'fiat');
+      b.leg(refid: 'RT1A', time: '2024-10-15 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
+
+      final ex = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'exchange');
+      // Net = |-50 − 0,1| = 50,1 — JAMAIS 50 (amount brut).
+      expect(ex.quantityPaid, equals('50.1'));
+
+      final mockClient = MockClient((request) async {
+        return http.Response(
+          '{"amount":1.0,"base":"USD","rates":{"2024-10-15":{"EUR":0.8}}}',
+          200,
+        );
+      });
+      final resolution = await http.runWithClient(
+        () => CryptoValuationService().resolve(plan.unvaluedExchanges),
+        () => mockClient,
+      );
+      expect(resolution.manual, isEmpty);
+      expect(
+        resolution.valuations[ex.importKey]!.valuationUsd,
+        equals(Decimal.parse('50.1')),
+      );
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        resolution.valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, hasLength(1));
+      final buy = finalized.single;
+      // 50,1 (quantité NETTE, frais inclus) × 0,8 = 40,08 EUR.
+      expect(buy.transaction!.amount, equals('-40.08'));
+      expect(buy.transaction!.unitPrice, equals('40.08'));
+    });
+
+    test(
+        'T-1 (revue adversariale), autre sens : jambe USD REÇUE avec FRAIS '
+        'non nul → même règle (cash ENTRANT)', () async {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RT1B', time: '2024-10-16 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '-1', subclass: 'crypto');
+      b.leg(refid: 'RT1B', time: '2024-10-16 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USD', amount: '50', fee: '0.1',
+          subclass: 'fiat');
+      final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
+
+      final ex = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'exchange');
+      // Net = 50 − 0,1 = 49,9 — JAMAIS 50 (amount brut).
+      expect(ex.quantityReceived, equals('49.9'));
+
+      final mockClient = MockClient((request) async {
+        return http.Response(
+          '{"amount":1.0,"base":"USD","rates":{"2024-10-16":{"EUR":0.8}}}',
+          200,
+        );
+      });
+      final resolution = await http.runWithClient(
+        () => CryptoValuationService().resolve(plan.unvaluedExchanges),
+        () => mockClient,
+      );
+      expect(resolution.manual, isEmpty);
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        resolution.valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, hasLength(1));
+      final sell = finalized.single;
+      // 49,9 (quantité NETTE, frais inclus) × 0,8 = 39,92 EUR.
+      expect(sell.transaction!.amount, equals('39.92'));
+      expect(sell.transaction!.unitPrice, equals('39.92'));
+    });
+
+    test(
+        'T-3/I-2 (revue adversariale) : entrée à DEUX jambes fiat (double '
+        'flag — jamais produite par le moteur réel, robustesse défensive) → '
+        'reste bloquée au finalize (zéro mouvement), même avec une '
+        'valorisation `fiatLeg` injectée directement en test', () {
+      final plan = CryptoImportPlan(
+        unvaluedExchanges: [
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 10, 21),
+            codePaid: 'USD',
+            quantityPaid: '50',
+            codeReceived: 'GBP',
+            quantityReceived: '40',
+            sourceLines: const [1],
+            importKey: 'ref:acc1:RDBL',
+            codePaidIsFiat: true,
+            codeReceivedIsFiat: true,
+          ),
+        ],
+      );
+      final forcedValuations = {
+        'ref:acc1:RDBL':
+            CryptoValuation(amountEur: Decimal.parse('45'), source: 'fiatLeg'),
+      };
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        forcedValuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, isEmpty);
+    });
+
+    test(
+        'T-3/I-2 (revue adversariale) : jambe crypto au code NULL '
+        '(codeReceivedIsFiat, codePaid absent — cas dégénéré) → AUCUN '
+        'crash, comportement bloqué (zéro mouvement)', () {
+      final plan = CryptoImportPlan(
+        unvaluedExchanges: [
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 10, 22),
+            codePaid: null,
+            quantityPaid: null,
+            codeReceived: 'USD',
+            quantityReceived: '50',
+            sourceLines: const [1],
+            importKey: 'ref:acc1:RNULL',
+            codeReceivedIsFiat: true,
+          ),
+        ],
+      );
+      final forcedValuations = {
+        'ref:acc1:RNULL':
+            CryptoValuation(amountEur: Decimal.parse('45'), source: 'fiatLeg'),
+      };
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        forcedValuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, isEmpty);
+    });
+
+    test(
+        'amendement (voie ii), contrôle négatif : fiat ÉTRANGER '
+        'NON-USD (GBP synthétique) → AUCUNE série FX câblée, reste '
+        '`foreignFiat` comme avant, ZÉRO appel réseau', () async {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RGBP1', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'GBP', amount: '-40', subclass: 'fiat');
+      b.leg(refid: 'RGBP1', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile, accountCurrency: 'EUR');
+
+      final ex = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'exchange');
+      expect(ex.codePaid, equals('GBP'));
+      expect(ex.codePaidIsFiat, isTrue);
+
+      // AUCUN mock HTTP fourni : seul `USD` déclenche l'étage 1-quater, GBP
+      // est écarté AVANT toute tentative FX — un appel réseau inattendu
+      // ferait échouer ce test (`http.runWithClient` sans client actif).
+      final resolution = await CryptoValuationService().resolve(plan.unvaluedExchanges);
+      expect(resolution.valuations, isEmpty);
+      final manual = resolution.manual.singleWhere((m) => m.source.importKey == ex.importKey);
+      expect(manual.reason, equals(CryptoValuationManualReason.foreignFiat));
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        resolution.valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
+      expect(finalized, isEmpty); // zéro mouvement émis — aucun `GBP`/`NNN` fabriqué.
     });
 
     test(
@@ -1818,17 +2044,18 @@ void main() {
     });
 
     // -----------------------------------------------------------------------
-    // B-A (BLOQUANT, contre-vérification lot 2) : jambe fiat ÉTRANGÈRE (ex.
-    // `USD` sur un compte `EUR`) traitée comme un actif — cf. le pendant
-    // « moteur pur » de ce test dans le groupe « Lot 1 Kraken — revue
-    // adversariale » (fixture B-2, poussée jusqu'à `finalizeCryptoExchanges`)
-    // ; celui-ci couvre le circuit CONTRÔLEUR complet : aperçu →
-    // `manualReason == 'foreignFiat'` → saisie manuelle refusée.
+    // Amendement (voie ii) : jambe fiat ÉTRANGÈRE USD d'un échange PROPRE (2 jambes)
+    // — cf. le pendant « moteur pur » de ces tests dans le groupe « Lot 1 Kraken —
+    // revue adversariale » (fixtures B-2/B-A, poussées jusqu'à
+    // `finalizeCryptoExchanges`) ; ceux-ci couvrent le circuit CONTRÔLEUR complet :
+    // aperçu → valorisation automatique → confirmation, PUIS le repli
+    // `fxUnavailable` (saisie manuelle toujours refusée, B-A intact) quand la série
+    // FX est injoignable.
     // -----------------------------------------------------------------------
     test(
-        'lot 2 B-A (contre-vérification) : échange à jambe fiat ÉTRANGÈRE '
-        '(USD sur un compte EUR) → AUCUN mouvement émis, motif foreignFiat, '
-        'saisie manuelle inopérante', () async {
+        'amendement (voie ii) : échange à jambe fiat ÉTRANGÈRE (USD '
+        'sur un compte EUR) → valorisé AUTOMATIQUEMENT bout-en-bout '
+        '(aperçu → confirmation), AUCUNE position USD', () async {
       final db = await openTestDatabase();
       addTearDown(db.close);
       const accountId = 'acc-lot2-ba';
@@ -1842,39 +2069,81 @@ void main() {
           subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
       final bytes = b.toCsvBytes();
 
-      // AUCUN mock HTTP fourni : la jambe fiat est écartée AVANT toute
-      // tentative FX — même garde « zéro appel » que les tests voisins.
-      final preview = await ctrl.previewStatementImport(
-        bytes,
-        profile,
-        accountId: accountId,
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-10-02': 0.8}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
       );
 
+      expect(preview.unvaluedExchanges, isEmpty); // valorisé, plus en attente.
+      expect(preview.cryptoFxUnavailable, isFalse);
+      final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'NNN');
+      expect(buy.transaction!.kind, equals(TransactionKind.buy));
+      expect(buy.transaction!.amount, equals('-40')); // 50 × 0,8, cash SORTANT.
+      expect(buy.transaction!.meta!['valuationSource'], equals('fiatLeg'));
+
+      // Invariant central B-A : AUCUNE position USD n'est jamais créée.
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'USD'), isFalse);
+
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+
+      // Ré-import STABLE : le mouvement est déjà journalisé, un second
+      // aperçu le retrouve en doublon plutôt qu'en nouveau candidat/manuel.
+      final preview2 = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+      expect(preview2.unvaluedExchanges, isEmpty);
+      expect(preview2.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
+    });
+
+    test(
+        'amendement (voie ii) : FX indisponible pour la jambe fiat USD '
+        '→ AUCUNE coercition, motif fxUnavailable (pas foreignFiat), saisie '
+        'manuelle TOUJOURS refusée (B-A intact)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-ba-fx';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RBA3', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'USD', amount: '-50', subclass: 'fiat');
+      b.leg(refid: 'RBA3', time: '2024-10-02 08:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '1', subclass: 'crypto');
+      final bytes = b.toCsvBytes();
+
+      final mockClient = MockClient((request) async {
+        return http.Response('erreur serveur', 500);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(bytes, profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.cryptoFxUnavailable, isTrue);
       expect(preview.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
       expect(preview.toCreate.any((m) => m.ledgerCode == 'USD'), isFalse);
       expect(preview.unvaluedExchanges, hasLength(1));
       final ex = preview.unvaluedExchanges.single;
-      expect(ex.manualReason, equals('foreignFiat'));
+      expect(ex.manualReason, equals('fxUnavailable'));
 
-      // Saisie manuelle : REFUSÉE (B-A, ceinture contrôleur) — l'échange
-      // reste intégralement manuel, motif inchangé.
+      // Saisie manuelle : REFUSÉE (B-A, ceinture contrôleur) — une jambe
+      // fiat reste une jambe fiat quel que soit le motif de son échec de
+      // résolution automatique ; l'échange reste intégralement manuel.
       final applied = await ctrl.applyManualCryptoValuations({ex.importKey: '999'});
       expect(applied, isNotNull);
       expect(applied!.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
       expect(applied.toCreate.any((m) => m.ledgerCode == 'USD'), isFalse);
       expect(applied.unvaluedExchanges, hasLength(1));
-      expect(applied.unvaluedExchanges.single.manualReason, equals('foreignFiat'));
-
-      // Ré-import STABLE : rien n'ayant été journalisé, un second aperçu
-      // retombe exactement sur le même état.
-      final preview2 = await ctrl.previewStatementImport(
-        bytes,
-        profile,
-        accountId: accountId,
-      );
-      expect(preview2.unvaluedExchanges, hasLength(1));
-      expect(preview2.unvaluedExchanges.single.manualReason, equals('foreignFiat'));
-    });
+      expect(applied.unvaluedExchanges.single.manualReason, equals('fxUnavailable'));
+    }, timeout: const Timeout(Duration(seconds: 15))); // 3 tentatives avec backoff.
   });
 
   group('Lot 2 — revue adversariale B-1/B-2 (moteur pur, finalizeCryptoExchanges)', () {
@@ -1955,6 +2224,72 @@ void main() {
         accountCurrency: 'EUR',
       );
 
+      expect(out, isEmpty);
+    });
+
+    test(
+        'amendement (voie ii) : clé PARTAGÉE impliquant une jambe '
+        'fiat USD → reste `ambiguousGroup` au pré-scan de `resolve` (PAS '
+        'résolue automatiquement), et finalizeCryptoExchanges n\'émet rien '
+        'MÊME avec une valorisation `fiatLeg` forcée dans la map', () async {
+      // Forme dégénérée du dustsweeping N→1 (répartition impossible) avec
+      // une jambe REÇUE fiat ÉTRANGÈRE USD, partagée par 2 entrées sous la
+      // MÊME clé — B-1 (multiplicité de `importKey`) doit primer sur
+      // l'étage 1-quater : une clé partagée n'est JAMAIS résolue
+      // automatiquement, même si chacune de ses entrées, prise seule,
+      // aurait été éligible à `fiatLeg`.
+      final u1 = UnvaluedExchange(
+        kind: 'exchange',
+        date: DateTime(2024, 1, 5),
+        codePaid: 'CCC',
+        quantityPaid: '5',
+        codeReceived: 'USD',
+        quantityReceived: '30',
+        sourceLines: const [7],
+        importKey: 'ref:acc1:RUSDSHARED', // clé PARTAGÉE.
+        codeReceivedIsFiat: true,
+      );
+      final u2 = UnvaluedExchange(
+        kind: 'exchange',
+        date: DateTime(2024, 1, 5),
+        codePaid: 'DDD',
+        quantityPaid: '3',
+        codeReceived: 'USD',
+        quantityReceived: '10',
+        sourceLines: const [8],
+        importKey: 'ref:acc1:RUSDSHARED', // MÊME clé que u1.
+        codeReceivedIsFiat: true,
+      );
+
+      // AUCUN mock HTTP fourni : le pré-scan de multiplicité (B-1) écarte la
+      // clé partagée AVANT toute tentative de résolution `fiatLeg` — un
+      // appel réseau inattendu ferait échouer ce test.
+      final resolution = await CryptoValuationService().resolve([u1, u2]);
+      expect(resolution.valuations, isEmpty);
+      expect(resolution.manual, hasLength(2));
+      expect(
+        resolution.manual
+            .every((m) => m.reason == CryptoValuationManualReason.ambiguousGroup),
+        isTrue,
+      );
+
+      // Ceinture INDÉPENDANTE de `finalizeCryptoExchanges` (B-1) : même avec
+      // une valorisation `fiatLeg` forcée dans la map pour cette clé
+      // partagée (ex. injectée directement en test), RIEN n'est émis.
+      final plan = CryptoImportPlan(unvaluedExchanges: [u1, u2]);
+      final forcedValuations = {
+        'ref:acc1:RUSDSHARED': CryptoValuation(
+          amountEur: Decimal.parse('24'),
+          valuationUsd: Decimal.parse('30'),
+          source: 'fiatLeg',
+        ),
+      };
+      final out = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        forcedValuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+      );
       expect(out, isEmpty);
     });
   });

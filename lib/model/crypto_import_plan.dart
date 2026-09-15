@@ -88,23 +88,26 @@ class UnvaluedExchange {
   final String? suggestedPaidEur;
   final String? suggestedReceivedEur;
 
-  /// `true` si [codePaid] (resp. [codeReceived]) est une jambe FIAT — TOUTE
-  /// jambe fiat, pas seulement étrangère à la devise du compte (B-A,
-  /// contre-vérification lot 2) : une jambe fiat DANS la devise du compte
-  /// n'atteint normalement jamais cette classe (`_processExchangeGroup`
-  /// l'emprunte au chemin cash direct, jamais un `UnvaluedExchange`), mais un
-  /// `UnvaluedExchange` dont une jambe EST fiat — notamment une jambe
-  /// ÉTRANGÈRE (ex. `USD` sur un compte `EUR`), qui retombe dans la branche
-  /// `fiatLegs.isEmpty` de `_processExchangeGroup` faute d'autre modèle —
-  /// n'a jamais le droit d'être valorisée comme un actif : le code fiat
-  /// deviendrait un `ledgerCode`, et `finalizeCryptoExchanges` fabriquerait
-  /// une position crypto de ce code (`sell`/`buy` `USD`), silencieuse (les
-  /// gardes existantes — B-2 — ne comparent qu'à la devise DU COMPTE, pas à
-  /// la nature fiat). Défaut `false` (dépôt en nature, échange sans aucune
-  /// jambe fiat) — `CryptoValuationService.resolve` et
-  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` refusent TOUTE entrée
-  /// où l'un des deux vaut `true` (motif dédié `'foreignFiat'`), jamais une
-  /// approximation au pair.
+  /// `true` si [codePaid] (resp. [codeReceived]) est une jambe FIAT — TOUTE jambe
+  /// fiat, pas seulement étrangère à la devise du compte (B-A, contre-vérification
+  /// lot 2) : une jambe fiat DANS la devise du compte n'atteint normalement jamais
+  /// cette classe (`_processExchangeGroup` l'emprunte au chemin cash direct, jamais
+  /// un `UnvaluedExchange`), mais un `UnvaluedExchange` dont une jambe EST fiat —
+  /// notamment une jambe ÉTRANGÈRE (ex. `USD` sur un compte `EUR`), qui retombe
+  /// dans la branche `fiatLegs.isEmpty` de `_processExchangeGroup` faute d'autre
+  /// modèle — n'a jamais le droit d'être valorisée comme un actif : le code fiat
+  /// deviendrait un `ledgerCode`, et `finalizeCryptoExchanges` fabriquerait une
+  /// position crypto de ce code (`sell`/`buy` `USD`), silencieuse (les gardes
+  /// existantes — B-2 — ne comparent qu'à la devise DU COMPTE, pas à la nature
+  /// fiat). Défaut `false` (dépôt en nature, échange sans aucune jambe fiat) —
+  /// `CryptoValuationService.resolve` et
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` refusent TOUTE entrée où l'un
+  /// des deux vaut `true` (motif dédié `'foreignFiat'`), jamais une approximation
+  /// au pair — SAUF l'exception PROPRE (voie (ii)) : un échange à 2 jambes dont la
+  /// jambe fiat vaut littéralement `USD` est résolu automatiquement comme du cash
+  /// converti au taux historique (`CryptoValuation.source == 'fiatLeg'`), mais
+  /// AUCUN mouvement n'est jamais émis pour la jambe fiat elle-même (toujours zéro
+  /// position `USD`).
   final bool codePaidIsFiat;
   final bool codeReceivedIsFiat;
 
@@ -203,6 +206,10 @@ class CryptoValuation {
 
   /// `'statement'` (étage 1) / `'stableLeg'` (étage 1-ter, repli « jambe stablecoin
   /// dollar », amendement drive lot 2 — cf. `CryptoLedgerSpec. usdStableCodes`) /
+  /// `'fiatLeg'` (étage 1-quater, jambe fiat ÉTRANGÈRE USD convertie en cash au taux
+  /// historique du jour, amendement voie (ii) —
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` émet alors la SEULE jambe
+  /// crypto avec du cash réel, jamais la paire sell/buy opposée du modèle N4) /
   /// `'marketHistory'` (étage 2, hors lot 2) / `'manual'` (saisie utilisateur, hors
   /// lot 2 — l'UI viendra plus tard, l'API l'accepte déjà, cf.
   /// `finalizeCryptoExchanges`).

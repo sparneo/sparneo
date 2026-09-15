@@ -2695,9 +2695,9 @@
   "@importUnvaluedReasonAmbiguousGroup": {
     "description": "Manual-valuation reason (B-1, adversarial review): this exchange shares its dedup key with at least one other entry in the same import (degenerate N-to-1 dustsweeping, or multi-leg in-kind deposit) and can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
   },
-  "importUnvaluedReasonForeignFiat": "Exchange involving a foreign currency (e.g. US dollar) — not supported yet, enter it manually in the journal if needed.",
+  "importUnvaluedReasonForeignFiat": "Exchange involving a foreign currency (e.g. British pound) — not supported yet, enter it manually in the journal if needed.",
   "@importUnvaluedReasonForeignFiat": {
-    "description": "Manual-valuation reason (B-A, lot 2 counter-review; reworded amendment, drive review 09/15 to drop the 'leg' jargon): one side of this exchange is a foreign fiat currency (e.g. USD on a EUR account) — no conversion is available at this stage, so it can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
+    "description": "Manual-valuation reason (B-A, lot 2 counter-review; reworded amendment, drive review 09/15 to drop the 'leg' jargon): one side of this exchange is a foreign fiat currency with no wired FX conversion (e.g. GBP on a EUR account — a clean 2-leg USD exchange is now valued automatically instead, cf. 'fiatLeg') — so it can never be valued automatically or manually from this screen — the amount field is disabled for this reason"
   },
   "importUnvaluedAmountFieldLabel": "Amount (EUR)",
   "@importUnvaluedAmountFieldLabel": {
@@ -2738,6 +2738,10 @@
   "importValuationSourceStableLeg": "Valued from the dollar-stablecoin counterpart",
   "@importValuationSourceStableLeg": {
     "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'stableLeg' (B16 lot 2 amendment, stage 1-ter, drive review 09/15 — resolved from the net quantity of a trusted dollar-stablecoin counterparty leg when stage 1 failed as unreadable or over-spread)"
+  },
+  "importValuationSourceFiatLeg": "Valued from the US dollar counterpart",
+  "@importValuationSourceFiatLeg": {
+    "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'fiatLeg' (B16 lot 2 amendment, stage 1-quater, decision 09/15 (route ii) — a clean 2-leg exchange whose foreign fiat leg is literally USD is valued automatically as real cash converted at the historical rate, only the crypto leg is journaled)"
   },
   "importValuationSourceManual": "Valued manually",
   "@importValuationSourceManual": {

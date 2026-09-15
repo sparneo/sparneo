@@ -576,6 +576,16 @@ class CryptoLedgerNormalizer {
   /// de la cascade `AccountController._resolveCryptoTicker`) continue de se
   /// convertir à l'affichage, mais le PRU dérivé de CES mouvements n'a plus jamais
   /// besoin de l'être, puisqu'il n'est jamais natif USD.
+  ///
+  /// EXCEPTION — jambe fiat ÉTRANGÈRE USD (amendement, voie (ii),
+  /// `CryptoValuation.source == 'fiatLeg'`, cf. `CryptoValuationService`) : modèle
+  /// d'ÉMISSION DIFFÉRENT de la règle N4 ci-dessus. La jambe USD N'EST JAMAIS UNE
+  /// POSITION (B-A toujours en vigueur, AUCUN mouvement émis pour elle) — on émet
+  /// la SEULE jambe crypto avec du cash RÉEL, exactement comme un trade à jambe
+  /// fiat ordinaire du lot 1 (`_processExchangeGroup`, branche `nonFiatLegs.length
+  /// == 1`) : `sell` (crypto payée, USD reçu, cash ENTRANT positif) ou `buy` (USD
+  /// payé, crypto reçue, cash SORTANT négatif), montant = quantité nette de la
+  /// jambe USD × taux du jour.
   static List<ImportedMovement> finalizeCryptoExchanges(
     CryptoImportPlan plan,
     Map<String, CryptoValuation> valuations, {
@@ -605,21 +615,6 @@ class CryptoLedgerNormalizer {
         continue; // clé partagée — jamais émis (B-1), reste manuel/visible.
       }
 
-      // B-A (BLOQUANT, contre-vérification lot 2) : ceinture INDÉPENDANTE du
-      // pré-scan de `CryptoValuationService.resolve` — une entrée dont l'une
-      // des deux jambes est FIAT (typiquement étrangère à la devise du
-      // compte, ex. `USD` sur un compte `EUR`, cf. `_processExchangeGroup`
-      // branche `fiatLegs.isEmpty`) ne doit JAMAIS être émise ici, MÊME si une
-      // valorisation traîne malgré tout dans [valuations] pour cette clé (y
-      // compris une valorisation MANUELLE saisie avant ce correctif, ou
-      // injectée directement en test) : émettre fabriquerait un `sell`/`buy`
-      // du CODE FIAT lui-même — position crypto `USD` inventée, silencieuse
-      // (B-2 ci-dessous ne compare qu'à la devise DU COMPTE, pas à la nature
-      // fiat de la jambe).
-      if (u.codePaidIsFiat || u.codeReceivedIsFiat) {
-        continue; // jambe fiat (étrangère) — jamais émis (B-A).
-      }
-
       // B-2 (BLOQUANT, revue adversariale) : garde EXPLICITE et INDÉPENDANTE
       // de B-1 — dans la branche dégénérée du dustsweeping N→1 (répartition
       // au prorata impossible, `amountusd` illisible quelque part dans le
@@ -629,28 +624,67 @@ class CryptoLedgerNormalizer {
       // jamais créditées (la jambe `sell` de la contrepartie ne compense
       // rien). Toute jambe (payée OU reçue) dont le code égale la devise du
       // compte reste donc manuelle, comparaison insensible à la casse.
+      //
+      // CORRECTIF I-1 (revue adversariale, BLOQUANT) : cette garde DOIT
+      // s'exécuter AVANT la branche fiat ci-dessous — sinon l'exception
+      // 1-quater (`_finalizeFiatLegExchange`) peut émettre un mouvement pour
+      // une entrée dont la jambe « crypto » restante porte en réalité LE CODE
+      // DE LA DEVISE DU COMPTE (ex. relevé forgé : USD payé, jambe reçue
+      // classée crypto par la colonne subclass mais codée littéralement
+      // `EUR` sur un compte `EUR`) — `codeReceivedIsFiat` vaut `false` pour
+      // cette jambe (reclassée crypto en amont), donc la garde B-A ci-dessous
+      // ne la voit pas comme fiat et laisserait passer l'exception, qui
+      // fabriquerait une position crypto `EUR` + un débit cash non compensé.
+      // L'exception 1-quater DOIT donc passer sous cette garde exactement
+      // comme les autres chemins d'émission. Ordre désormais : B-1 → B-2 →
+      // B-A.
       if (u.codeReceived.toUpperCase() == accountCurrency.toUpperCase() ||
           (u.codePaid?.toUpperCase() == accountCurrency.toUpperCase())) {
         continue; // devise du compte en jambe titre — jamais émis (B-2).
       }
 
+      // B-A (BLOQUANT, contre-vérification lot 2) : ceinture INDÉPENDANTE du
+      // pré-scan de `CryptoValuationService.resolve` — une entrée dont l'une
+      // des deux jambes est FIAT (typiquement étrangère à la devise du
+      // compte, ex. `GBP` sur un compte `EUR`, cf. `_processExchangeGroup`
+      // branche `fiatLegs.isEmpty`) ne doit JAMAIS être émise pour ELLE-MÊME,
+      // MÊME si une valorisation traîne malgré tout dans [valuations] pour
+      // cette clé (y compris une valorisation MANUELLE saisie avant ce
+      // correctif, ou injectée directement en test) : émettre un mouvement
+      // DE la jambe fiat fabriquerait un `sell`/`buy` du CODE FIAT lui-même —
+      // position crypto `USD`/`GBP` inventée, silencieuse (B-2 ci-dessus ne
+      // compare qu'à la devise DU COMPTE, pas à la nature fiat de la jambe).
+      //
+      // EXCEPTION (amendement, voie (ii)) : si `CryptoValuationService. resolve` a
+      // résolu CETTE entrée au titre de l'étage 1-quater (`source == 'fiatLeg'` —
+      // jambe fiat ÉTRANGÈRE USD d'un échange PROPRE à 2 jambes), on émet la SEULE
+      // jambe CRYPTO avec du cash RÉEL — jamais un mouvement pour la jambe fiat, B-A
+      // reste donc intact pour elle. CORRECTIF I-2 (revue adversariale) : exclusivité
+      // EXACTE (une seule jambe fiat, pas deux) et code de la jambe crypto NON-NUL —
+      // vérifiés avant émission, voir [_finalizeFiatLegExchange].
+      if (u.codePaidIsFiat || u.codeReceivedIsFiat) {
+        final fiatLegValuation = valuations[u.importKey];
+        final cryptoCode =
+            u.codePaidIsFiat ? u.codeReceived : u.codePaid;
+        if (u.kind == 'exchange' &&
+            u.codePaidIsFiat != u.codeReceivedIsFiat &&
+            cryptoCode != null &&
+            fiatLegValuation != null &&
+            fiatLegValuation.source == 'fiatLeg') {
+          out.add(_finalizeFiatLegExchange(
+            u,
+            fiatLegValuation,
+            accountId: accountId,
+            accountCurrency: accountCurrency,
+          ));
+        }
+        continue; // jambe fiat — jamais de mouvement émis POUR ELLE (B-A).
+      }
+
       final valuation = valuations[u.importKey];
       if (valuation == null) continue; // arbitrage manuel — rien à émettre.
 
-      // `valuationUsd`/`fxRate`/`fxDate` sont NULLABLES sur [CryptoValuation] pour
-      // couvrir le crochet `source:'manual'` (saisie EUR directe, sans équivalent
-      // USD/FX) — absents de `meta` plutôt que sérialisés en chaîne `'null'`
-      // (primitives JSON seulement, conception interne).
-      final meta = <String, dynamic>{
-        'valuationSource': valuation.source,
-        if (valuation.valuationUsd != null)
-          'valuationUsd': valuation.valuationUsd.toString(),
-        if (valuation.fxRate != null) 'fxRate': valuation.fxRate.toString(),
-        if (valuation.fxDate != null) 'fxDate': _isoDay(valuation.fxDate!),
-        if (valuation.spreadPct != null)
-          'valuationSpreadPct': valuation.spreadPct,
-        if (u.seq != null) 'seq': u.seq,
-      };
+      final meta = _valuationMeta(u, valuation);
       final sourceRowIndex = u.sourceLines.isNotEmpty ? u.sourceLines.first : -1;
 
       switch (u.kind) {
@@ -743,6 +777,118 @@ class CryptoLedgerNormalizer {
     }
 
     return out;
+  }
+
+  /// Méta de traçabilité COMMUNE à tout mouvement crypto finalisé (exchange N4,
+  /// depositInKind, ou jambe fiat étrangère de [_finalizeFiatLegExchange]
+  /// ci-dessous) — factorisée depuis le corps de [finalizeCryptoExchanges] pour
+  /// être réutilisée sans dupliquer la garde de nullabilité.
+  /// `valuationUsd`/`fxRate`/`fxDate` sont NULLABLES sur [CryptoValuation] pour
+  /// couvrir le crochet `source:'manual'` (saisie EUR directe, sans équivalent
+  /// USD/FX) — absents de `meta` plutôt que sérialisés en chaîne `'null'`
+  /// (primitives JSON seulement, conception interne).
+  static Map<String, dynamic> _valuationMeta(
+    UnvaluedExchange u,
+    CryptoValuation valuation,
+  ) {
+    return {
+      'valuationSource': valuation.source,
+      if (valuation.valuationUsd != null)
+        'valuationUsd': valuation.valuationUsd.toString(),
+      if (valuation.fxRate != null) 'fxRate': valuation.fxRate.toString(),
+      if (valuation.fxDate != null) 'fxDate': _isoDay(valuation.fxDate!),
+      if (valuation.spreadPct != null)
+        'valuationSpreadPct': valuation.spreadPct,
+      if (u.seq != null) 'seq': u.seq,
+    };
+  }
+
+  /// Finalise un [UnvaluedExchange] résolu à l'étage 1-quater (amendement, voie
+  /// (ii), `valuation.source == 'fiatLeg'`, cf. `CryptoValuationService`) : échange
+  /// PROPRE à 2 jambes, une crypto + une fiat ÉTRANGÈRE USD. Modèle d'ÉMISSION
+  /// DIFFÉRENT de la règle N4 (sell+buy à montants opposés, aucun cash réel) — ici
+  /// la jambe USD N'EST JAMAIS UNE POSITION (appelant : B-A ne laisse passer CETTE
+  /// méthode que pour émettre la jambe CRYPTO, jamais la jambe fiat elle-même) : on
+  /// émet la SEULE jambe crypto avec du cash RÉEL, exactement comme un trade à
+  /// jambe fiat ordinaire du lot 1 (`_processExchangeGroup`, branche
+  /// `nonFiatLegs.length == 1`).
+  ///
+  /// Sens : crypto PAYÉE (USD REÇU) → `sell`, cash ENTRANT (montant positif,
+  /// même convention que `StatementImportService` pour un trade ordinaire) ;
+  /// USD PAYÉ (crypto REÇUE) → `buy`, cash SORTANT (montant négatif).
+  /// `fee` reste `null` : comme pour la règle N4, le frais en nature est déjà
+  /// absorbé dans la quantité NETTE de la jambe crypto (`quantityPaid`/
+  /// `quantityReceived`, calculée en amont comme `amount − fee`).
+  static ImportedMovement _finalizeFiatLegExchange(
+    UnvaluedExchange u,
+    CryptoValuation valuation, {
+    required String accountId,
+    required String accountCurrency,
+  }) {
+    // Exactement une jambe fiat par construction (`CryptoValuationService.
+    // resolve` ne produit `source:'fiatLeg'` que pour ce cas) : la jambe
+    // RESTANTE (non-fiat) est la crypto à journaliser.
+    //
+    // CORRECTIF I-2 (revue adversariale) : ceinture INDÉPENDANTE de celle de
+    // l'appelant (`finalizeCryptoExchanges`, condition d'exception ci-dessus)
+    // — même défense en profondeur que B-1/B-2/B-A. Sans exclusivité
+    // STRICTE (`codePaidIsFiat != codeReceivedIsFiat`), une entrée à DEUX
+    // jambes fiat désignerait `codeReceived`/`codePaid` comme « la » jambe
+    // crypto alors qu'aucune ne l'est. Sans le contrôle de nullité, un
+    // `codePaid == null` (jambe payée absente, cas dépôt en nature) ferait
+    // crasher l'aperçu sur le `!` — remplacé par une erreur explicite,
+    // jamais un null-check operator opaque.
+    final fiatPaid = u.codePaidIsFiat;
+    if (u.codePaidIsFiat == u.codeReceivedIsFiat) {
+      throw ArgumentError(
+        'finalizeFiatLegExchange appelé sur une entrée sans exactement une '
+        'jambe fiat (importKey=${u.importKey}) — invariant violé, '
+        'l\'appelant doit garantir codePaidIsFiat != codeReceivedIsFiat.',
+      );
+    }
+    final cryptoCode = fiatPaid ? u.codeReceived : u.codePaid;
+    if (cryptoCode == null) {
+      throw ArgumentError(
+        'finalizeFiatLegExchange appelé sans code crypto exploitable '
+        '(importKey=${u.importKey}) — invariant violé, l\'appelant doit '
+        'garantir un codePaid non-null quand codeReceivedIsFiat.',
+      );
+    }
+    final cryptoQuantity =
+        Decimal.parse(fiatPaid ? u.quantityReceived : u.quantityPaid!);
+    final amountEur = valuation.amountEur; // TOUJOURS positif.
+
+    final kind = fiatPaid ? TransactionKind.buy : TransactionKind.sell;
+    final unitPrice =
+        (amountEur / cryptoQuantity).toDecimal(scaleOnInfinitePrecision: 12);
+    final role = '${fiatPaid ? 'buy' : 'sell'}:$cryptoCode';
+    final legImportKey = '${u.importKey}#$role';
+    final meta = _valuationMeta(u, valuation);
+    final sourceRowIndex = u.sourceLines.isNotEmpty ? u.sourceLines.first : -1;
+
+    return ImportedMovement.candidate(
+      sourceRow: const [],
+      sourceRowIndex: sourceRowIndex,
+      transaction: AssetTransaction(
+        id: AssetTransaction.generateId(),
+        accountId: accountId,
+        symbol: null,
+        kind: kind,
+        quantity: cryptoQuantity.toString(),
+        unitPrice: unitPrice.toString(),
+        // Cash RÉEL (pas une négation N4) : ENTRANT pour un sell (USD reçu),
+        // SORTANT pour un buy (USD payé) — même convention de signe qu'un
+        // trade à jambe fiat ordinaire (`StatementImportService`).
+        amount: (fiatPaid ? -amountEur : amountEur).toString(),
+        currency: accountCurrency,
+        settlementCurrency: accountCurrency,
+        date: u.date,
+        meta: {...meta, 'importKey': legImportKey},
+      ),
+      ledgerCode: cryptoCode,
+      needsAssetResolution: true,
+      importKey: legImportKey,
+    );
   }
 
   // ---------------------------------------------------------------------

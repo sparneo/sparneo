@@ -395,6 +395,27 @@ UnvaluedExchange _unvaluedFxUnavailableFixture() => UnvaluedExchange(
       manualReason: 'fxUnavailable',
     );
 
+/// I-3 (revue adversariale) : jambe fiat (USD, étage 1-quater) dont le FX
+/// est indisponible — ressort en motif `fxUnavailable` (PAS `foreignFiat`,
+/// puisque seule la panne réseau bloque, pas la nature de la jambe) ALORS
+/// QUE le critère STRUCTUREL (`codePaidIsFiat`) est posé. Avant correctif,
+/// l'UI se basait sur `manualReason == 'foreignFiat'` pour désactiver le
+/// champ : cette entrée gardait un champ ACTIF alors que le contrôleur
+/// (`AccountController.applyManualCryptoValuations`, critère structurel)
+/// ignorait silencieusement toute saisie — impasse muette.
+UnvaluedExchange _unvaluedFxUnavailableFiatLegFixture() => UnvaluedExchange(
+      kind: 'exchange',
+      date: DateTime(2024, 5, 11),
+      codePaid: 'USD',
+      quantityPaid: '50',
+      codeReceived: 'MATIC',
+      quantityReceived: '300',
+      sourceLines: const [32, 33],
+      importKey: 'ref:account-1:REFFXFIAT',
+      manualReason: 'fxUnavailable',
+      codePaidIsFiat: true,
+    );
+
 /// Motif « ambiguousGroup » (B-1, revue adversariale B16 lot 2) : clé de
 /// dédup partagée par ≥ 2 entrées (dustsweeping N→1 dégénéré, dépôt en
 /// nature multi-jambes) — jamais valorisable, le champ de saisie EUR doit
@@ -2132,6 +2153,34 @@ void main() {
     });
 
     testWidgets(
+        'T-4/I-3 (revue adversariale) : jambe fiat au motif fxUnavailable → '
+        'champ de saisie DÉSACTIVÉ (le contrôleur refuse sur le critère '
+        'STRUCTUREL, pas sur le motif affiché — sinon la saisie serait '
+        'ignorée en silence)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedFxUnavailableFixture(), // sans jambe fiat, ACTIF — contrôle négatif.
+          _unvaluedFxUnavailableFiatLegFixture(),
+        ],
+        cryptoFxUnavailable: true,
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(TextField), findsNWidgets(2));
+      // Le champ SANS jambe fiat (premier) reste activé...
+      expect(tester.widget<TextField>(find.byType(TextField).at(0)).enabled, isTrue);
+      // ...celui de l'entrée à jambe fiat (motif affiché IDENTIQUE,
+      // `fxUnavailable`) est désactivé — l'ancien critère (`manualReason ==
+      // 'foreignFiat'`) l'aurait laissé actif à tort.
+      expect(tester.widget<TextField>(find.byType(TextField).at(1)).enabled, isFalse);
+    });
+
+    testWidgets(
         'une saisie invalide affiche « Montant invalide » sur le champ et '
         'AUCUN appel au contrôleur si rien de valide n\'est saisi',
         (tester) async {
@@ -2236,6 +2285,27 @@ void main() {
       // liste bien ces mouvements, sans les retirer d'ailleurs.
       expect(find.text('Valorisé d\'après le relevé'), findsNWidgets(2));
       expect(find.text('Valorisé manuellement'), findsNWidgets(2));
+    });
+
+    testWidgets(
+        'sous-titre de provenance « en dollars » sur un échange valorisé '
+        'source `fiatLeg` (amendement, voie ii — jambe fiat étrangère '
+        'USD convertie en cash)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoMovementValued('tx-fiatleg', 'ref:acc:FIATLEG', 'fiatLeg'),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Valorisé d\'après la contrepartie en dollars'),
+        findsOneWidget,
+      );
     });
 
     testWidgets(

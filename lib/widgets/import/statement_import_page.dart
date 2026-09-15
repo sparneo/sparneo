@@ -2147,7 +2147,17 @@ class _StatementImportPageState extends State<StatementImportPage> {
     // pour une jambe en devise étrangère — la saisie manuelle émettrait le
     // même mouvement fiat fabriqué (`AccountController.
     // applyManualCryptoValuations` la refuse déjà, ceinture indépendante).
-    final isForeignFiat = u.manualReason == 'foreignFiat';
+    //
+    // CORRECTIF I-3 (revue adversariale) : critère STRUCTUREL
+    // (`codePaidIsFiat`/`codeReceivedIsFiat`), PAS `manualReason ==
+    // 'foreignFiat'` — le contrôleur (`applyManualCryptoValuations`) refuse
+    // sur le critère structurel, pas sur le motif d'affichage. Une entrée à
+    // jambe fiat dont le FX est indisponible ressort en motif `fxUnavailable`
+    // (pas `foreignFiat`) : avec l'ancien critère, le champ restait actif
+    // alors que la saisie était silencieusement ignorée par le contrôleur —
+    // impasse muette. Alignée sur le critère du contrôleur, la même jambe
+    // désactive désormais le champ quel que soit le motif affiché.
+    final isForeignFiat = u.codePaidIsFiat || u.codeReceivedIsFiat;
     final hasChoice = _unvaluedHasChoice(u);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
@@ -3209,13 +3219,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
   }
 
   /// « Valorisé d'après le relevé » / « Valorisé d'après la contrepartie en
-  /// stablecoin dollar » / « Valorisé manuellement » — discret, SEULEMENT sur les
-  /// mouvements crypto finalisés (`meta['valuationSource']` posé par
+  /// stablecoin dollar » / « Valorisé d'après la contrepartie en dollars » / «
+  /// Valorisé manuellement » — discret, SEULEMENT sur les mouvements crypto
+  /// finalisés (`meta['valuationSource']` posé par
   /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`, valeurs
-  /// `'statement'`/`'stableLeg'` (amendement drive lot 2/`'manual'` au lot 2 ;
-  /// `'marketHistory'`, hors périmètre de ce lot, n'a PAS de libellé dédié ici).
-  /// `null` sur tout autre mouvement (aucun changement visible pour Bourse
-  /// Direct/générique).
+  /// `'statement'`/`'stableLeg'` (amendement drive lot 2/`'fiatLeg'` (amendement
+  /// voie (ii), jambe fiat étrangère USD)/`'manual'` au lot 2 ; `'marketHistory'`,
+  /// hors périmètre de ce lot, n'a PAS de libellé dédié ici). `null` sur tout
+  /// autre mouvement (aucun changement visible pour Bourse Direct/générique).
   String? _valuationSourceLabel(
     AppLocalizations l10n,
     Map<String, dynamic>? meta,
@@ -3225,6 +3236,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importValuationSourceStatement;
       case 'stableLeg':
         return l10n.importValuationSourceStableLeg;
+      case 'fiatLeg':
+        return l10n.importValuationSourceFiatLeg;
       case 'manual':
         return l10n.importValuationSourceManual;
       default:
