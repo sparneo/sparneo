@@ -1366,6 +1366,42 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
+  /// « (≈ X €) », ou « (< 0,01 €) » pour une poussière (valeur strictement positive
+  /// dont l'arrondi afficherait 0,00 — résidus de délisting et de migration, retour
+  /// auteur drive B16. Répliqué de `account_journal_page.dart` (même motif, même
+  /// seuil) : la fiche position et le journal doivent lire pareil.
+  String _formatEurApprox(AppLocalizations l10n, double value) {
+    if (value > 0 && value < 0.005) {
+      return l10n.cryptoAmountBelowOneCent;
+    }
+    return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
+  }
+
+  /// Équivalent EUR d'un dépôt crypto EN NATURE (`adjustment`,
+  /// `meta['inKindDeposit'] == true`), calculé au rendu depuis
+  /// `quantity × unitPrice` — réplique exacte (motifs et replis compris) de
+  /// `account_journal_page.dart`, voir la doc là-bas : coût déjà EUR, ou USD
+  /// converti via `meta['fxRate']` ; `null` = repli sur `qty × prix devise`,
+  /// jamais de conversion inventée (B4).
+  String? _inKindDepositEurApprox(AppLocalizations l10n, AssetTransaction tx) {
+    final qty = double.tryParse(tx.quantity ?? '');
+    final price = double.tryParse(tx.unitPrice ?? '');
+    if (qty == null || price == null) return null;
+
+    final double valueEur;
+    if (tx.currency == 'EUR') {
+      valueEur = qty * price;
+    } else if (tx.currency == 'USD') {
+      final rawFxRate = tx.meta?['fxRate'];
+      final fxRate = rawFxRate is String ? double.tryParse(rawFxRate) : null;
+      if (fxRate == null) return null;
+      valueEur = qty * price * fxRate;
+    } else {
+      return null;
+    }
+    return _formatEurApprox(l10n, valueEur);
+  }
+
   Widget _buildTransactionTile(
     AssetTransaction tx,
     AppLocalizations l10n,
@@ -1388,7 +1424,17 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     }
 
     String subtitle;
-    if (tx.quantity != null && tx.unitPrice != null) {
+    // Dépôt en nature : « qty (≈ X €) » prioritaire sur le « qty × prix » brut —
+    // même rendu que le journal de compte (demande auteur, drive B16, repli sur la
+    // branche générique si l'équivalent est incalculable.
+    final inKindEurApprox = tx.kind == TransactionKind.adjustment &&
+            tx.meta?['inKindDeposit'] == true &&
+            tx.quantity != null
+        ? _inKindDepositEurApprox(l10n, tx)
+        : null;
+    if (inKindEurApprox != null) {
+      subtitle = '${tx.quantity} $inKindEurApprox';
+    } else if (tx.quantity != null && tx.unitPrice != null) {
       subtitle = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
     } else if (tx.kind == TransactionKind.transferOut && tx.quantity != null) {
       // Retrait crypto EN NATURE (import B16) : aucun `unitPrice`, donc la
@@ -1403,8 +1449,7 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       final eurValue = raw is String ? double.tryParse(raw) : null;
       subtitle = eurValue == null
           ? tx.quantity!
-          : '${tx.quantity} '
-              '${l10n.cryptoTransferOutApproxEur(Formatters.formatEur(eurValue))}';
+          : '${tx.quantity} ${_formatEurApprox(l10n, eurValue)}';
     } else {
       subtitle = _kindLabel(l10n, tx.kind);
     }

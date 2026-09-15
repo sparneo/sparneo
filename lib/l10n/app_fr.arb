@@ -295,6 +295,7 @@
   "transactionKindCharge": "Frais",
   "transactionKindTransferOut": "Transfert de titres (sortie)",
   "cryptoTransferOutApproxEur": "(≈ {eur})",
+  "cryptoAmountBelowOneCent": "(< 0,01 €)",
   "dividendAmountHint": "Optionnel si quantité et prix unitaire sont renseignés",
   "chargeSignFeeLabel": "Frais",
   "chargeSignRebateLabel": "Remboursement",

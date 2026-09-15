@@ -272,6 +272,20 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   String _formatTxDate(DateTime dt) =>
       '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
 
+  /// Formate un équivalent EUR informatif entre parenthèses — « (≈ X €) », ou « (<
+  /// 0,01 €) » quand [value] est STRICTEMENT POSITIVE mais < 0,005 : l'arrondi à 2
+  /// décimales de `formatEur` écraserait alors une poussière réelle (résidu de
+  /// délisting/migration, de l'ordre de 10⁻⁷ €) en « (≈ 0,00 €) », qui se lit
+  /// comme une valeur MANQUANTE plutôt que négligeable — retour auteur, drive B16.
+  /// Un montant EXACTEMENT nul garde « (≈ 0,00 €) » (aucun cas observé à ce jour,
+  /// mais rien ne l'exclut et ce n'est pas trompeur pour une vraie valeur nulle).
+  String _formatEurApprox(AppLocalizations l10n, double value) {
+    if (value > 0 && value < 0.005) {
+      return l10n.cryptoAmountBelowOneCent;
+    }
+    return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
+  }
+
   /// Équivalent EUR « (≈ X €) » d'un `transferOut` crypto, SI
   /// `meta['valueEur']` est renseignée (cf. `AccountController.
   /// _enrichCryptoWithdrawalsWithEurValuation`) — `null` sinon (FX
@@ -281,7 +295,52 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     final raw = tx.meta?['valueEur'];
     final value = raw is String ? double.tryParse(raw) : null;
     if (value == null) return null;
-    return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
+    return _formatEurApprox(l10n, value);
+  }
+
+  /// Équivalent EUR « (≈ X €) » (ou « (< 0,01 €) », cf. [_formatEurApprox]) d'un
+  /// dépôt crypto EN NATURE (`adjustment`, `meta['inKindDeposit'] == true`) —
+  /// demande auteur, drive B16 (« sur les dépôts en crypto, est-ce possible
+  /// d'avoir l'équivalent cash ? »).
+  ///
+  /// Calculé au RENDU depuis `quantity × unitPrice`, PAS depuis une meta
+  /// dédiée (contrairement à [_transferOutEurApprox]) : `CryptoLedgerNormalizer.
+  /// finalizeCryptoExchanges` case `'depositInKind'` pose déjà le coût EXACT
+  /// dans ces deux champs (`unitPrice = valuation.amountEur ÷ quantity`,
+  /// `currency = accountCurrency`, TOUJOURS) — recalculer ici couvre aussi
+  /// les dépôts déjà importés AVANT ce correctif d'affichage, sans
+  /// migration de données.
+  ///
+  /// Deux cas selon `tx.currency` :
+  ///  - `EUR` (cas courant, compte libellé en euros) : le coût est déjà
+  ///    l'équivalent recherché, `quantity × unitPrice` suffit ;
+  ///  - `USD` (compte crypto libellé en dollars) : conversion via
+  ///    `meta['fxRate']` (taux USD→EUR du jour de la valorisation, posé par
+  ///    `CryptoLedgerNormalizer._valuationMeta` pour toute valorisation
+  ///    issue d'une série FX — absent seulement pour une valorisation
+  ///    MANUELLE saisie directement en EUR, cf. doc de
+  ///    `CryptoValuationService`).
+  ///
+  /// `null` dans tous les autres cas (devise ni EUR ni USD, ou `fxRate`
+  /// absent/illisible, ou quantité/prix illisibles) : repli sur l'affichage
+  /// `qty × prix devise` existant, JAMAIS de conversion inventée (B4).
+  String? _inKindDepositEurApprox(AppLocalizations l10n, AssetTransaction tx) {
+    final qty = double.tryParse(tx.quantity ?? '');
+    final price = double.tryParse(tx.unitPrice ?? '');
+    if (qty == null || price == null) return null;
+
+    final double valueEur;
+    if (tx.currency == 'EUR') {
+      valueEur = qty * price;
+    } else if (tx.currency == 'USD') {
+      final rawFxRate = tx.meta?['fxRate'];
+      final fxRate = rawFxRate is String ? double.tryParse(rawFxRate) : null;
+      if (fxRate == null) return null; // jamais de conversion inventée.
+      valueEur = qty * price * fxRate;
+    } else {
+      return null; // devise étrangère non couverte — repli qty × prix.
+    }
+    return _formatEurApprox(l10n, valueEur);
   }
 
   // ---------------------------------------------------------------------------
@@ -718,6 +777,20 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       // disponible.
       final approx = _transferOutEurApprox(l10n, tx);
       subtitle = approx == null ? tx.quantity! : '${tx.quantity} $approx';
+    } else if (tx.kind == TransactionKind.adjustment &&
+        tx.meta?['inKindDeposit'] == true &&
+        tx.quantity != null) {
+      // Dépôt crypto EN NATURE (import B16, lot 2) : demande auteur, drive B16 (« sur
+      // les dépôts en crypto, est-ce possible d'avoir l'équivalent cash ? ») — même
+      // motif que le retrait ci-dessus, quantité + équivalent EUR (cf.
+      // _inKindDepositEurApprox) plutôt que le « qty × prix devise » brut de la
+      // branche `hasQtyPrice` (illisible d'un coup d'œil, et parfois en USD). Repli
+      // sur ce même `qty × prix` quand l'équivalent n'est pas calculable (devise
+      // étrangère non couverte, fxRate absent) — jamais de conversion inventée (B4).
+      final approx = _inKindDepositEurApprox(l10n, tx);
+      subtitle = approx == null
+          ? (hasQtyPrice ? qtyPrice : tx.quantity!)
+          : '${tx.quantity} $approx';
     } else if (hasQtyPrice) {
       subtitle = qtyPrice;
     } else {

@@ -620,15 +620,46 @@ void main() {
       },
     );
 
+    testWidgets(
+      'transferOut avec meta[\'valueEur\'] minuscule (poussière) : '
+      '« < 0,01 € » plutôt que « ≈ 0,00 € » (se lirait comme une valeur '
+      'manquante)',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-transferout-dust',
+          accountId: _accountId,
+          symbol: 'SHIB-EUR',
+          kind: TransactionKind.transferOut,
+          quantity: '0.0000000001',
+          currency: 'EUR',
+          date: DateTime(2024, 4, 5),
+          meta: const {
+            'valuationUsd': '0.0000001',
+            'valueEur': '0.00000009',
+            'fxRate': '0.9',
+            'fxDate': '2024-04-05',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(find.text('0.0000000001 (< 0,01 €)'), findsOneWidget);
+        expect(find.textContaining('0,00 €'), findsNothing);
+      },
+    );
+
     // ------------------------------------------------------------------- Demande
-    // auteur, drive B16 (« voir les dépôts en crypto ») : la puce « Dépôt » fait
-    // remonter l'adjustment inKindDeposit — la tuile affiche déjà quantité × coût
-    // (branche `hasQtyPrice` existante).
+    // auteur, drive B16 (« sur les dépôts en crypto, est-ce possible d'avoir
+    // l'équivalent cash ? ») : tuile d'un dépôt en nature (adjustment
+    // inKindDeposit) — la puce « Dépôt » le remonte déjà (cas spécial
+    // filterJournal, non-régression couverte plus bas), la tuile affiche désormais
+    // quantité + équivalent EUR comme un retrait.
     // -------------------------------------------------------------------
 
     testWidgets(
-      'dépôt en nature (adjustment inKindDeposit) : filtre « Dépôt » le '
-      'remonte, tuile affiche quantité × prix (coût EUR)',
+      'dépôt en nature (coût EUR) : quantité + « ≈ X € » remplacent le '
+      '« qty × prix » brut ; filtre « Dépôt » le remonte toujours',
       (tester) async {
         final tx = AssetTransaction(
           id: 'tx-inkind-deposit',
@@ -645,13 +676,105 @@ void main() {
         await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
         await tester.pumpAndSettle();
 
-        // Tuile : quantité × prix déjà affichés (branche hasQtyPrice).
-        expect(find.text('0.5 × 45000 EUR'), findsOneWidget);
+        final eurLabel = Formatters.formatEur(22500);
+        expect(find.text('0.5 (≈ $eurLabel)'), findsOneWidget);
+        expect(find.text('0.5 × 45000 EUR'), findsNothing);
 
         // Filtre « Dépôt » : la tuile reste visible (cas spécial filterJournal).
         await tester.tap(find.text('Dépôt'));
         await tester.pumpAndSettle();
-        expect(find.text('0.5 × 45000 EUR'), findsOneWidget);
+        expect(find.text('0.5 (≈ $eurLabel)'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'dépôt en nature (coût USD + meta[\'fxRate\']) : converti en EUR — '
+      'ne reste JAMAIS affiché en dollars',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-inkind-deposit-usd',
+          accountId: _accountId,
+          symbol: 'XRP-USD',
+          kind: TransactionKind.adjustment,
+          quantity: '4.67848',
+          unitPrice: '1.709957080077',
+          currency: 'USD',
+          date: DateTime(2024, 4, 4),
+          meta: const {
+            'inKindDeposit': true,
+            'valuationSource': 'statement',
+            'valuationUsd': '8.0000',
+            'fxRate': '0.9',
+            'fxDate': '2024-04-04',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        // 4.67848 × 1.709957080077 × 0.9 ≈ 7,20 €.
+        final eurLabel = Formatters.formatEur(4.67848 * 1.709957080077 * 0.9);
+        expect(find.text('4.67848 (≈ $eurLabel)'), findsOneWidget);
+        // Le sous-titre brut « qty × prix USD » n'apparaît plus (seul le
+        // symbole « XRP-USD » du titre mentionne encore le dollar).
+        expect(
+          find.textContaining('1.709957080077 USD'),
+          findsNothing,
+        );
+      },
+    );
+
+    testWidgets(
+      'dépôt en nature (coût USD SANS meta[\'fxRate\']) : repli sur '
+      '« qty × prix USD » brut, JAMAIS de conversion inventée',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-inkind-deposit-usd-nofx',
+          accountId: _accountId,
+          symbol: 'XRP-USD',
+          kind: TransactionKind.adjustment,
+          quantity: '4.67848',
+          unitPrice: '1.709957080077',
+          currency: 'USD',
+          date: DateTime(2024, 4, 6),
+          meta: const {
+            'inKindDeposit': true,
+            'valuationSource': 'manual',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('4.67848 × 1.709957080077 USD'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('≈'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'dépôt en nature (poussière, coût EUR quasi nul) : « < 0,01 € » '
+      'plutôt que « ≈ 0,00 € »',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-inkind-deposit-dust',
+          accountId: _accountId,
+          symbol: 'SHIB-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '0.0000000001',
+          unitPrice: '92396.9158',
+          currency: 'EUR',
+          date: DateTime(2024, 4, 7),
+          meta: const {'inKindDeposit': true, 'valuationSource': 'statement'},
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(find.text('0.0000000001 (< 0,01 €)'), findsOneWidget);
+        expect(find.textContaining('0,00 €'), findsNothing);
       },
     );
   });
