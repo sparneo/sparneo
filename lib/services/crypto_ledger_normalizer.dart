@@ -104,6 +104,7 @@ class _RewardBucket {
   int rowCount = 0;
   DateTime? firstDate;
   DateTime? lastDate;
+  int? firstSeq;
   int? lastSeq;
 
   _RewardBucket(this.baseAsset, this.month);
@@ -318,15 +319,24 @@ class CryptoLedgerNormalizer {
       bucket.netSum += leg.net;
       bucket.feeInKind += leg.fee;
       bucket.rowCount++;
-      bucket.firstDate ??= leg.date;
-      // Comparaison ROBUSTE plutôt qu'une simple affectation : l'ordre
+      // Comparaison ROBUSTE sur `seq` (jamais sur `date` seule) : l'ordre
       // d'itération des GROUPES (par `refid`) n'implique pas que les jambes
       // d'un même bucket (actif, mois) soient visitées en ordre
       // chronologique strict entre groupes différents — revue adversariale,
-      // mineur.
-      if (bucket.lastDate == null || !leg.date.isBefore(bucket.lastDate!)) {
-        bucket.lastDate = leg.date;
+      // mineur. `seq` est réassigné en PASSE 1 dans l'ordre chronologique
+      // FINAL du fichier (ligne ~254) : il totalement-ordonne les jambes,
+      // contrairement à `date` (granularité JOUR, ties possibles), donc
+      // trancher premier/dernier sur `seq` est strictement plus précis qu'un
+      // enchaînement de comparaisons de `date` — et garde `firstDate`
+      // synchronisé avec `firstSeq` (nécessaire au fix ci-dessous : dater
+      // l'agrégat sur la PREMIÈRE ligne, jamais la dernière).
+      if (bucket.firstSeq == null || leg.seq < bucket.firstSeq!) {
+        bucket.firstSeq = leg.seq;
+        bucket.firstDate = leg.date;
+      }
+      if (bucket.lastSeq == null || leg.seq > bucket.lastSeq!) {
         bucket.lastSeq = leg.seq;
+        bucket.lastDate = leg.date;
       }
     }
 
@@ -472,7 +482,23 @@ class CryptoLedgerNormalizer {
         'aggregatedTo': _isoDay(bucket.lastDate!),
         'aggregatedFeeInKind': bucket.feeInKind.toString(),
         'ledgerCode': bucket.baseAsset,
-        'seq': bucket.lastSeq,
+        // Datation et `seq` sur la PREMIÈRE ligne du mois (`firstDate`/
+        // `firstSeq`), PAS la dernière : la projection (`replayLedger`,
+        // position_projection.dart) borne le solde courant à zéro (clamp
+        // anti-survente). Un agrégat daté `lastDate` crédite les récompenses
+        // du mois APRÈS toute vente/désallocation survenue plus tôt dans le
+        // même mois alors que ces récompenses étaient déjà acquises — la
+        // vente plonge alors le solde sous zéro, le clamp mange la
+        // différence, et le solde final se retrouve SURÉVALUÉ du montant des
+        // récompenses antérieures à la vente. Créditer au plus tôt (début de
+        // mois) est toujours sûr vis-à-vis du clamp : une vente ne peut en
+        // réalité consommer que des récompenses déjà créditées. Contrepartie
+        // ASSUMÉE de l'agrégation mensuelle : le solde intra-mois est
+        // temporairement SURÉVALUÉ entre `firstDate` et `lastDate` (toutes
+        // les récompenses du mois sont réputées acquises dès la première),
+        // mais le solde de FIN de mois — et tout rejeu qui dépasse
+        // `lastDate` — reste exact.
+        'seq': bucket.firstSeq,
         'importKey': importKey,
       };
       final tx = AssetTransaction(
@@ -484,7 +510,7 @@ class CryptoLedgerNormalizer {
         unitPrice: null,
         amount: null,
         currency: accountCurrency,
-        date: bucket.lastDate!,
+        date: bucket.firstDate!,
         meta: meta,
       );
       movements.add(ImportedMovement.candidate(

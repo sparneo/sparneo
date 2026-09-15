@@ -1833,6 +1833,57 @@ void main() {
       expect(rwd.averageBuyPrice, isNull); // coût 0 / PRU inconnu, INCHANGÉ.
     });
 
+    // -----------------------------------------------------------------------
+    // Non-régression : agrégat mensuel de récompenses daté sur la PREMIÈRE
+    // ligne du mois, jamais la dernière (fix ci-dessus) — cf. crypto_ledger_
+    // normalizer.dart, `addReward`/[2qua]. Scénario réel reproduit en
+    // synthétique : récompense en DÉBUT de mois, vente EN COURS de mois qui
+    // consomme cette récompense, puis une SECONDE récompense en FIN de mois
+    // (même bucket mensuel, agrégées en UN seul mouvement). Avec l'ancienne
+    // datation (`lastDate`), la vente du 7 se rejoue AVANT l'agrégat (daté du
+    // 10) : le solde RWD est encore à 0 à cette date, le clamp anti-survente
+    // (`position_projection.dart`) absorbe la vente sans rien décompter, et
+    // le solde final se retrouve SURÉVALUÉ du montant de la récompense du 3
+    // (4,989515 au lieu de 1,955 — vérifié avant/après en local, cf. rapport).
+    // Avec la nouvelle datation (`firstDate`),
+    // l'agrégat entier (3,034515 + 1,955) est crédité dès le 3 — la vente du
+    // 7 le consomme normalement, le solde final est EXACT.
+    // -----------------------------------------------------------------------
+    test(
+        'non-régression : agrégat de récompenses daté firstDate — une vente '
+        'intra-mois consommant une récompense antérieure n\'est plus mangée '
+        'par le clamp anti-survente', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-clamp-reward';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      final b = _LedgerBuilder();
+      // Récompense de DÉBUT de mois.
+      b.leg(refid: 'RWC1', time: '2024-01-03 08:00:00', type: 'staking',
+          asset: 'RWD', wallet: 'earn/flexible', amount: '3.034515', subclass: 'crypto');
+      // Vente EN COURS de mois (trade contre EUR — émet directement un
+      // mouvement `sell`, pas un échange à valoriser) qui consomme
+      // EXACTEMENT la récompense du 3.
+      b.leg(refid: 'RWC2', time: '2024-01-07 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'EUR', amount: '150', subclass: 'fiat');
+      b.leg(refid: 'RWC2', time: '2024-01-07 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'RWD', amount: '-3.034515', subclass: 'crypto');
+      // Récompense de FIN de mois — même bucket mensuel que celle du 3.
+      b.leg(refid: 'RWC3', time: '2024-01-10 08:00:00', type: 'staking',
+          asset: 'RWD', wallet: 'earn/flexible', amount: '1.955', subclass: 'crypto');
+
+      final preview = await ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId);
+      final err = await ctrl.confirmStatementImport(preview, accountId: accountId);
+      expect(err, isNull);
+
+      final positions = await AccountStorage(database: db).getPositions(accountId);
+      final rwd = positions.firstWhere((p) => p.asset.ledgerCode == 'RWD');
+      // Net du fichier : (3,034515 + 1,955) récompensé − 3,034515 vendu = 1,955.
+      expect(rwd.quantity, equals('1.955'));
+    });
+
     // ----------------------------------------------------------------------- LOT 2
     // UI — applyManualCryptoValuations (conception interne) : saisie manuelle du
     // montant EUR d'un échange resté en arbitrage → sell+ buy émis avec des montants
