@@ -2711,6 +2711,29 @@
   "@importUnvaluedApplyButton": {
     "description": "Button at the bottom of the 'exchanges to value' group that applies the EUR amounts entered so far, without waiting for final import confirmation"
   },
+  "importUnvaluedGuardTitle": "Unvalued exchanges",
+  "@importUnvaluedGuardTitle": {
+    "description": "Title of the safety-net dialog shown when the user taps the import confirmation button while the 'exchanges to value' group still has entries pending (author drive feedback, 09/15: they forgot to tap 'Apply' before confirming, so those exchanges silently produced no movement)."
+  },
+  "importUnvaluedGuardMessage": "{count} exchange(s) to value have not been applied. Without valuation, these exchanges will create no movement and your positions will be provisional.",
+  "@importUnvaluedGuardMessage": {
+    "description": "Body of the safety-net dialog: states plainly what is at stake (no jargon) — the remaining unvalued exchanges won't produce any movement if the user proceeds without valuing them first. Same wording for both dialog variants (with or without an applicable entry).",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUnvaluedGuardValuateButton": "Value then import",
+  "@importUnvaluedGuardValuateButton": {
+    "description": "Primary/default action of the 3-choice variant of the safety-net dialog (shown only when at least one unvalued exchange is applicable, i.e. would actually be valued by a tap on 'Apply' as currently filled in): applies the manual valuations (same path as the panel's 'Apply' button) then proceeds straight to import confirmation on the refreshed preview."
+  },
+  "importUnvaluedGuardImportAnywayButton": "Import without valuing",
+  "@importUnvaluedGuardImportAnywayButton": {
+    "description": "Secondary action of the 3-choice variant of the safety-net dialog (at least one applicable entry exists): proceeds to import confirmation as-is, historical behaviour — the still-unvalued exchanges emit no movement."
+  },
+  "importUnvaluedGuardImportAnywayNoneApplicableButton": "Import anyway",
+  "@importUnvaluedGuardImportAnywayNoneApplicableButton": {
+    "description": "Sole forward action of the 2-choice variant of the safety-net dialog, shown when unvalued exchanges remain but NONE is applicable (e.g. only structurally-refused entries — shared dedup key/foreign fiat leg — or empty fields with no preselected choice): proceeds to import confirmation as-is."
+  },
   "importUnvaluedChoicePaidLabel": "Value given: {usd} (≈ {eur})",
   "@importUnvaluedChoicePaidLabel": {
     "description": "Amendment, drive review 09/15 (B16 lot 2 follow-up): first (default-selected) option of the binary paid/received choice shown for a manual crypto-exchange 'spread' entry that carries all four statement/converted amounts — reads the statement's paid-side USD amount and its EUR conversion so a single tap on 'Apply', with no further input, values the exchange at this default. Both placeholders are already-formatted currency strings with their symbol (usd via Formatters.formatMoney(.., 'USD'), eur via Formatters.formatEur), not raw numbers.",

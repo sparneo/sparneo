@@ -76,6 +76,12 @@ enum _ImportStep { pickFile, configureProfile, preview, resolveAssets, done }
 /// grand livre de jambes, pas un journal d'opérations — cf. la conception interne
 enum _ImportProfileChoice { genericManual, bourseDirect, kraken }
 
+/// Issue du filet de confirmation « échanges à valoriser » (retour auteur, drive —
+/// verbatim : « Je ne suis pas convaincu par ce bouton [Appliquer], je préférerais un
+/// contrôle sur un clic sur le bouton Importer »), cf.
+/// [_StatementImportPageState._guardUnvaluedExchangesBeforeConfirm].
+enum _UnvaluedGuardAction { cancel, importWithoutValuation, valuateFirst }
+
 class StatementImportPage extends StatefulWidget {
   /// Contrôleur DÉJÀ initialisé du compte ouvrant l'assistant (celui
   /// d'AccountView) : réutilisé tel quel (jamais disposé ici, la page ne le
@@ -1081,9 +1087,128 @@ class _StatementImportPageState extends State<StatementImportPage> {
   // Étape 5 — confirmation
   // ---------------------------------------------------------------------------
 
+  /// `true` si CETTE entrée du groupe « Échanges à valoriser » serait
+  /// effectivement valorisée par un clic sur « Appliquer » EN L'ÉTAT ACTUEL
+  /// de la saisie — reflète exactement la logique de
+  /// [_applyManualCryptoValuations] (choix binaire présélectionné en repli si
+  /// le champ dérogatoire est vide, montant saisi sinon) SAUF pour les deux
+  /// motifs structurellement refusés par le contrôleur
+  /// (`AccountController.applyManualCryptoValuations`) : clé de dédup
+  /// PARTAGÉE (`ambiguousGroup`) et jambe fiat (`codePaidIsFiat`/
+  /// `codeReceivedIsFiat`), jamais valorisables ici quoi que l'utilisateur
+  /// saisisse (cf. [_unvaluedExchangeTile], qui désactive déjà leur champ).
+  /// Sert au filet de confirmation ([_guardUnvaluedExchangesBeforeConfirm])
+  /// à décider s'il propose « Valoriser puis importer ».
+  bool _unvaluedExchangeIsApplicable(UnvaluedExchange u) {
+    if (u.manualReason == 'ambiguousGroup') return false;
+    if (u.codePaidIsFiat || u.codeReceivedIsFiat) return false;
+    final raw = _manualValuationControllers[u.importKey]?.text.trim() ?? '';
+    if (raw.isEmpty) return _unvaluedHasChoice(u);
+    final normalized = raw.replaceAll(',', '.');
+    final amount = Decimal.tryParse(normalized);
+    return amount != null && amount > Decimal.zero;
+  }
+
+  /// Filet de sécurité AVANT confirmation (retour auteur, drive — cf. doc de
+  /// [_UnvaluedGuardAction]) : un utilisateur qui a oublié de cliquer « Appliquer »
+  /// dans le panneau « Échanges à valoriser » importait jusqu'ici en silence — ces
+  /// échanges n'émettent alors AUCUN mouvement, ce qui fausse les positions sans
+  /// avertissement. Le bouton « Appliquer » du panneau RESTE disponible par
+  /// ailleurs (permet de voir l'effet avant d'importer) : ce filet ne le remplace
+  /// pas, il rattrape l'oubli au dernier moment.
+  ///
+  /// Sans échange en attente, retourne [preview] immédiatement, SANS dialogue
+  /// (comportement inchangé). Sinon, propose :
+  ///  - « Valoriser puis importer » (SEULEMENT si au moins une entrée est
+  ///    [_unvaluedExchangeIsApplicable]) : applique les valorisations (même
+  ///    chemin que le bouton « Appliquer », cf.
+  ///    [_applyManualCryptoValuations], qui rafraîchit [_preview]) puis
+  ///    retourne ce NOUVEL aperçu — jamais l'ancien, sans quoi la
+  ///    confirmation qui suit journaliserait sur un état déjà obsolète.
+  ///  - « Importer sans valoriser » / « Importer quand même » : [preview] tel
+  ///    quel, comportement historique (échanges non valorisés muets).
+  ///  - Annuler : `null`, aucune confirmation ne doit avoir lieu.
+  Future<ImportPreview?> _guardUnvaluedExchangesBeforeConfirm(
+    ImportPreview preview,
+  ) async {
+    if (preview.unvaluedExchanges.isEmpty) return preview;
+    final l10n = AppLocalizations.of(context)!;
+    final hasApplicable = preview.unvaluedExchanges
+        .any(_unvaluedExchangeIsApplicable);
+
+    final action = await showDialog<_UnvaluedGuardAction>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.importUnvaluedGuardTitle),
+        content: Text(
+          l10n.importUnvaluedGuardMessage(preview.unvaluedExchanges.length),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(dialogContext, _UnvaluedGuardAction.cancel),
+            child: Text(l10n.cancel),
+          ),
+          if (hasApplicable)
+            TextButton(
+              onPressed: () => Navigator.pop(
+                dialogContext,
+                _UnvaluedGuardAction.importWithoutValuation,
+              ),
+              child: Text(l10n.importUnvaluedGuardImportAnywayButton),
+            ),
+          FilledButton(
+            onPressed: () => Navigator.pop(
+              dialogContext,
+              hasApplicable
+                  ? _UnvaluedGuardAction.valuateFirst
+                  : _UnvaluedGuardAction.importWithoutValuation,
+            ),
+            child: Text(
+              hasApplicable
+                  ? l10n.importUnvaluedGuardValuateButton
+                  : l10n.importUnvaluedGuardImportAnywayNoneApplicableButton,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    switch (action) {
+      case _UnvaluedGuardAction.valuateFirst:
+        await _applyManualCryptoValuations();
+        // Échec de la valorisation (panne réseau — [_applyManualCryptoValuations]
+        // laisse alors [_preview] inchangé) : une entrée APPLICABLE demeure,
+        // preuve que rien n'a été appliqué. L'utilisateur vient de demander
+        // « Valoriser puis importer » — enchaîner la confirmation sur l'aperçu
+        // qu'il a précisément refusé serait l'import silencieux que ce filet
+        // existe pour empêcher. On reste sur l'écran (l'état d'erreur du
+        // panneau est visible, il peut réessayer). Après un APPLY réussi, les
+        // entrées restantes (saisie invalide, sans choix, refusées
+        // structurelles) ne sont jamais applicables : ce prédicat ne bloque
+        // donc que l'échec.
+        final refreshed = _preview;
+        if (refreshed == null ||
+            refreshed.unvaluedExchanges.any(_unvaluedExchangeIsApplicable)) {
+          return null;
+        }
+        return refreshed;
+      case _UnvaluedGuardAction.importWithoutValuation:
+        return preview;
+      case _UnvaluedGuardAction.cancel:
+      case null:
+        return null;
+    }
+  }
+
   Future<void> _confirmImport() async {
-    final preview = _preview;
-    if (preview == null) return;
+    final initialPreview = _preview;
+    if (initialPreview == null) return;
+
+    final preview =
+        await _guardUnvaluedExchangesBeforeConfirm(initialPreview);
+    if (preview == null || !mounted) return;
+
     final l10n = AppLocalizations.of(context)!;
 
     setState(() => _confirming = true);

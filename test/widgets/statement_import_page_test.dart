@@ -131,12 +131,32 @@ class _FakeApplyManualValuationsController extends AccountController {
   final ImportPreview? result;
   Map<String, String>? capturedEurByImportKey;
 
+  /// Aperçu effectivement transmis à `confirmStatementImport` (filet de
+  /// confirmation « échanges à valoriser », retour auteur drive — capturé pour
+  /// vérifier que « Valoriser puis importer » confirme bien le NOUVEL aperçu
+  /// rafraîchi par [applyManualCryptoValuations], jamais l'ancien. Court-circuite
+  /// l'écriture réelle, même motif que [_FakeVerifyController].
+  ImportPreview? capturedConfirmPreview;
+  bool confirmCalled = false;
+
   @override
   Future<ImportPreview?> applyManualCryptoValuations(
     Map<String, String> eurByImportKey,
   ) async {
     capturedEurByImportKey = eurByImportKey;
     return result;
+  }
+
+  @override
+  Future<String?> confirmStatementImport(
+    ImportPreview preview, {
+    required String accountId,
+    Set<String> replaceImportKeys = const {},
+    bool journalizeUnbalancedInternalTransfers = false,
+  }) async {
+    confirmCalled = true;
+    capturedConfirmPreview = preview;
+    return null;
   }
 }
 
@@ -2340,6 +2360,260 @@ void main() {
       // dédié) — vue filtrée, jamais une exclusion.
       expect(find.text('Valorisé d\'après le relevé'), findsNWidgets(4));
       expect(find.text('Valorisé manuellement'), findsNWidgets(2));
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Chantier B17 (retour auteur, drive, verbatim : « Je ne suis pas convaincu par ce
+  // bouton [Appliquer], je préférerais un contrôle sur un clic sur le bouton
+  // Importer ») — filet de confirmation quand l'aperçu porte encore des échanges à
+  // valoriser NON appliqués : sans lui, confirmer directement les laisse muets
+  // (aucun mouvement émis, positions fausses en silence).
+  // ---------------------------------------------------------------------------
+
+  group('StatementImportPage — filet de confirmation « échanges à valoriser »'
+      ' (B17)', () {
+    testWidgets(
+        'entrée APPLICABLE (choix présélectionné) non appliquée → dialogue à '
+        '3 issues ; « Valoriser puis importer » applique PUIS confirme le '
+        'NOUVEL aperçu rafraîchi (pas l\'ancien)', (tester) async {
+      final controller = _FakeApplyManualValuationsController(
+        // Aperçu APRÈS valorisation : plus aucun échange en attente, un
+        // second mouvement finalisé est venu s'ajouter — sert à distinguer
+        // sans ambiguïté ce résultat de l'aperçu initial (1 seul mouvement).
+        result: ImportPreview(
+          toCreate: [
+            _cryptoBuyMovement(),
+            _cryptoMovementValued('tx-valued', 'ref:acc:VALUED', 'manual'),
+          ],
+        ),
+      );
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      // Dialogue à 3 issues, libellé concret sur l'enjeu.
+      expect(find.text('Échanges non valorisés'), findsOneWidget);
+      expect(
+        find.text(
+          '1 échange(s) à valoriser n\'ont pas été appliqués. Sans '
+          'valorisation, ces échanges ne créeront aucun mouvement et vos '
+          'positions seront provisoires.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(FilledButton, 'Valoriser puis importer'),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(TextButton, 'Importer sans valoriser'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextButton, 'Annuler'), findsOneWidget);
+      expect(controller.confirmCalled, isFalse);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Valoriser puis importer'));
+      await tester.pumpAndSettle();
+
+      // Valorise à la valeur par défaut du choix (« reçue »), exactement
+      // comme un clic direct sur « Appliquer » sans interaction.
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '207.5'},
+      );
+      // La confirmation porte sur le NOUVEL aperçu (2 mouvements, aucun
+      // échange en attente) — jamais l'ancien (1 mouvement, 1 échange).
+      expect(controller.confirmCalled, isTrue);
+      expect(controller.capturedConfirmPreview?.toCreate.length, 2);
+      expect(controller.capturedConfirmPreview?.unvaluedExchanges, isEmpty);
+    });
+
+    testWidgets(
+        '« Valoriser puis importer » avec valorisation en ÉCHEC (contrôleur '
+        'renvoie null, aperçu inchangé) → AUCUNE confirmation : on reste sur '
+        'l\'écran, jamais d\'import silencieux de l\'aperçu refusé',
+        (tester) async {
+      // `result: null` = échec réseau du contrôleur : `_preview` reste
+      // inchangé, l'entrée applicable demeure — le filet doit alors ANNULER
+      // la confirmation (cf. garde de `_guardUnvaluedExchangesBeforeConfirm`).
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.widgetWithText(FilledButton, 'Valoriser puis importer'));
+      await tester.pumpAndSettle();
+
+      // La valorisation a bien été TENTÉE (même chemin que « Appliquer »)…
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '207.5'},
+      );
+      // …mais son échec bloque la confirmation : rien n'est importé, l'écran
+      // d'aperçu (bouton « Confirmer l'import ») est toujours là.
+      expect(controller.confirmCalled, isFalse);
+      expect(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        '« Importer sans valoriser » confirme directement, SANS appeler '
+        'applyManualCryptoValuations — l\'aperçu confirmé est bien l\'ANCIEN '
+        '(échange toujours en attente)', (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(TextButton, 'Importer sans valoriser'));
+      await tester.pumpAndSettle();
+
+      expect(controller.capturedEurByImportKey, isNull);
+      expect(controller.confirmCalled, isTrue);
+      expect(controller.capturedConfirmPreview?.toCreate.length, 1);
+      expect(
+        controller.capturedConfirmPreview?.unvaluedExchanges.length,
+        1,
+      );
+    });
+
+    testWidgets('Annuler → ni valorisation ni confirmation, retour à l\'écran',
+        (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(TextButton, 'Annuler'));
+      await tester.pumpAndSettle();
+
+      expect(controller.capturedEurByImportKey, isNull);
+      expect(controller.confirmCalled, isFalse);
+      // Toujours sur l'étape aperçu, le bouton de confirmation est là.
+      expect(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+        findsOneWidget,
+      );
+      expect(find.text('Échanges non valorisés'), findsNothing);
+    });
+
+    testWidgets(
+        'aucun échange à valoriser → confirmation directe, AUCUN dialogue '
+        '(non-régression du chemin historique)', (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(toCreate: [_cryptoBuyMovement()]);
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Échanges non valorisés'), findsNothing);
+      expect(controller.confirmCalled, isTrue);
+      expect(controller.capturedConfirmPreview?.toCreate.length, 1);
+    });
+
+    testWidgets(
+        'entrées présentes mais AUCUNE applicable (clé partagée + jambe '
+        'fiat) → variante à 2 issues, SANS « Valoriser puis importer »',
+        (tester) async {
+      final controller = _FakeApplyManualValuationsController();
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedAmbiguousGroupFixture(),
+          _unvaluedFxUnavailableFiatLegFixture(),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.ensureVisible(
+        find.widgetWithText(FilledButton, 'Confirmer l\'import'),
+      );
+      await tester.tap(find.widgetWithText(FilledButton, 'Confirmer l\'import'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Échanges non valorisés'), findsOneWidget);
+      expect(
+        find.widgetWithText(FilledButton, 'Valoriser puis importer'),
+        findsNothing,
+      );
+      expect(
+        find.widgetWithText(TextButton, 'Importer sans valoriser'),
+        findsNothing,
+      );
+      expect(
+        find.widgetWithText(FilledButton, 'Importer quand même'),
+        findsOneWidget,
+      );
+      expect(find.widgetWithText(TextButton, 'Annuler'), findsOneWidget);
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Importer quand même'));
+      await tester.pumpAndSettle();
+
+      expect(controller.capturedEurByImportKey, isNull);
+      expect(controller.confirmCalled, isTrue);
+      expect(
+        controller.capturedConfirmPreview?.unvaluedExchanges.length,
+        2,
+      );
     });
   });
 }
