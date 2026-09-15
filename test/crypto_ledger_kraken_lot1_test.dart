@@ -398,6 +398,43 @@ void main() {
     });
 
     test(
+        'drive lot 1 : retrait ANNULÉ (jambe miroir sous le même refid, frais '
+        'remboursé en négatif) → net nul par actif, les deux lignes rejetées, '
+        'aucune sortie réelle ni écart de quantité', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RD1', time: '2024-11-01 08:00:00', type: 'deposit',
+          asset: 'NNN', amount: '100', subclass: 'crypto');
+      // Retrait RÉEL (le frais en nature sort aussi : net 11).
+      b.leg(refid: 'RW1', time: '2024-11-02 08:00:00', type: 'withdrawal',
+          asset: 'NNN', amount: '-10', fee: '1', subclass: 'crypto');
+      // Retrait ANNULÉ — l'idiome Kraken : débit puis re-crédit MIROIR sous
+      // le MÊME refid, frais remboursé (négatif).
+      b.leg(refid: 'RW2', time: '2024-11-03 08:00:00', type: 'withdrawal',
+          asset: 'NNN', amount: '-49', fee: '1', subclass: 'crypto');
+      b.leg(refid: 'RW2', time: '2024-11-03 09:00:00', type: 'withdrawal',
+          asset: 'NNN', amount: '49', fee: '-1', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final rejected = plan.movements.where((m) => m.isRejected).toList();
+      expect(rejected, hasLength(2));
+      expect(rejected.map((m) => m.rejectReason).toSet(),
+          equals({'cryptoZeroNetMovement'}));
+      // Le retrait RÉEL, lui, sort toujours.
+      final out = plan.movements
+          .where((m) =>
+              !m.isRejected &&
+              m.transaction?.kind == TransactionKind.transferOut)
+          .toList();
+      expect(out, hasLength(1));
+      expect(out.single.transaction!.quantity, equals('11'));
+      // AVANT le correctif : la jambe négative sortait pour de vrai et la
+      // positive était rejetée (signe contredisant le type) — la projection
+      // déduisait une sortie jamais advenue, écart fantôme sur NNN.
+      expect(plan.quantityGaps, isEmpty);
+      expect(plan.chainRuptures, isEmpty);
+    });
+
+    test(
         'B-2 : échange avec jambe fiat ÉTRANGÈRE à la devise du compte (USD '
         'sur un compte EUR) → en attente de valorisation, JAMAIS écrite au '
         'pair', () {

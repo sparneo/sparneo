@@ -398,8 +398,24 @@ class CryptoLedgerNormalizer {
 
         case CryptoLedgerAction.depositIn:
         case CryptoLedgerAction.withdrawalOut:
+          // Opération ANNULÉE (drive lot 1) : Kraken re-crédite un retrait
+          // échoué sous le MÊME refid (jambe miroir, frais remboursé en
+          // négatif). Prises isolément, la jambe négative sortirait pour de
+          // vrai et la positive serait rejetée (signe contredisant le type)
+          // — projection faussée d'autant. Le net à zéro PAR ACTIF sous un
+          // refid commun identifie l'annulation sans rien deviner : même
+          // motif de rejet que la jambe individuelle nette nulle.
+          final netByRawAsset = <String, Decimal>{};
+          for (final leg in activeLegs) {
+            netByRawAsset[leg.rawAsset] =
+                (netByRawAsset[leg.rawAsset] ?? Decimal.zero) + leg.net;
+          }
           final roleOccurrences = <String, int>{};
           for (final leg in activeLegs) {
+            if (netByRawAsset[leg.rawAsset] == Decimal.zero) {
+              reject(leg, 'cryptoZeroNetMovement');
+              continue;
+            }
             _processDepositOrWithdrawal(
               leg,
               refid: refid,

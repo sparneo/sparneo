@@ -1760,10 +1760,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
           // EXACT d'un ré-import où toutes les lignes non-doublons sont des
           // doublons probables (constaté : 1314 doublons + 22 dépôts).
           if (_importProbableDuplicates && preview.probableDuplicates.isNotEmpty)
-            FilledButton(
-              onPressed: _confirming ? null : _confirmImport,
-              child: Text(l10n.importConfirmButton),
-            )
+            _confirming
+                ? const Center(child: CircularProgressIndicator())
+                : FilledButton(
+                    onPressed: _confirmImport,
+                    child: Text(l10n.importConfirmButton),
+                  )
           else
             FilledButton(
               onPressed: () => Navigator.pop(context, false),
@@ -1828,13 +1830,20 @@ class _StatementImportPageState extends State<StatementImportPage> {
         const SizedBox(height: 24),
         // Écrit directement dans le journal si aucun actif neuf ne reste à
         // résoudre (P2.1) : le libellé le dit alors (« Confirmer l'import »),
-        // sinon « Continuer » mène à l'étape de résolution.
-        FilledButton(
-          onPressed: needsResolve ? _enterResolveAssets : _confirmImport,
-          child: Text(
-            needsResolve ? l10n.importContinueButton : l10n.importConfirmButton,
-          ),
-        ),
+        // sinon « Continuer » mène à l'étape de résolution. Pendant
+        // l'écriture (potentiellement longue : ~1 500 mouvements sur un
+        // relevé crypto, retour du drive lot 1), même indicateur d'attente
+        // que l'étape de résolution — sans lui, le clic semble sans effet.
+        _confirming
+            ? const Center(child: CircularProgressIndicator())
+            : FilledButton(
+                onPressed: needsResolve ? _enterResolveAssets : _confirmImport,
+                child: Text(
+                  needsResolve
+                      ? l10n.importContinueButton
+                      : l10n.importConfirmButton,
+                ),
+              ),
       ],
     );
   }
@@ -2301,6 +2310,24 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 ),
               ],
             ),
+            // Import crypto PARTIEL : tant que des échanges entre
+            // crypto-monnaies attendent leur estimation (groupe « Échanges à
+            // valoriser », lot 2), les positions ci-dessous n'incluent pas
+            // leurs sorties par conversion — un compte réellement vidé par
+            // conversions AFFICHE encore ses achats. Le dire ICI, dans le
+            // panneau que l'utilisateur lit comme un état final (retour
+            // auteur, drive du lot 1) — pas seulement dans le groupe dédié.
+            if (preview.unvaluedExchanges.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 6),
+                child: Text(
+                  l10n.importDeltaProvisionalCaveat(
+                    preview.unvaluedExchanges.length,
+                  ),
+                  style: theme.textTheme.bodySmall
+                      ?.copyWith(color: theme.colorScheme.error),
+                ),
+              ),
             const SizedBox(height: 8),
             for (final d in securityDeltas)
               if (legacy.contains(d.symbol))
@@ -3047,6 +3074,22 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importRejectMissingAmount;
       case 'corporateActionReview':
         return l10n.importRejectCorporateActionReview;
+      case 'unknownCryptoAction':
+        return l10n.importRejectUnknownCryptoAction;
+      case 'cryptoManualReview':
+        return l10n.importRejectCryptoManualReview;
+      case 'cryptoZeroNetMovement':
+        return l10n.importRejectCryptoZeroNetMovement;
+      case 'cryptoAmbiguousDirection':
+        return l10n.importRejectCryptoAmbiguousDirection;
+      case 'cryptoForeignFiatUnsupported':
+        return l10n.importRejectCryptoForeignFiatUnsupported;
+      case 'ambiguousExchangeGroup':
+        return l10n.importRejectAmbiguousExchangeGroup;
+      case 'mixedCryptoActionsInGroup':
+        return l10n.importRejectMixedCryptoActionsInGroup;
+      case 'cryptoMigrationNotBalanced':
+        return l10n.importRejectCryptoMigrationNotBalanced;
       default:
         return l10n.importRejectGeneric;
     }

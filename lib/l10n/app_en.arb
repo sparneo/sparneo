@@ -2332,6 +2332,13 @@
   "@importDeltaCorporateActionCaveat": {
     "description": "Caveat shown near the delta when there are corporate-action rejects not reflected in the projected quantities"
   },
+  "importDeltaProvisionalCaveat": "Provisional positions: {count} crypto-to-crypto exchange(s) still need a value — disposals made through those exchanges are not deducted yet.",
+  "@importDeltaProvisionalCaveat": {
+    "description": "Caveat shown at the top of the delta panel when unvalued crypto exchanges are excluded from the projection: the displayed positions overstate holdings that exited via conversions (author feedback, lot 1 drive)",
+    "placeholders": {
+      "count": {}
+    }
+  },
   "importCorporateActionGroupTitle": "Corporate actions to review ({count})",
   "@importCorporateActionGroupTitle": {
     "description": "Section title for rejected corporate-action rows (splits/mergers) left for manual review",
@@ -2429,6 +2436,38 @@
   "importRejectGeneric": "Unknown reason",
   "@importRejectGeneric": {
     "description": "Fallback reject reason label for an unrecognized reason code"
+  },
+  "importRejectUnknownCryptoAction": "Operation kind not listed by the profile (unknown type/subtype pair)",
+  "@importRejectUnknownCryptoAction": {
+    "description": "Reject reason label (crypto ledger import)"
+  },
+  "importRejectCryptoManualReview": "Listed kind but ambiguous by nature — review manually",
+  "@importRejectCryptoManualReview": {
+    "description": "Reject reason label (crypto ledger import)"
+  },
+  "importRejectCryptoZeroNetMovement": "Zero net movement — cancelled by the platform or without effect",
+  "@importRejectCryptoZeroNetMovement": {
+    "description": "Reject reason label (crypto ledger import), e.g. a withdrawal reversed under the same reference"
+  },
+  "importRejectCryptoAmbiguousDirection": "Amount sign contradicts the type (negative deposit or positive withdrawal)",
+  "@importRejectCryptoAmbiguousDirection": {
+    "description": "Reject reason label (crypto ledger import)"
+  },
+  "importRejectCryptoForeignFiatUnsupported": "Fiat currency foreign to the account — no conversion available, never written at par",
+  "@importRejectCryptoForeignFiatUnsupported": {
+    "description": "Reject reason label (crypto ledger import)"
+  },
+  "importRejectAmbiguousExchangeGroup": "Ambiguous exchange group — unexpected legs, re-enter manually",
+  "@importRejectAmbiguousExchangeGroup": {
+    "description": "Reject reason label (crypto ledger import)"
+  },
+  "importRejectMixedCryptoActionsInGroup": "Operation mixing different kinds — re-enter manually if it changes your quantities",
+  "@importRejectMixedCryptoActionsInGroup": {
+    "description": "Reject reason label (crypto ledger import), e.g. Kraken delisting conversion bundling deallocation/conversion/allocation under one reference"
+  },
+  "importRejectCryptoMigrationNotBalanced": "Unbalanced asset migration — source and target quantities differ",
+  "@importRejectCryptoMigrationNotBalanced": {
+    "description": "Reject reason label (crypto ledger import)"
   },
 
   "importStep4Heading": "Resolve new assets",
