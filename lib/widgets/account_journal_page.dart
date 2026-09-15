@@ -27,13 +27,26 @@ import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 /// - Si [notBefore] est null, aucune borne basse sur la date.
 /// - Les transactions exactement à la date [notBefore] sont incluses.
 /// - L'ordre d'entrée est préservé.
+///
+/// CAS SPÉCIAL — [kind] == [TransactionKind.withdrawal] matche AUSSI
+/// [TransactionKind.transferOut] (décision auteur, drive B16, non
+/// rediscutable) : l'import crypto journalise un retrait ON-CHAIN (crypto
+/// envoyée hors du wallet suivi) en NATURE, donc en `transferOut` (cf.
+/// asset_transaction.dart), jamais en `withdrawal` (réservé au cash). Sans ce
+/// cas spécial, la puce « Retrait » d'un compte crypto resterait vide malgré
+/// des dizaines de retraits réels dans le relevé. Aucun autre kind ne
+/// bénéficie de cet élargissement : `kind: buy` par exemple ne remonte jamais
+/// un `transferOut`, seulement les `buy`.
 List<AssetTransaction> filterJournal(
   List<AssetTransaction> txs, {
   TransactionKind? kind,
   DateTime? notBefore,
 }) {
   return txs.where((tx) {
-    final kindOk = kind == null || tx.kind == kind;
+    final kindOk = kind == null ||
+        tx.kind == kind ||
+        (kind == TransactionKind.withdrawal &&
+            tx.kind == TransactionKind.transferOut);
     final dateOk = notBefore == null || !tx.date.isBefore(notBefore);
     return kindOk && dateOk;
   }).toList();

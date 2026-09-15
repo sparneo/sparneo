@@ -46,8 +46,17 @@ void main() {
   final dividend1 = _tx(id: 'dv1', kind: TransactionKind.dividend, date: d60ago, symbol: 'MSFT');
   final deposit1 = _tx(id: 'dp1', kind: TransactionKind.deposit, date: d400ago);
   final withdrawal1 = _tx(id: 'w1', kind: TransactionKind.withdrawal, date: d60ago);
+  // Retrait ON-CHAIN (import crypto B16) : journalisé en NATURE, donc en
+  // transferOut, jamais en withdrawal — cf. cas spécial dans filterJournal.
+  final transferOut1 = _tx(
+    id: 'to1',
+    kind: TransactionKind.transferOut,
+    date: d60ago,
+    symbol: 'BTC-EUR',
+  );
 
   final allTxs = [buy1, sell1, dividend1, deposit1, withdrawal1];
+  final allTxsWithTransferOut = [...allTxs, transferOut1];
 
   // -------------------------------------------------------------------------
   group('filterJournal — aucun filtre', () {
@@ -94,6 +103,37 @@ void main() {
       final result = filterJournal(onlyBuy, kind: TransactionKind.sell);
       expect(result, isEmpty);
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Décision auteur, drive B16 : la puce « Retrait » matche AUSSI transferOut
+  // (retrait on-chain journalisé en nature à l'import crypto).
+  group('filterJournal — cas spécial withdrawal/transferOut (import crypto B16)', () {
+    test(
+      'kind: withdrawal remonte le withdrawal espèces ET le transferOut '
+      'titre, aucun autre kind',
+      () {
+        final result = filterJournal(
+          allTxsWithTransferOut,
+          kind: TransactionKind.withdrawal,
+        );
+        expect(result, containsAll([withdrawal1, transferOut1]));
+        expect(result, hasLength(2));
+      },
+    );
+
+    test(
+      'un autre kind (buy) ne fait PAS fuiter les transferOut : le cas '
+      'spécial est strictement réservé à withdrawal',
+      () {
+        final result = filterJournal(
+          allTxsWithTransferOut,
+          kind: TransactionKind.buy,
+        );
+        expect(result, [buy1]);
+        expect(result, isNot(contains(transferOut1)));
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
