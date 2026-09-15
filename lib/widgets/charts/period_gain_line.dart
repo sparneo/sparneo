@@ -17,9 +17,11 @@ import 'package:portfolio_tracker/utils/localized_labels.dart';
 /// chiffrée. La carte de valeur ne porte plus que ce qui ne dépend d'aucun
 /// réglage : la valeur totale et le gain total depuis l'origine.
 ///
-/// Paramètres : - [amount] : gain absolu sur la période (null = rien n'est rendu).
-/// - [percent] : `%` associé (null = « — », cf. `l10n.notAvailable`). -
-/// [selectedPeriod] : période affichée (J/1M/…/Max) — sert à la fois de
+/// Paramètres : - [amount] : gain absolu sur la période (null OU non fini = rien
+///                        n'est rendu, cf. ceinture anti-NaN dans [build]).
+/// - [percent] : `%` associé (null ou non fini = « — », cf.
+///                        `l10n.notAvailable`).
+/// - [selectedPeriod] : période affichée (J/1M/…/Max) — sert à la fois de
 ///                        libellé (mode performance) et de portée temporelle
 ///                        (mode réel, cf. [netOfContributions]).
 /// - [percentAnnualized]: mode réel uniquement (B7) — SECOND `%` (rendement
@@ -63,14 +65,26 @@ class PeriodGainLine extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (amount == null) return const SizedBox.shrink();
+    // CEINTURE ANTI-NaN (bug : un montant non FINI n'est pas une mesure —
+    // [Formatters.formatEurSigned] en tirait « -NaN » (le test de signe `NaN >= 0`
+    // est faux, d'où le signe négatif absurde). Même traitement qu'un montant absent
+    // : la ligne entière disparaît, jamais un zéro qui affirmerait faussement
+    // l'absence de gain. Les appelants ont leur propre garde
+    // ([HistoryAggregator.computeRealGains]) ; celle-ci protège le widget de TOUT
+    // appelant.
+    if (amount == null || !amount!.isFinite) return const SizedBox.shrink();
 
     final l10n = AppLocalizations.of(context)!;
     final isPositive = amount! >= 0;
     final changeColor = AppColors.gainLoss(context, isPositive);
 
-    final percentText = percent != null
-        ? (percentAnnualized != null
+    // Même ceinture sur les pourcentages : non fini ≡ absent (« — »), et pas
+    // d'annualisé entre parenthèses.
+    final hasPercent = percent != null && percent!.isFinite;
+    final hasAnnualized =
+        percentAnnualized != null && percentAnnualized!.isFinite;
+    final percentText = hasPercent
+        ? (hasAnnualized
             ? l10n.chartPercentWithAnnualized(
                 Formatters.formatPercentFr(percent!),
                 Formatters.formatPercentFr(percentAnnualized!),

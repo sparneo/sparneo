@@ -33,6 +33,38 @@ void main() {
     expect(find.byIcon(Icons.trending_down), findsNothing);
   });
 
+  // Régression : un `amount` NaN (série corrompue en amont) s'affichait « -NaN »
+  // — `Formatters.formatEurSigned` déduit le signe d'un `NaN >= 0` toujours faux.
+  // Un NaN n'est pas une mesure : la ligne entière disparaît, exactement comme
+  // pour un montant absent.
+  testWidgets('amount NaN : rien n\'est rendu (jamais « -NaN »)', (
+    tester,
+  ) async {
+    await tester.pumpWidget(_host(const PeriodGainLine(
+      amount: double.nan,
+      selectedPeriod: ChartPeriod.max,
+      netOfContributions: true,
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('NaN'), findsNothing);
+    expect(find.byIcon(Icons.trending_down), findsNothing);
+    expect(find.textContaining('hors apports'), findsNothing);
+  });
+
+  testWidgets('percent NaN : montant rendu, pourcentage « — »', (tester) async {
+    await tester.pumpWidget(_host(const PeriodGainLine(
+      amount: 150.50,
+      percent: double.nan,
+      percentAnnualized: double.nan,
+      selectedPeriod: ChartPeriod.month1,
+    )));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('NaN'), findsNothing);
+    expect(find.textContaining(RegExp(r'\+150,50\s€ · —')), findsOneWidget);
+  });
+
   testWidgets('variation positive → icône trending_up', (tester) async {
     await tester.pumpWidget(_host(const PeriodGainLine(
       amount: 150.50,

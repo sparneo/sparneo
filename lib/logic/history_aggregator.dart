@@ -1093,6 +1093,9 @@ class HistoryAggregator {
   ///   construction des appelants) : on refuse de deviner, tout `null`.
   /// - `N < 2` → pas de fenêtre, rien à comparer : tout `null`.
   /// - `N == 0` → tout `null`.
+  /// - `periodGain` NON FINI (NaN/±Infinity propagé par une série corrompue)
+  ///   → tout `null` : un NaN n'est pas une mesure, et l'afficher donnait « -NaN
+  ///   » sous le graphe (bug.
   /// - `denom <= 0` → `periodGainPercent` `null` (division par zéro/valeur non
   ///   significative), `periodGain` reste, lui, calculé.
   /// - Fenêtre à durée nulle (`t[fin] == t[début]`, ne devrait pas arriver
@@ -1184,6 +1187,17 @@ class HistoryAggregator {
 
     final periodGain = (values[n - 1] - values[start]) -
         (externalFlows[n - 1] - externalFlows[start]);
+    // CEINTURE ANTI-NaN (bug : une série corrompue (NaN/±Infinity quelque part dans
+    // [values] ou [externalFlows]) propage son NaN jusqu'ici — et « -NaN »
+    // s'affichait tel quel sous le graphe (`Formatters. formatEurSigned` rend le
+    // signe d'un `NaN >= 0` faux). Un gain non FINI n'est PAS une mesure : on rend
+    // `RealGains.empty` (tout `null`, la ligne disparaît), jamais `0.0` — qui
+    // affirmerait faussement « aucun gain ». Même politique que les gardes ci-dessus
+    // (séries de tailles incohérentes, fenêtre < 2 points) : refuser de deviner. La
+    // cause RACINE connue (dénominateur `Rational` hors dynamique du `double`) est
+    // corrigée à la source, cf. [rationalToDisplayDouble] — cette garde couvre le
+    // résidu (données déjà écrites, valeur non finie venue d'ailleurs).
+    if (!periodGain.isFinite) return RealGains.empty;
 
     final t0 = gridDates[start];
     final tn = gridDates.last;

@@ -116,8 +116,60 @@ class LedgerReplayResult {
   /// `null` (pas de PRU connu), comportement identique à l'avant-B* où une
   /// position sans PRU avait `averageBuyPrice == null`.
   double? get averagePrice => quantity > Decimal.zero && cost > Rational.zero
-      ? (cost / quantity.toRational()).toDouble()
+      ? rationalToDisplayDouble(cost / quantity.toRational())
       : null;
+}
+
+/// Échelle de troncature du repli de [rationalToDisplayDouble] — 12 décimales,
+/// même ordre que la précision des prix unitaires crypto émis à l'import
+/// (`CryptoLedgerNormalizer`, `scaleOnInfinitePrecision: 12`). Très au-delà de
+/// ce qu'un montant ou un PRU d'affichage exige.
+const int _displayScale = 12;
+final BigInt _displayScaleFactor = BigInt.from(10).pow(_displayScale);
+final double _displayScaleDivisor = math.pow(10, _displayScale).toDouble();
+
+/// Convertit un [Rational] EXACT du moteur en `double` d'AFFICHAGE, sans
+/// jamais produire de NaN.
+///
+/// ⚠️ PIÈGE (bug constaté sur un compte Kraken de 8,5 ans) :
+/// `Rational.toDouble()` (package `rational` 2.2.3) se réduit à `numerator /
+/// denominator`, division `BigInt / BigInt` qui convertit CHAQUE opérande en
+/// `double` AVANT de diviser. Dès que les deux dépassent la dynamique du `double`
+/// (~1,8 × 10³⁰⁸), le calcul devient `Infinity / Infinity`, c'est-à-dire **NaN**
+/// — silencieusement, sur une valeur pourtant parfaitement représentable
+/// (quelques milliers d'euros).
+///
+/// Or le dénominateur de la base de coût ENFLE à chaque sortie PARTIELLE :
+/// `runningCost × (qEff / runningQty)` (quote-part WAC d'une `sell` ou d'un
+/// `transferOut`) multiplie le dénominateur par une fraction irréductible qui,
+/// avec des quantités CRYPTO à 8-10 décimales, lui ajoute jusqu'à 10 chiffres
+/// à chaque fois. Passé ~35 sorties partielles sur UN MÊME symbole — banal sur
+/// un journal Kraken de plusieurs années (ventes, jambes `sell` des échanges
+/// crypto↔crypto, retraits on-chain `transferOut`) — TOUTE conversion en
+/// `double` de cette base rendait NaN, qui se propageait à [LedgerStep.
+/// costDelta] → courbe « Capital investi » (invisible : `fl_chart` ne trace
+/// rien d'un NaN, et la règle d'échelle l'écartait d'office) → `periodGain`
+/// (« -NaN » sous le graphe), ainsi qu'au PRU ([averagePrice]) et à la
+/// plus-value réalisée. Les titres ordinaires y échappaient : leurs quantités
+/// entières gardent un dénominateur trivial.
+///
+/// Chemin RAPIDE (tous les journaux ordinaires, valeur INCHANGÉE au bit près) :
+/// tant que les deux opérandes tiennent sous 2¹⁰²³, la division `BigInt/BigInt`
+/// est saine et l'on rend exactement ce que rendait `toDouble()`.
+///
+/// Repli (dénominateur ou numérateur hors dynamique) : troncature à
+/// [_displayScale] décimales AVANT division — `(num × 10¹²) ~/ den` ramène le
+/// dividende à l'ordre de grandeur de la valeur réelle, la division finale se
+/// fait en `double` sur des opérandes bornés. Une valeur RÉELLEMENT
+/// astronomique rend alors ±`Infinity` (fidèle), jamais NaN. L'arithmétique
+/// EXACTE, elle, reste intégralement en [Rational] dans [replayLedger] : cette
+/// troncature ne concerne que la sortie d'affichage.
+double rationalToDisplayDouble(Rational r) {
+  if (r.numerator.bitLength < 1024 && r.denominator.bitLength < 1024) {
+    return r.toDouble();
+  }
+  final scaled = (r.numerator * _displayScaleFactor) ~/ r.denominator;
+  return scaled.toDouble() / _displayScaleDivisor;
 }
 
 /// Parse une chaîne décimale en [Decimal] EXACT. Tolère la virgule décimale
@@ -293,7 +345,12 @@ LedgerReplayResult replayLedger(
           costBasisSold = runningCost * (qEff.toRational() / runningQty.toRational());
         }
 
-        realized += (proceeds.toRational() - costBasisSold).toDouble();
+        // Conversion d'AFFICHAGE protégée (cf. [rationalToDisplayDouble]) :
+        // `costBasisSold` hérite du dénominateur enflé de `runningCost`, un
+        // `toDouble()` nu y rendrait NaN passé quelques dizaines de ventes
+        // partielles crypto.
+        realized +=
+            rationalToDisplayDouble(proceeds.toRational() - costBasisSold);
         // Clamp ≥ 0 : ni stock ni base de coût négatifs en cas de survente.
         runningQty -= q;
         if (runningQty < Decimal.zero) runningQty = Decimal.zero;
@@ -365,7 +422,9 @@ LedgerReplayResult replayLedger(
         settlementCurrency: settlement,
         deltaCash: hasAmount ? amt : Decimal.zero,
         cashAfter: Map<String, Decimal>.unmodifiable(cash),
-        costDelta: (runningCost - costBeforeStep).toDouble(),
+        // Conversion d'AFFICHAGE protégée (cf. [rationalToDisplayDouble]) — la
+        // différence hérite du dénominateur enflé des deux bases de coût.
+        costDelta: rationalToDisplayDouble(runningCost - costBeforeStep),
         hasDeclaredUnitPrice:
             tx.unitPrice != null && tx.unitPrice!.trim().isNotEmpty,
       ));
