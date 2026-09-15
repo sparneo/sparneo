@@ -473,6 +473,167 @@ void main() {
     });
   });
 
+  group(
+      'CryptoValuationService.resolve — suggestions EUR (amendement drive '
+      'lot 2 (suite))', () {
+    test(
+        'écart > seuil, AUCUNE jambe stable → reste manuel motif spread, '
+        'AVEC les deux suggestions EUR EXACTES (taux mocké)', () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          _exchange(
+            importKey: 'ref:a1:RSUG1',
+            date: DateTime(2024, 1, 5),
+            usdPaid: '100',
+            usdReceived: '115', // écart +15 %, au-delà du seuil de 10 %.
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(resolution.valuations, isEmpty);
+      expect(resolution.manual, hasLength(1));
+      final m = resolution.manual.single;
+      expect(m.reason, equals(CryptoValuationManualReason.spread));
+      // 100 × 0,9 = 90 ; 115 × 0,9 = 103,5 — conversions EXACTES, même règle
+      // que l'étage 1 (point 4 de la cascade).
+      expect(m.suggestedPaidEur, equals(Decimal.parse('90')));
+      expect(m.suggestedReceivedEur, equals(Decimal.parse('103.5')));
+    });
+
+    test(
+        'motif unreadable (aucune jambe lisible) → AUCUNE suggestion, ZÉRO '
+        'appel réseau (rien à convertir)', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(_frankfurterBody({}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          _exchange(importKey: 'ref:a1:RSUG2', date: DateTime(2024, 1, 5)),
+        ]),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(0));
+      final m = resolution.manual.single;
+      expect(m.reason, equals(CryptoValuationManualReason.unreadable));
+      expect(m.suggestedPaidEur, isNull);
+      expect(m.suggestedReceivedEur, isNull);
+    });
+
+    test(
+        'motif foreignFiat (jambe fiat) → AUCUNE suggestion, ZÉRO appel '
+        'réseau', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(_frankfurterBody({}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          UnvaluedExchange(
+            kind: 'exchange',
+            date: DateTime(2024, 1, 5),
+            codePaid: 'USD',
+            quantityPaid: '100',
+            codeReceived: 'AAA',
+            quantityReceived: '2',
+            usdPaid: '100',
+            usdReceived: '100',
+            sourceLines: const [7],
+            importKey: 'ref:a1:RSUG3',
+            codePaidIsFiat: true,
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(0));
+      final m = resolution.manual.single;
+      expect(m.reason, equals(CryptoValuationManualReason.foreignFiat));
+      expect(m.suggestedPaidEur, isNull);
+      expect(m.suggestedReceivedEur, isNull);
+    });
+
+    test(
+        'écart > seuil MAIS jambe stable déclarée → repli 1-ter (valorisé, '
+        'PAS manuel) : aucune suggestion à produire, le cas ne s\'y prête '
+        'même pas (contrôle négatif de la cascade)', () async {
+      final rateService = ExchangeRateService.forTesting();
+      final mockClient = MockClient((request) async {
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve(
+          [
+            _exchange(
+              importKey: 'ref:a1:RSUG4',
+              date: DateTime(2024, 1, 5),
+              usdPaid: '100',
+              usdReceived: '115',
+            ),
+          ],
+          usdStableCodes: {'STB'},
+        ),
+        () => mockClient,
+      );
+
+      expect(resolution.manual, isEmpty);
+      expect(resolution.valuations, hasLength(1));
+    });
+
+    test(
+        'un échange sans suggestion (unreadable) N\'EMPÊCHE PAS la '
+        'récupération FX pour un autre échange en spread dans le MÊME appel '
+        '— une seule requête réseau pour les deux', () async {
+      final rateService = ExchangeRateService.forTesting();
+      var callCount = 0;
+      final mockClient = MockClient((request) async {
+        callCount++;
+        return http.Response(_frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+      final service = CryptoValuationService(exchangeService: rateService);
+
+      final resolution = await http.runWithClient(
+        () => service.resolve([
+          _exchange(importKey: 'ref:a1:RSUG5A', date: DateTime(2024, 1, 5)),
+          _exchange(
+            importKey: 'ref:a1:RSUG5B',
+            date: DateTime(2024, 1, 5),
+            usdPaid: '100',
+            usdReceived: '115',
+          ),
+        ]),
+        () => mockClient,
+      );
+
+      expect(callCount, equals(1));
+      final unreadable = resolution.manual
+          .firstWhere((m) => m.source.importKey == 'ref:a1:RSUG5A');
+      expect(unreadable.suggestedPaidEur, isNull);
+      final spread = resolution.manual
+          .firstWhere((m) => m.source.importKey == 'ref:a1:RSUG5B');
+      expect(spread.suggestedPaidEur, equals(Decimal.parse('90')));
+      expect(spread.suggestedReceivedEur, equals(Decimal.parse('103.5')));
+    });
+  });
+
   group('CryptoValuationService.resolve — M-1 (revue adversariale, mineur)', () {
     test('maxLegValuationSpread par défaut reste 0.10 (Kraken inchangé)', () async {
       final rateService = ExchangeRateService.forTesting();

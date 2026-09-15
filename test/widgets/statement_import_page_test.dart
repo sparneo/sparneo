@@ -33,6 +33,7 @@ import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/isin_search_hit.dart';
 import 'package:portfolio_tracker/services/market_data_service.dart'
     show IsinSearchException;
+import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/import/statement_import_page.dart';
 
 const _accountId = 'account-1';
@@ -346,6 +347,15 @@ UnvaluedExchange _unvaluedExchangeFixture() => UnvaluedExchange(
       importKey: 'ref:account-1:REFEXCH',
       manualReason: 'spread',
       valuationSpreadPct: '0.153',
+    );
+
+/// Même échange que [_unvaluedExchangeFixture], AVEC les deux suggestions EUR
+/// calculées par `CryptoValuationService` (amendement drive lot 2 (suite) —
+/// sert à exercer la ligne « Valeur cédée… » et les boutons « Utiliser… ».
+UnvaluedExchange _unvaluedExchangeFixtureWithSuggestions() =>
+    _unvaluedExchangeFixture().copyWith(
+      suggestedPaidEur: '180',
+      suggestedReceivedEur: '207.5',
     );
 
 /// Motif « unreadable » (aucune jambe USD lisible sur le relevé) — dépôt en
@@ -1901,6 +1911,101 @@ void main() {
       // à 2 (les deux entrées non résolues), le champ « spread » a disparu.
       expect(find.text('Échanges à valoriser (2)'), findsOneWidget);
       expect(find.byType(TextField), findsNWidgets(2));
+    });
+
+    // -------------------------------------------------------------------
+    // Amendement drive lot 2 (suite) : suggestions EUR en un clic sur une entrée
+    // motif `spread` — la ligne de suggestions ne se rend que quand elles existent,
+    // un tap sur « Utiliser… » PRÉREMPLIT le champ (sans rien appliquer tout seul),
+    // et « Appliquer » transmet bien ce montant au contrôleur.
+    // -------------------------------------------------------------------
+
+    testWidgets(
+        'suggestions EUR : la ligne et les deux boutons se rendent quand '
+        'elles existent, ABSENTS sinon (contrôle négatif)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      final paidLabel = Formatters.formatEur(180);
+      final receivedLabel = Formatters.formatEur(207.5);
+      expect(
+        find.text(
+          'Valeur cédée selon le relevé : $paidLabel · Valeur reçue : $receivedLabel',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(OutlinedButton, 'Utiliser $paidLabel'),
+        findsOneWidget,
+      );
+      expect(
+        find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'),
+        findsOneWidget,
+      );
+
+      // Contrôle négatif : la fixture SANS suggestions (même motif spread,
+      // même écart) ne rend NI la ligne NI les boutons.
+      await tester.pumpWidget(_host(ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixture()],
+      )));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Valeur cédée selon le relevé'), findsNothing);
+      expect(find.byType(OutlinedButton), findsNothing);
+    });
+
+    testWidgets(
+        'un tap sur « Utiliser… » PRÉREMPLIT le champ (rien d\'appliqué '
+        'tout seul) ; « Appliquer » transmet ENSUITE ce montant EXACT au '
+        'contrôleur', (tester) async {
+      final controller = _FakeApplyManualValuationsController(
+        result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
+      );
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixtureWithSuggestions()],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Champ vide avant tout tap.
+      expect(tester.widget<TextField>(find.byType(TextField).first).controller!.text, isEmpty);
+
+      final receivedLabel = Formatters.formatEur(207.5);
+      await tester.ensureVisible(
+        find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'),
+      );
+      await tester.tap(find.widgetWithText(OutlinedButton, 'Utiliser $receivedLabel'));
+      await tester.pump();
+
+      // Le champ est PRÉREMPLI, RIEN n'a encore été appliqué au contrôleur.
+      expect(
+        tester.widget<TextField>(find.byType(TextField).first).controller!.text,
+        equals('207.5'),
+      );
+      expect(controller.capturedEurByImportKey, isNull);
+
+      await tester.ensureVisible(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.tap(find.widgetWithText(FilledButton, 'Appliquer'));
+      await tester.pumpAndSettle();
+
+      expect(
+        controller.capturedEurByImportKey,
+        {'ref:account-1:REFEXCH': '207.5'},
+      );
     });
 
     testWidgets(

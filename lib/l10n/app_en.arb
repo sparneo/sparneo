@@ -2707,6 +2707,21 @@
   "@importUnvaluedApplyButton": {
     "description": "Button at the bottom of the 'exchanges to value' group that applies the EUR amounts entered so far, without waiting for final import confirmation"
   },
+  "importUnvaluedSuggestionLine": "Value given per the statement: {paidAmount} · Value received: {receivedAmount}",
+  "@importUnvaluedSuggestionLine": {
+    "description": "Amendment, drive review 09/15 (B16 lot 2): shown under the manual-valuation reason for a 'spread' entry whose two statement amounts could BOTH be converted to EUR (a resolved FX rate) — reads the two already-converted amounts so the user does not have to compute them by hand. Both placeholders are pre-formatted currency strings (Formatters.formatEur, 2 decimals, e.g. '1 234,56 €').",
+    "placeholders": {
+      "paidAmount": { "type": "String" },
+      "receivedAmount": { "type": "String" }
+    }
+  },
+  "importUnvaluedUseSuggestionButton": "Use {amount}",
+  "@importUnvaluedUseSuggestionButton": {
+    "description": "Amendment, drive review 09/15 (B16 lot 2): small button next to a suggested EUR value on a manual crypto-exchange valuation row — pre-fills the row's amount field with that value (a raw decimal string, not the formatted one) but applies nothing by itself, the user still has to press 'Apply'. Used twice per row (once per suggested value), with the same already-formatted amount shown in importUnvaluedSuggestionLine.",
+    "placeholders": {
+      "amount": { "type": "String" }
+    }
+  },
   "importCryptoFxUnavailableBanner": "The historical exchange rate service is unreachable — exchanges between crypto-currencies have been switched to manual entry. The rest of the statement is imported normally.",
   "@importCryptoFxUnavailableBanner": {
     "description": "Banner shown above the crypto groups when ImportPreview.cryptoFxUnavailable is true (doc 20 §5.1.7c) — explains why every crypto exchange landed in manual arbitration and reassures that the rest of the file (rewards, deposits/withdrawals, fiat-leg trades) was still imported"

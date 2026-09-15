@@ -1252,6 +1252,120 @@ void main() {
       expect(Decimal.parse(u.valuationSpreadPct!), equals(Decimal.parse('0.25')));
     });
 
+    // ------------------------------------------------------------------- Amendement
+    // drive lot 2 (suite) : suggestions EUR sur un échange resté manuel motif `spread`
+    // — bout-en-bout via
+    // `AccountController.previewStatementImport`/`applyManualCryptoValuations`, sans
+    // jamais rien valoriser automatiquement.
+    // -------------------------------------------------------------------
+
+    test(
+        'amendement drive lot 2 (suite) : spread > 10 % SANS repli '
+        'stable → les DEUX suggestions EUR EXACTES arrivent sur '
+        'preview.unvaluedExchanges (taux mocké)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-suggest-a';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      // Même relevé que le test « écart de spread » ci-dessus : AAA payé
+      // (200 USD) / STB reçu (250 USD), écart +25 % — STB n'est PAS dans la
+      // liste de confiance Kraken (USDT/USDC uniquement), aucun repli 1-ter.
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE2S', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE2S', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '250', subclass: 'stable_coin',
+          amountusd: '250');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.unvaluedExchanges, hasLength(1));
+      final u = preview.unvaluedExchanges.single;
+      expect(u.manualReason, equals('spread'));
+      // 200 × 0,9 = 180 (valeur cédée) ; 250 × 0,9 = 225 (valeur reçue) —
+      // conversions EXACTES, même règle que l'étage 1 automatique.
+      expect(Decimal.parse(u.suggestedPaidEur!), equals(Decimal.parse('180')));
+      expect(Decimal.parse(u.suggestedReceivedEur!), equals(Decimal.parse('225')));
+
+      // Rien n'a été appliqué automatiquement : toujours en attente.
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'AAA'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'STB'), isFalse);
+    });
+
+    test(
+        'amendement drive lot 2 (suite) : les suggestions EUR '
+        'survivent à une ré-application PARTIELLE — l\'entrée valorisée '
+        'disparaît, celle qui reste manuelle garde ses suggestions '
+        '(reportées depuis le cache, sans nouvel appel réseau)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-lot2-suggest-b';
+      await seedAccount(db, accountId);
+      final ctrl = await makeCtrl(db, accountId);
+
+      // Deux échanges DISTINCTS (refid différents), tous deux en spread >
+      // seuil sans repli stable.
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RE2SA', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'AAA', amount: '-2', subclass: 'crypto',
+          amountusd: '200');
+      b.leg(refid: 'RE2SA', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STB', amount: '250', subclass: 'stable_coin',
+          amountusd: '250');
+      b.leg(refid: 'RE2SB', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'BBB', amount: '-1', subclass: 'crypto',
+          amountusd: '100');
+      b.leg(refid: 'RE2SB', time: '2024-01-05 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'STC', amount: '120', subclass: 'stable_coin',
+          amountusd: '120');
+
+      final mockClient = MockClient((request) async {
+        return http.Response(frankfurterBody({'2024-01-05': 0.9}), 200);
+      });
+
+      final preview = await http.runWithClient(
+        () => ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId),
+        () => mockClient,
+      );
+
+      expect(preview.unvaluedExchanges, hasLength(2));
+      final keyA = preview.unvaluedExchanges
+          .firstWhere((u) => u.codePaid == 'AAA')
+          .importKey;
+      final entryB = preview.unvaluedExchanges
+          .firstWhere((u) => u.codePaid == 'BBB');
+      // 100 × 0,9 = 90 ; 120 × 0,9 = 108.
+      expect(Decimal.parse(entryB.suggestedPaidEur!), equals(Decimal.parse('90')));
+      expect(
+          Decimal.parse(entryB.suggestedReceivedEur!), equals(Decimal.parse('108')));
+
+      // Saisie manuelle SEULEMENT sur l'échange AAA/STB — SANS mock HTTP actif
+      // (aucune I/O, le plan et les suggestions restent en cache).
+      final applied = await ctrl.applyManualCryptoValuations({keyA: '225'});
+      expect(applied, isNotNull);
+
+      // AAA/STB a quitté le groupe manuel ; BBB/STC y reste, avec ses
+      // suggestions INCHANGÉES.
+      expect(applied!.unvaluedExchanges, hasLength(1));
+      final remaining = applied.unvaluedExchanges.single;
+      expect(remaining.codePaid, equals('BBB'));
+      expect(remaining.manualReason, equals('spread'));
+      expect(
+          Decimal.parse(remaining.suggestedPaidEur!), equals(Decimal.parse('90')));
+      expect(Decimal.parse(remaining.suggestedReceivedEur!),
+          equals(Decimal.parse('108')));
+    });
+
     test(
         'lot 2 amendement (drive) : spread > 10 % MAIS jambe USDT (liste de '
         'confiance Kraken) → repli étage 1-ter, sort dans les mouvements '

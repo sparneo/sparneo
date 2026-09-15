@@ -531,6 +531,8 @@
   "importUnvaluedReasonForeignFiat": "Échange impliquant une devise étrangère (ex. dollar) — non pris en charge pour l'instant, saisissez-le manuellement dans le journal si besoin.",
   "importUnvaluedAmountFieldLabel": "Montant (EUR)",
   "importUnvaluedApplyButton": "Appliquer",
+  "importUnvaluedSuggestionLine": "Valeur cédée selon le relevé : {paidAmount} · Valeur reçue : {receivedAmount}",
+  "importUnvaluedUseSuggestionButton": "Utiliser {amount}",
   "importCryptoFxUnavailableBanner": "Le service de taux de change historique est injoignable — les échanges entre crypto-monnaies sont passés en saisie manuelle. Le reste du relevé est importé normalement.",
   "importValuationSourceStatement": "Valorisé d'après le relevé",
   "importValuationSourceStableLeg": "Valorisé d'après la contrepartie en stablecoin dollar",

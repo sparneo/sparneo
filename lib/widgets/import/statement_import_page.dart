@@ -2155,6 +2155,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
                     style: theme.textTheme.bodySmall
                         ?.copyWith(color: theme.colorScheme.error),
                   ),
+                if (u.suggestedPaidEur != null || u.suggestedReceivedEur != null)
+                  _unvaluedSuggestionRow(l10n, key, u),
               ],
             ),
           ),
@@ -2183,6 +2185,78 @@ class _StatementImportPageState extends State<StatementImportPage> {
         ],
       ),
     );
+  }
+
+  /// Ligne de suggestions EUR (amendement drive lot 2 (suite) — rendue UNIQUEMENT
+  /// quand [CryptoValuationService] a pu convertir les deux valeurs du relevé
+  /// (motif `spread`, taux FX résolu) : les deux montants déjà formatés, et un
+  /// bouton par montant qui PRÉREMPLIT le champ de saisie EUR de [key] —
+  /// l'utilisateur doit toujours cliquer « Appliquer » ensuite, aucune valorisation
+  /// n'est écrite ici.
+  Widget _unvaluedSuggestionRow(
+    AppLocalizations l10n,
+    String key,
+    UnvaluedExchange u,
+  ) {
+    final paidLabel = _eurAmountLabel(u.suggestedPaidEur);
+    final receivedLabel = _eurAmountLabel(u.suggestedReceivedEur);
+    return Padding(
+      padding: const EdgeInsets.only(top: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (paidLabel != null && receivedLabel != null)
+            Text(l10n.importUnvaluedSuggestionLine(paidLabel, receivedLabel)),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              if (u.suggestedPaidEur != null && paidLabel != null)
+                OutlinedButton(
+                  onPressed: () =>
+                      _useSuggestedAmount(key, u.suggestedPaidEur!),
+                  child: Text(l10n.importUnvaluedUseSuggestionButton(paidLabel)),
+                ),
+              if (u.suggestedReceivedEur != null && receivedLabel != null)
+                OutlinedButton(
+                  onPressed: () =>
+                      _useSuggestedAmount(key, u.suggestedReceivedEur!),
+                  child: Text(
+                    l10n.importUnvaluedUseSuggestionButton(receivedLabel),
+                  ),
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Montant EUR formaté (2 décimales, symbole français) à partir de la
+  /// chaîne Decimal brute posée par [CryptoValuationService] — `null` si non
+  /// parsable (défensif, ne devrait jamais arriver pour une suggestion
+  /// produite par le service).
+  String? _eurAmountLabel(String? raw) {
+    if (raw == null) return null;
+    final v = double.tryParse(raw);
+    if (v == null) return null;
+    return Formatters.formatEur(v);
+  }
+
+  /// Écrit [suggestedEur] (chaîne Decimal brute, point décimal — cohérente
+  /// avec la validation de [_applyManualCryptoValuations], qui accepte aussi
+  /// bien le point que la virgule) dans le champ de saisie de [key] — un
+  /// clic sur « Utiliser… » ne fait QUE préremplir, il n'applique rien tout
+  /// seul (l'utilisateur reste maître du bouton « Appliquer »).
+  void _useSuggestedAmount(String key, String suggestedEur) {
+    final controller = _manualValuationControllers.putIfAbsent(
+      key,
+      () => TextEditingController(),
+    );
+    setState(() {
+      controller.text = suggestedEur;
+      _manualValuationInvalidKeys.remove(key);
+    });
   }
 
   /// Applique au contrôleur les montants EUR actuellement saisis dans le

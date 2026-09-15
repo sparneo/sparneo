@@ -73,6 +73,21 @@ class UnvaluedExchange {
   /// qu'il ait été valorisé malgré un léger écart ≤ 10 %). `null` sinon.
   final String? valuationSpreadPct;
 
+  /// Suggestions EUR calculées par [CryptoValuationService] pour un échange resté
+  /// manuel pour motif `'spread'` UNIQUEMENT (amendement drive lot 2 (suite) :
+  /// conversion EUR de CHACUNE des deux valeurs USD du relevé (même règle que
+  /// l'étage 1 : `V_usd × taux du jour avec repli antérieur`, Decimal exact), pour
+  /// que l'utilisateur choisisse l'une des deux EN UN CLIC plutôt que de la
+  /// calculer à la main — [suggestedPaidEur] pour [usdPaid], [suggestedReceivedEur]
+  /// pour [usdReceived]. `null` pour tout autre motif
+  /// (`unreadable`/`foreignFiat`/`ambiguousGroup`/ `fxUnavailable` : rien de fiable
+  /// à suggérer) — et `null` par défaut tant qu'aucune résolution n'a eu lieu,
+  /// exactement comme [manualReason]. Une SUGGESTION reste une suggestion : rien
+  /// n'est appliqué automatiquement, l'utilisateur doit toujours valider via le
+  /// bouton « Appliquer ».
+  final String? suggestedPaidEur;
+  final String? suggestedReceivedEur;
+
   /// `true` si [codePaid] (resp. [codeReceived]) est une jambe FIAT — TOUTE
   /// jambe fiat, pas seulement étrangère à la devise du compte (B-A,
   /// contre-vérification lot 2) : une jambe fiat DANS la devise du compte
@@ -107,20 +122,25 @@ class UnvaluedExchange {
     this.seq,
     this.manualReason,
     this.valuationSpreadPct,
+    this.suggestedPaidEur,
+    this.suggestedReceivedEur,
     this.codePaidIsFiat = false,
     this.codeReceivedIsFiat = false,
   });
 
-  /// Reconstruction PARTIELLE (même motif que `ImportPreview.copyWith`, I-3
-  /// revue adversariale lot 1) : sert à `AccountController` pour enrichir un
+  /// Reconstruction PARTIELLE (même motif que `ImportPreview.copyWith`, I-3 revue
+  /// adversariale lot 1) : sert à `AccountController` pour enrichir un
   /// `UnvaluedExchange` issu du moteur PUR avec le résultat de la résolution
-  /// (`manualReason`/[valuationSpreadPct]) SANS reconstruire un objet à la
-  /// main — un constructeur manuel omettrait silencieusement [seq] ou tout
-  /// futur champ (leçon I-3 lot 1, réappliquée à [codePaidIsFiat]/
-  /// [codeReceivedIsFiat] au passage — B-A, contre-vérification lot 2).
+  /// (`manualReason`/[valuationSpreadPct]) SANS reconstruire un objet à la main —
+  /// un constructeur manuel omettrait silencieusement [seq] ou tout futur champ
+  /// (leçon I-3 lot 1, réappliquée à [codePaidIsFiat]/ [codeReceivedIsFiat] au
+  /// passage — B-A, contre-vérification lot 2 —, puis à
+  /// [suggestedPaidEur]/[suggestedReceivedEur] (amendement drive lot 2 (suite).
   UnvaluedExchange copyWith({
     String? manualReason,
     String? valuationSpreadPct,
+    String? suggestedPaidEur,
+    String? suggestedReceivedEur,
   }) =>
       UnvaluedExchange(
         kind: kind,
@@ -136,6 +156,9 @@ class UnvaluedExchange {
         seq: seq,
         manualReason: manualReason ?? this.manualReason,
         valuationSpreadPct: valuationSpreadPct ?? this.valuationSpreadPct,
+        suggestedPaidEur: suggestedPaidEur ?? this.suggestedPaidEur,
+        suggestedReceivedEur:
+            suggestedReceivedEur ?? this.suggestedReceivedEur,
         codePaidIsFiat: codePaidIsFiat,
         codeReceivedIsFiat: codeReceivedIsFiat,
       );

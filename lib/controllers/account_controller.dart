@@ -300,12 +300,21 @@ class AccountController extends ChangeNotifier {
   final Map<String, CryptoValuation> _lastCryptoValuations = {};
 
   /// Motif ORIGINAL de chaque échange resté manuel (`unreadable`/`spread`/
-  /// `fxUnavailable`), posé UNE SEULE FOIS par [_previewCryptoImport] (le
-  /// motif ne dépend que des jambes du relevé, jamais d'une saisie manuelle
-  /// ultérieure) — reporté tel quel par [applyManualCryptoValuations] sur les
-  /// entrées qui restent manuelles après une saisie partielle.
-  final Map<String, ({String reason, String? spreadPct})>
-      _lastCryptoManualReasons = {};
+  /// `fxUnavailable`), posé UNE SEULE FOIS par [_previewCryptoImport] (le motif ne
+  /// dépend que des jambes du relevé, jamais d'une saisie manuelle ultérieure) —
+  /// reporté tel quel par [applyManualCryptoValuations] sur les entrées qui restent
+  /// manuelles après une saisie partielle. Porte aussi les suggestions EUR
+  /// (`suggestedPaidEur`/`suggestedReceivedEur`, `null` sauf motif `spread` avec
+  /// taux résolu — amendement drive lot 2 (suite) pour qu'elles survivent, elles
+  /// aussi, à une ré-application partielle.
+  final Map<
+      String,
+      ({
+        String reason,
+        String? spreadPct,
+        String? suggestedPaidEur,
+        String? suggestedReceivedEur,
+      })> _lastCryptoManualReasons = {};
 
   // ---------------------------------------------------------------------------
   // Getters publics
@@ -2175,8 +2184,14 @@ class AccountController extends ChangeNotifier {
         );
         _lastCryptoValuations.addAll(resolution.valuations);
         for (final m in resolution.manual) {
-          _lastCryptoManualReasons[m.source.importKey] =
-              (reason: m.reason.wire, spreadPct: m.valuationSpreadPct);
+          _lastCryptoManualReasons[m.source.importKey] = (
+            reason: m.reason.wire,
+            spreadPct: m.valuationSpreadPct,
+            // Amendement drive lot 2 (suite) : `null` sauf motif `spread` avec taux
+            // résolu (cf. `CryptoValuationManual`).
+            suggestedPaidEur: m.suggestedPaidEur?.toString(),
+            suggestedReceivedEur: m.suggestedReceivedEur?.toString(),
+          );
         }
         financeMovements = StatementImportService.finalizeCryptoExchanges(
           plan,
@@ -2189,17 +2204,24 @@ class AccountController extends ChangeNotifier {
             m.source.copyWith(
               manualReason: m.reason.wire,
               valuationSpreadPct: m.valuationSpreadPct,
+              suggestedPaidEur: m.suggestedPaidEur?.toString(),
+              suggestedReceivedEur: m.suggestedReceivedEur?.toString(),
             ),
         ];
       } on ExchangeRateUnavailable {
         // Aucune coercition (conception interne) : TOUS les échanges sans jambe fiat
         // repartent en arbitrage manuel, motif uniforme — le reste du fichier
         // (rewards, dépôts/retraits, trades à jambe fiat, déjà dans `plan.movements`)
-        // continue à être proposé normalement.
+        // continue à être proposé normalement. Motif `fxUnavailable` : jamais de
+        // suggestion (cf. doc de tête du champ `UnvaluedExchange.suggestedPaidEur`).
         cryptoFxUnavailable = true;
         for (final u in plan.unvaluedExchanges) {
-          _lastCryptoManualReasons[u.importKey] =
-              (reason: 'fxUnavailable', spreadPct: null);
+          _lastCryptoManualReasons[u.importKey] = (
+            reason: 'fxUnavailable',
+            spreadPct: null,
+            suggestedPaidEur: null,
+            suggestedReceivedEur: null,
+          );
         }
         unvaluedForPreview = [
           for (final u in plan.unvaluedExchanges)
@@ -2304,10 +2326,12 @@ class AccountController extends ChangeNotifier {
       accountId: accountId,
       accountCurrency: account.currency,
     );
-    // Ne restent en arbitrage manuel que les entrées SANS valorisation
-    // (ni étage 1, ni saisie manuelle) — motif reporté tel quel depuis le
-    // cache posé au premier aperçu (cf. [_lastCryptoManualReasons], jamais
-    // recalculé : il ne dépend que des jambes du relevé).
+    // Ne restent en arbitrage manuel que les entrées SANS valorisation (ni étage 1,
+    // ni saisie manuelle) — motif reporté tel quel depuis le cache posé au premier
+    // aperçu (cf. [_lastCryptoManualReasons], jamais recalculé : il ne dépend que
+    // des jambes du relevé). Les suggestions EUR (amendement drive lot 2 (suite)
+    // suivent la MÊME règle : elles survivent donc, elles aussi, à une
+    // ré-application PARTIELLE.
     final unvaluedForPreview = [
       for (final u in plan.unvaluedExchanges)
         if (!_lastCryptoValuations.containsKey(u.importKey))
@@ -2315,6 +2339,10 @@ class AccountController extends ChangeNotifier {
             manualReason: _lastCryptoManualReasons[u.importKey]?.reason,
             valuationSpreadPct:
                 _lastCryptoManualReasons[u.importKey]?.spreadPct,
+            suggestedPaidEur:
+                _lastCryptoManualReasons[u.importKey]?.suggestedPaidEur,
+            suggestedReceivedEur:
+                _lastCryptoManualReasons[u.importKey]?.suggestedReceivedEur,
           ),
     ];
 

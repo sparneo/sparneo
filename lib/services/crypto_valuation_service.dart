@@ -38,6 +38,17 @@
 //   4. `V_eur = V_usd × rate(jour, repli dernier jour ouvré ANTÉRIEUR — jamais
 //      d'interpolation)`, en [Decimal] exact.
 //
+// SUGGESTIONS (amendement drive lot 2 (suite) — pour une entrée qui reste
+// manuelle au point 2. ci-dessus (motif `spread`, SANS repli 1-ter : aucune jambe
+// stablecoin de confiance ne l'a sauvée), les DEUX valeurs USD du relevé sont
+// converties en EUR avec la MÊME règle qu'au point 4. (même fenêtre FX, même
+// repli de date) et exposées comme simples SUGGESTIONS sur
+// `CryptoValuationManual`/`UnvaluedExchange` — l'utilisateur choisit l'une des
+// deux en un clic côté UI au lieu de la calculer à la main, mais rien n'est
+// JAMAIS appliqué automatiquement. Aucune suggestion pour les autres motifs
+// (`unreadable`/`foreignFiat`/`ambiguousGroup`/`fxUnavailable`) : rien de fiable
+// à en tirer.
+//
 // Ce fichier NE JOURNALISE RIEN : il produit une table
 // `importKey → CryptoValuation` (étage 1 uniquement, `source:'statement'`) et
 // la liste des entrées restées en arbitrage manuel (avec motif, pour
@@ -115,10 +126,21 @@ class CryptoValuationManual {
   /// [CryptoValuationManualReason.spread]) — `null` sinon.
   final String? valuationSpreadPct;
 
+  /// Suggestions EUR (amendement drive lot 2 (suite) — voir le commentaire de
+  /// [UnvaluedExchange.suggestedPaidEur]/[suggestedReceivedEur] pour la règle de
+  /// calcul. Renseignées UNIQUEMENT quand [reason] vaut
+  /// [CryptoValuationManualReason.spread] ET qu'un taux FX a pu être résolu pour la
+  /// date de cet échange — `null` dans tous les autres cas (aucun autre motif n'a de
+  /// valeur fiable à suggérer, cf. cascade du fichier de tête).
+  final Decimal? suggestedPaidEur;
+  final Decimal? suggestedReceivedEur;
+
   const CryptoValuationManual({
     required this.source,
     required this.reason,
     this.valuationSpreadPct,
+    this.suggestedPaidEur,
+    this.suggestedReceivedEur,
   });
 }
 
@@ -189,6 +211,11 @@ class CryptoValuationService {
     final spreadThreshold = Decimal.parse(maxLegValuationSpread.toString());
     final manual = <CryptoValuationManual>[];
     final candidates = <_ValuationCandidate>[];
+    // Entrées motif `spread` SANS repli 1-ter (amendement drive lot 2 (suite) :
+    // jamais valorisées automatiquement, mais partagent la MÊME fenêtre FX que
+    // [candidates] ci-dessous pour calculer les DEUX suggestions EUR — voir le
+    // commentaire « SUGGESTIONS » en tête de fichier.
+    final spreadSuggestions = <_SpreadSuggestionCandidate>[];
 
     // B-1 (BLOQUANT, revue adversariale lot 2) : pré-scan de multiplicité des
     // `importKey` AVANT toute tentative de valorisation — voir le correctif
@@ -276,10 +303,15 @@ class CryptoValuationService {
             ));
             continue;
           }
-          manual.add(CryptoValuationManual(
+          // Amendement drive lot 2 (suite) : pas de repli 1-ter pour cette entrée —
+          // reste manuelle, mais les DEUX valeurs USD sont retenues pour calcul de
+          // suggestion EUR après récupération FX ci-dessous (pas encore de taux à ce
+          // stade de la boucle).
+          spreadSuggestions.add(_SpreadSuggestionCandidate(
             source: u,
-            reason: CryptoValuationManualReason.spread,
-            valuationSpreadPct: spreadStr,
+            usdPaid: usdPaid,
+            usdReceived: usdReceived,
+            spreadPct: spreadStr,
           ));
           continue;
         }
@@ -292,17 +324,24 @@ class CryptoValuationService {
       ));
     }
 
-    if (candidates.isEmpty) {
+    if (candidates.isEmpty && spreadSuggestions.isEmpty) {
       return CryptoValuationResolution(manual: manual);
     }
 
     // Bornes ENGLOBANTES : UNE SEULE récupération FX pour TOUTES les lignes
-    // valorisables de cet import (conception interne).
-    var minDate = candidates.first.source.date;
-    var maxDate = candidates.first.source.date;
-    for (final c in candidates.skip(1)) {
-      if (c.source.date.isBefore(minDate)) minDate = c.source.date;
-      if (c.source.date.isAfter(maxDate)) maxDate = c.source.date;
+    // valorisables de cet import (conception interne) — [spreadSuggestions] partage
+    // cette MÊME fenêtre/ce MÊME appel (amendement drive lot 2 (suite) : ses
+    // entrées ne sont pas des candidates automatiques, mais leurs suggestions EUR
+    // ont besoin du même taux, jamais d'un appel réseau supplémentaire.
+    final valuableDates = [
+      for (final c in candidates) c.source.date,
+      for (final s in spreadSuggestions) s.source.date,
+    ];
+    var minDate = valuableDates.first;
+    var maxDate = valuableDates.first;
+    for (final d in valuableDates.skip(1)) {
+      if (d.isBefore(minDate)) minDate = d;
+      if (d.isAfter(maxDate)) maxDate = d;
     }
 
     // AUCUN try/catch ICI : une [ExchangeRateUnavailable] doit se propager
@@ -338,6 +377,30 @@ class CryptoValuationService {
         spreadPct: c.spreadPct,
         source: c.valuationSource,
       );
+    }
+
+    // Suggestions EUR (amendement drive lot 2 (suite) : même repli de date que
+    // ci-dessus. Défensif si, exceptionnellement, aucun jour ouvré antérieur n'est
+    // trouvé (série tronquée) — l'entrée reste manuelle motif `spread` mais SANS
+    // suggestion plutôt qu'un taux inventé, jamais bascule vers `fxUnavailable` (une
+    // suggestion manquante n'est pas une raison suffisante pour changer le motif :
+    // la valorisation manuelle reste possible, seule l'aide au calcul manque).
+    for (final s in spreadSuggestions) {
+      final entry = _lastRateOnOrBefore(rates, s.source.date);
+      Decimal? suggestedPaidEur;
+      Decimal? suggestedReceivedEur;
+      if (entry != null) {
+        final rateDecimal = Decimal.parse(entry.value.toString());
+        suggestedPaidEur = s.usdPaid * rateDecimal;
+        suggestedReceivedEur = s.usdReceived * rateDecimal;
+      }
+      manual.add(CryptoValuationManual(
+        source: s.source,
+        reason: CryptoValuationManualReason.spread,
+        valuationSpreadPct: s.spreadPct,
+        suggestedPaidEur: suggestedPaidEur,
+        suggestedReceivedEur: suggestedReceivedEur,
+      ));
     }
 
     return CryptoValuationResolution(valuations: valuations, manual: manual);
@@ -383,5 +446,24 @@ class _ValuationCandidate {
     required this.valuationUsd,
     this.spreadPct,
     this.valuationSource = 'statement',
+  });
+}
+
+/// Entrée motif `spread` SANS repli 1-ter (amendement drive lot 2 (suite) —
+/// jamais une candidate de valorisation AUTOMATIQUE, uniquement portée jusqu'à
+/// la récupération FX pour calculer ses DEUX suggestions EUR (voir le
+/// commentaire « SUGGESTIONS » en tête de fichier). [usdPaid]/ [usdReceived]
+/// sont déjà des magnitudes POSITIVES (`_tryParseAbs`).
+class _SpreadSuggestionCandidate {
+  final UnvaluedExchange source;
+  final Decimal usdPaid;
+  final Decimal usdReceived;
+  final String? spreadPct;
+
+  const _SpreadSuggestionCandidate({
+    required this.source,
+    required this.usdPaid,
+    required this.usdReceived,
+    this.spreadPct,
   });
 }
