@@ -33,6 +33,7 @@ import 'package:portfolio_tracker/model/asset_quote_data.dart';
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/broker_profile.dart';
 import 'package:portfolio_tracker/model/crypto_import_plan.dart';
+import 'package:portfolio_tracker/model/crypto_ledger_spec.dart';
 import 'package:portfolio_tracker/model/import_preview.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/model/position.dart';
@@ -133,6 +134,56 @@ ImportedMovement _byLedgerCode(CryptoImportPlan plan, String code, {String? kind
         !m.isRejected &&
         m.ledgerCode == code &&
         (kind == null || m.transaction!.kind.name == kind));
+
+/// Profil SYNTHÉTIQUE (refactor B16 lot 3, préparation Coinbase) — mêmes
+/// colonnes que [BrokerProfile.kraken] (réutilise [_LedgerBuilder]), mais un
+/// vocabulaire DÉLIBÉRÉMENT différent (`in`/`out` plutôt que
+/// `deposit`/`withdrawal`) pour [CryptoLedgerSpec.signFixedKinds]/
+/// [CryptoLedgerSpec.externalDepositKinds]/
+/// [CryptoLedgerSpec.externalWithdrawalKinds] : prouve que ces trois
+/// mécanismes sont pilotés par la SPEC du profil, plus par des littéraux
+/// codés dans le moteur — `deposit`/`withdrawal` restent reconnus par
+/// [actions] (mappés vers les mêmes effets) mais SANS bénéficier du
+/// contrôle de signe ni des puces « Dépôt »/« Retrait » sous CE profil.
+BrokerProfile _syntheticVocabProfile() {
+  return BrokerProfile(
+    id: 'synthetic-vocab-test',
+    label: 'Synthétique (test vocabulaire)',
+    delimiter: ',',
+    encoding: utf8,
+    hasHeaderRow: true,
+    dateFormat: const DateFormatSpec(separator: '-', yearFirst: true),
+    decimalSeparator: DecimalSeparator.dot,
+    columns: const ColumnMapping(byName: {
+      MovementField.date: 'time',
+      MovementField.kindLabel: 'type',
+      MovementField.symbol: 'asset',
+      MovementField.quantity: 'amount',
+      MovementField.fee: 'fee',
+      MovementField.operationReference: 'refid',
+    }),
+    kindLexicon: const {},
+    crypto: CryptoLedgerSpec(
+      grouping: LegGroupingStrategy.operationReference,
+      groupKeyColumn: MovementField.operationReference,
+      subKindColumn: 'subtype',
+      walletColumn: 'wallet',
+      balanceColumn: 'balance',
+      assetClassColumn: 'subclass',
+      actions: const {
+        'in': CryptoLedgerAction.depositIn,
+        'out': CryptoLedgerAction.withdrawalOut,
+        'deposit': CryptoLedgerAction.depositIn,
+        'withdrawal': CryptoLedgerAction.withdrawalOut,
+      },
+      // Vocabulaire du profil — `deposit`/`withdrawal` en sont ABSENTS,
+      // contrairement à `BrokerProfile.kraken()`.
+      signFixedKinds: const {'in': true, 'out': false},
+      externalDepositKinds: const {'in'},
+      externalWithdrawalKinds: const {'out'},
+    ),
+  );
+}
 
 void main() {
   final profile = BrokerProfile.kraken();
@@ -489,6 +540,7 @@ void main() {
         resolution.valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       // UNE SEULE jambe émise — le modèle N4 (sell+buy à montants opposés)
       // NE S'APPLIQUE PAS ici : USD payé, NNN reçu → BUY NNN, cash SORTANT,
@@ -526,6 +578,7 @@ void main() {
         forcedValuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalizedDespiteValuation, isEmpty);
     });
@@ -571,6 +624,7 @@ void main() {
         resolution.valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, hasLength(1));
       final sell = finalized.single;
@@ -599,6 +653,7 @@ void main() {
         forcedValuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalizedDespiteValuation, isEmpty);
     });
@@ -640,6 +695,7 @@ void main() {
         resolution.valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, hasLength(1));
       final buy = finalized.single;
@@ -680,6 +736,7 @@ void main() {
         resolution.valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, hasLength(1));
       final sell = finalized.single;
@@ -718,6 +775,7 @@ void main() {
         forcedValuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, isEmpty);
     });
@@ -750,6 +808,7 @@ void main() {
         forcedValuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, isEmpty);
     });
@@ -782,6 +841,7 @@ void main() {
         resolution.valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, isEmpty); // zéro mouvement émis — aucun `GBP`/`NNN` fabriqué.
     });
@@ -1986,6 +2046,7 @@ void main() {
         {u.importKey: CryptoValuation(amountEur: Decimal.parse('8'), source: 'manual')},
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(finalized, hasLength(1));
       expect(finalized.single.transaction!.meta!['inKindDeposit'], isTrue);
@@ -2611,6 +2672,7 @@ void main() {
         valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
 
       expect(out, isEmpty);
@@ -2655,6 +2717,7 @@ void main() {
         valuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
 
       expect(out, isEmpty);
@@ -2722,8 +2785,120 @@ void main() {
         forcedValuations,
         accountId: 'acc1',
         accountCurrency: 'EUR',
+        externalDepositKinds: const {'deposit', 'receive'},
       );
       expect(out, isEmpty);
+    });
+  });
+
+  // ---------------------------------------------------------------------
+  // Refactor B16 lot 3 (préparation Coinbase) : les trois mécanismes
+  // (redérivation de signe, puce « Dépôt », puce « Retrait ») sont pilotés
+  // par la SPEC du profil ([CryptoLedgerSpec.signFixedKinds]/
+  // [externalDepositKinds]/[externalWithdrawalKinds]), plus par des
+  // littéraux `'deposit'`/`'withdrawal'`/`'receive'` codés en dur dans le
+  // moteur — vérifié avec un profil SYNTHÉTIQUE dont le vocabulaire
+  // (`in`/`out`) diffère volontairement de celui de Kraken.
+  // ---------------------------------------------------------------------
+  group('Refactor B16 lot 3 — le vocabulaire des types externes vient du profil', () {
+    final syntheticProfile = _syntheticVocabProfile();
+
+    test(
+        'signFixedKinds : la redérivation de signe s\'applique aux labels '
+        'DÉCLARÉS par CE profil (`in`), pas aux littéraux `deposit`/'
+        '`withdrawal` du moteur', () {
+      final b = _LedgerBuilder();
+      // `in` est déclaré positif par CE profil (signFixedKinds) — un signe
+      // contraire est une anomalie signalée, exactement le mécanisme testé
+      // plus haut pour `deposit` chez Kraken.
+      b.leg(refid: 'RSV1', time: '2024-07-01 08:00:00', type: 'in',
+          asset: 'ZZZ', amount: '-5', subclass: 'crypto');
+      // `deposit` n'est PAS dans le [signFixedKinds] de CE profil : un signe
+      // négatif n'y est PLUS une anomalie (redirigé par signe vers une sortie
+      // en nature), alors que le MÊME libellé serait rejeté sous
+      // `BrokerProfile.kraken()` (cf. test « mineur » ci-dessus).
+      b.leg(refid: 'RSV2', time: '2024-07-02 08:00:00', type: 'deposit',
+          asset: 'YYY', amount: '-5', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), syntheticProfile);
+
+      final rejected = plan.movements.where((m) => m.isRejected).toList();
+      expect(rejected, hasLength(1));
+      expect(rejected.single.rejectReason, equals('cryptoAmbiguousDirection'));
+
+      final deposit = plan.movements.singleWhere((m) => !m.isRejected);
+      expect(deposit.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(deposit.ledgerCode, equals('YYY'));
+    });
+
+    test(
+        'externalWithdrawalKinds : meta[\'inKindWithdrawal\'] suit `out` '
+        '(déclaré par CE profil), plus le littéral `withdrawal`', () {
+      final b = _LedgerBuilder();
+      // `out` : déclaré négatif par signFixedKinds ET dans
+      // externalWithdrawalKinds de CE profil → VRAI retrait.
+      b.leg(refid: 'RSV3', time: '2024-07-03 08:00:00', type: 'out',
+          asset: 'WWW', amount: '-2', subclass: 'crypto');
+      // `withdrawal` : absent des deux tables de CE profil → ni contrôle de
+      // signe, ni puce « Retrait » — pourtant le MÊME libellé déclencherait
+      // les deux sous `BrokerProfile.kraken()`.
+      b.leg(refid: 'RSV4', time: '2024-07-04 08:00:00', type: 'withdrawal',
+          asset: 'VVV', amount: '-2', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), syntheticProfile);
+
+      expect(plan.movements.every((m) => !m.isRejected), isTrue);
+
+      final out = _byLedgerCode(plan, 'WWW');
+      expect(out.transaction!.meta!['inKindWithdrawal'], isTrue);
+
+      final withdrawal = _byLedgerCode(plan, 'VVV');
+      expect(withdrawal.transaction!.meta!.containsKey('inKindWithdrawal'), isFalse);
+    });
+
+    test(
+        'externalDepositKinds : meta[\'inKindDeposit\'] (posée par '
+        'finalizeCryptoExchanges) suit `in` (déclaré par CE profil), plus '
+        'le littéral `deposit`/`receive` par défaut du moteur', () {
+      final uIn = UnvaluedExchange(
+        kind: 'depositInKind',
+        date: DateTime(2024, 7, 5),
+        codeReceived: 'UUU',
+        quantityReceived: '4',
+        sourceLines: const [1],
+        importKey: 'ref:acc1:RSV5',
+        sourceKindLabel: 'in',
+      );
+      final uDeposit = UnvaluedExchange(
+        kind: 'depositInKind',
+        date: DateTime(2024, 7, 6),
+        codeReceived: 'TTT',
+        quantityReceived: '4',
+        sourceLines: const [2],
+        importKey: 'ref:acc1:RSV6',
+        sourceKindLabel: 'deposit',
+      );
+      final plan = CryptoImportPlan(unvaluedExchanges: [uIn, uDeposit]);
+      final valuations = {
+        uIn.importKey: CryptoValuation(amountEur: Decimal.parse('8'), source: 'manual'),
+        uDeposit.importKey: CryptoValuation(amountEur: Decimal.parse('8'), source: 'manual'),
+      };
+
+      final finalized = StatementImportService.finalizeCryptoExchanges(
+        plan,
+        valuations,
+        accountId: 'acc1',
+        accountCurrency: 'EUR',
+        // Vocabulaire de CE profil : `in`, PAS `deposit`/`receive` (défaut
+        // Kraken du paramètre) — la ligne 1987 ci-dessus prouve déjà que ce
+        // défaut s'applique quand l'appelant ne le précise PAS.
+        externalDepositKinds: syntheticProfile.crypto!.externalDepositKinds,
+      );
+      expect(finalized, hasLength(2));
+
+      final fromIn = finalized.singleWhere((m) => m.ledgerCode == 'UUU');
+      expect(fromIn.transaction!.meta!['inKindDeposit'], isTrue);
+
+      final fromDeposit = finalized.singleWhere((m) => m.ledgerCode == 'TTT');
+      expect(fromDeposit.transaction!.meta!.containsKey('inKindDeposit'), isFalse);
     });
   });
 }

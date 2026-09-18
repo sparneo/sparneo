@@ -242,6 +242,48 @@ class CryptoLedgerSpec {
   /// 'USDC'}`.
   final Set<String> usdStableCodes;
 
+  /// Natures de ligne dont le TYPE fixe DÉJÀ la direction sans ambiguïté —
+  /// clé = libellé brut (`_Leg.kindLabel`), valeur = signe ATTENDU (`true` =
+  /// positif/entrant). Consommé par `CryptoLedgerNormalizer.
+  /// _processDepositOrWithdrawal` (site ~1030) : une nature présente ICI dont
+  /// le signe net contredit la valeur déclarée est un REJET MOTIVÉ
+  /// (`cryptoAmbiguousDirection`), jamais une réinterprétation silencieuse —
+  /// une nature ABSENTE de cette table (ex. les codes `transfer*` Kraken,
+  /// redirigés par SIGNE) n'est jamais soumise à ce contrôle. Vide par
+  /// défaut (repli neutre : aucune nature n'est considérée non-ambiguë).
+  /// Kraken : `{'deposit': true, 'withdrawal': false}`.
+  final Map<String, bool> signFixedKinds;
+
+  /// Natures de ligne SOURCE dont une entrée en nature EST un VRAI apport EXTERNE de
+  /// l'utilisateur (dépôt on-chain, crédit type airdrop…) — consommé par
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` (site ~795, via
+  /// `UnvaluedExchange.sourceKindLabel`) pour décider de poser
+  /// `meta['inKindDeposit']` (conception interne, drive B16, « Problème 1 »). Une
+  /// nature ABSENTE reste une écriture INTERNE de plateforme (le mouvement
+  /// `adjustment` est journalisé identiquement, seule la puce « Dépôt » du journal
+  /// l'ignore). Kraken : `{'deposit', 'receive'}` — noter que `receive` N'EST PAS
+  /// dans [signFixedKinds] : les deux tables ne coïncident PAS (l'y ajouter serait
+  /// un changement de comportement, hors périmètre de ce refactor). Vide par défaut
+  /// (repli neutre).
+  final Set<String> externalDepositKinds;
+
+  /// Natures de ligne SOURCE dont une sortie en nature EST un VRAI retrait vers un
+  /// wallet externe — consommé par `CryptoLedgerNormalizer.
+  /// _processDepositOrWithdrawal` (site ~1133, via `leg.kindLabel`) pour décider de
+  /// poser `meta['inKindWithdrawal']` (conception interne, retour auteur,
+  /// symétrique exact d'[externalDepositKinds] côté sortie). Une nature ABSENTE
+  /// reste une écriture INTERNE de plateforme (le mouvement `transferOut` est
+  /// journalisé identiquement, seule la puce « Retrait » du journal l'ignore).
+  /// Kraken : `{'withdrawal'}`. Vide par défaut (repli neutre).
+  ///
+  /// NOTE (unification future possible) : [externalDepositKinds] et ce champ
+  /// ne sont PAS fusionnés en une seule structure bidirectionnelle malgré la
+  /// tentation — Kraken n'a par exemple aucun symétrique retrait de
+  /// `receive`, et rien ne garantit qu'un futur profil garde cette symétrie.
+  /// Une fusion reste envisageable le jour où au moins deux profils
+  /// confirment la même forme, pas avant.
+  final Set<String> externalWithdrawalKinds;
+
   CryptoLedgerSpec({
     required this.grouping,
     this.groupKeyColumn,
@@ -263,5 +305,8 @@ class CryptoLedgerSpec {
     this.valuationCurrency = 'USD',
     this.maxLegValuationSpread = 0.10,
     this.usdStableCodes = const {},
+    this.signFixedKinds = const {},
+    this.externalDepositKinds = const {},
+    this.externalWithdrawalKinds = const {},
   });
 }

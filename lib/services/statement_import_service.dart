@@ -569,17 +569,24 @@ class StatementImportService {
   /// exact de [planCryptoImport] ci-dessus — même raison d'être (l'appelant,
   /// `AccountController`, ne dépend que de ce service PUR, jamais directement de
   /// `CryptoLedgerNormalizer`).
+  ///
+  /// [externalDepositKinds] : voir la doc du même paramètre côté
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` (refactor B16 lot 3) —
+  /// simple relais, l'appelant doit y passer `profile.crypto!.
+  /// externalDepositKinds`.
   static List<ImportedMovement> finalizeCryptoExchanges(
     CryptoImportPlan plan,
     Map<String, CryptoValuation> valuations, {
     required String accountId,
     required String accountCurrency,
+    required Set<String> externalDepositKinds,
   }) {
     return CryptoLedgerNormalizer.finalizeCryptoExchanges(
       plan,
       valuations,
       accountId: accountId,
       accountCurrency: accountCurrency,
+      externalDepositKinds: externalDepositKinds,
     );
   }
 

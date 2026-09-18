@@ -612,11 +612,23 @@ class CryptoLedgerNormalizer {
   /// == 1`) : `sell` (crypto payée, USD reçu, cash ENTRANT positif) ou `buy` (USD
   /// payé, crypto reçue, cash SORTANT négatif), montant = quantité nette de la
   /// jambe USD × taux du jour.
+  ///
+  /// [externalDepositKinds] (refactor B16 lot 3, préparation Coinbase) : le
+  /// vocabulaire des natures SOURCE reconnues comme VRAI apport externe
+  /// (`UnvaluedExchange.sourceKindLabel`, cf. la branche `depositInKind`
+  /// ci-dessous, doc de `CryptoLedgerSpec.externalDepositKinds`) — l'appelant
+  /// DOIT passer `profile.crypto!.externalDepositKinds` (jamais un littéral
+  /// codé ici). REQUIS (pas de défaut) : cette méthode PURE n'a par ailleurs
+  /// aucun accès à [CryptoLedgerSpec] via [plan] (`CryptoImportPlan` ne porte
+  /// pas le profil), d'où ce paramètre plutôt qu'une lecture globale — un
+  /// défaut aurait fait retomber silencieusement un futur profil (Coinbase)
+  /// qui oublierait de le passer sur le vocabulaire Kraken.
   static List<ImportedMovement> finalizeCryptoExchanges(
     CryptoImportPlan plan,
     Map<String, CryptoValuation> valuations, {
     required String accountId,
     required String accountCurrency,
+    required Set<String> externalDepositKinds,
   }) {
     final out = <ImportedMovement>[];
 
@@ -784,12 +796,13 @@ class CryptoLedgerNormalizer {
           // `depositInKind` couvre AUSSI les jambes entrantes de poussière `transfer*`
           // redirigées par SIGNE (`_processDepositOrWithdrawal`) — des écritures INTERNES
           // de la plateforme (résidu de migration, restes de délistage, retour futures),
-          // jamais un apport EXTERNE de l'utilisateur. Seules les lignes SOURCE `deposit`
-          // (dépôt on-chain entrant) et `receive` (crédit externe type airdrop) sont de
-          // VRAIS dépôts — décision portée par `sourceKindLabel` (posé par le moteur PUR,
-          // jamais une inspection UI, cf. doc de `UnvaluedExchange.sourceKindLabel`).
-          final isGenuineDeposit = u.sourceKindLabel == 'deposit' ||
-              u.sourceKindLabel == 'receive';
+          // jamais un apport EXTERNE de l'utilisateur. Le vocabulaire des VRAIS dépôts
+          // vient du PROFIL ([externalDepositKinds], paramètre de cette méthode — cf. sa
+          // doc pour le défaut Kraken) — décision portée par `sourceKindLabel` (posé par
+          // le moteur PUR, jamais une inspection UI, cf. doc de
+          // `UnvaluedExchange.sourceKindLabel`).
+          final isGenuineDeposit =
+              externalDepositKinds.contains(u.sourceKindLabel);
           out.add(ImportedMovement.candidate(
             sourceRow: const [],
             sourceRowIndex: sourceRowIndex,
@@ -995,14 +1008,17 @@ class CryptoLedgerNormalizer {
   // Traitement par action (§C)
   // ---------------------------------------------------------------------
 
-  /// `deposit`/`withdrawal` classiques ET les codes `transfer*` ambigus
-  /// (direction fixée par le SIGNE net, pas par le type — conception interne).
+  /// Natures dont le TYPE fixe DÉJÀ la direction sans ambiguïté ET les codes
+  /// `transfer*` ambigus (direction fixée par le SIGNE net, pas par le type —
+  /// conception interne).
   ///
-  /// `deposit`/`withdrawal` (Kraken) restent l'EXCEPTION : leur TYPE fixe
-  /// déjà la direction sans ambiguïté (contrairement aux 3 codes `transfer*`
-  /// redirigés par signe) — un signe qui CONTREDIT ce type est une anomalie
-  /// du relevé, jamais silencieusement réinterprétée (B4 : jamais de
-  /// coercition ; mineur, revue adversariale).
+  /// Le vocabulaire des natures non-ambiguës vient du PROFIL
+  /// ([CryptoLedgerSpec.signFixedKinds]), jamais du moteur : `deposit`/
+  /// `withdrawal` (Kraken) en sont l'EXEMPLE — leur TYPE fixe déjà la
+  /// direction (contrairement aux codes `transfer*`, absents de cette table,
+  /// redirigés par signe) — un signe qui CONTREDIT le signe DÉCLARÉ pour une
+  /// nature de cette table est une anomalie du relevé, jamais silencieusement
+  /// réinterprétée (B4 : jamais de coercition ; mineur, revue adversariale).
   static void _processDepositOrWithdrawal(
     _Leg leg, {
     required String refid,
@@ -1020,10 +1036,8 @@ class CryptoLedgerNormalizer {
       return;
     }
 
-    final isUnambiguousType =
-        leg.kindLabel == 'deposit' || leg.kindLabel == 'withdrawal';
-    if (isUnambiguousType) {
-      final expectedPositive = leg.kindLabel == 'deposit';
+    final expectedPositive = crypto.signFixedKinds[leg.kindLabel];
+    if (expectedPositive != null) {
       if ((net.sign > 0) != expectedPositive) {
         reject(leg, 'cryptoAmbiguousDirection');
         return;
@@ -1112,17 +1126,19 @@ class CryptoLedgerNormalizer {
       meta: {
         'seq': leg.seq,
         'importKey': importKey,
-        // Retour auteur (symétrique EXACT du Problème 1 côté dépôt, commit 78198a4) : la
-        // puce « Retrait » ramassait aussi les poussières de délistage
+        // Retour auteur (symétrique EXACT du Problème 1 côté dépôt, commit 78198a4) :
+        // la puce « Retrait » ramassait aussi les poussières de délistage
         // (`transfer/delistingconversion`, type BRUT `transfer`) — des écritures
         // INTERNES de plateforme redirigées ICI par SIGNE, jamais un vrai retrait vers
-        // un wallet externe. Seule une ligne SOURCE de type BRUT `withdrawal`
-        // (`leg.kindLabel`, JAMAIS le composite avec sous-type) est un VRAI retrait —
-        // décision portée par cette clé DÉDIÉE, lue par `filterJournal`
-        // (`account_journal_page.dart`) pour restreindre son cas spécial
-        // withdrawal/transferOut. Absente pour toute jambe `transfer*` : le mouvement
-        // (quantité, coût) reste inchangé, seule la puce l'ignore.
-        if (leg.kindLabel == 'withdrawal') 'inKindWithdrawal': true,
+        // un wallet externe. Le vocabulaire des types EXTERNES vient du PROFIL
+        // ([CryptoLedgerSpec.externalWithdrawalKinds]), jamais du moteur : seule une
+        // ligne SOURCE de type BRUT `withdrawal` (Kraken, `leg.kindLabel`, JAMAIS le
+        // composite avec sous-type) y figure — décision portée par cette clé DÉDIÉE,
+        // lue par `filterJournal` (`account_journal_page.dart`) pour restreindre son
+        // cas spécial withdrawal/transferOut. Absente pour toute jambe `transfer*` : le
+        // mouvement (quantité, coût) reste inchangé, seule la puce l'ignore.
+        if (crypto.externalWithdrawalKinds.contains(leg.kindLabel))
+          'inKindWithdrawal': true,
         // Demande auteur, drive B16 (« voir la quantité de crypto retirée et
         // l'équivalent en cash ») : la valeur USD de LA JAMBE (colonne `amountusd`,
         // même source que pour un échange, cf. `_Leg. valuationUsd`) est posée ICI en

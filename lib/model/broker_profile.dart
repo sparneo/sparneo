@@ -452,6 +452,18 @@ class BrokerProfile {
         // (séquelle Terra, ancrage perdu) — cf. la doc de
         // [CryptoLedgerSpec.usdStableCodes].
         usdStableCodes: const {'USDT', 'USDC'},
+        // Vocabulaire des types EXTERNES (chantier B16 lot 3, préparation
+        // Coinbase) — cf. la doc de chaque champ dans `CryptoLedgerSpec` pour
+        // le site moteur consommateur. `deposit`/`withdrawal` sont les seules
+        // natures dont le TYPE fixe déjà la direction sans ambiguïté ; les
+        // codes `transfer*` (redirigés par signe) n'entrent JAMAIS dans
+        // [signFixedKinds]. `receive` est un apport externe reconnu par
+        // [externalDepositKinds] mais N'EST PAS dans [signFixedKinds] (pas de
+        // contrôle de signe sur cette nature aujourd'hui) — voir la note de
+        // [CryptoLedgerSpec.externalDepositKinds] sur cette asymétrie.
+        signFixedKinds: const {'deposit': true, 'withdrawal': false},
+        externalDepositKinds: const {'deposit', 'receive'},
+        externalWithdrawalKinds: const {'withdrawal'},
         // Table de mapping complète (conception interne). `spend`/`receive` SANS
         // sous-type (42 paires crypto↔fiat + 3 crypto↔crypto) atteignent le REPLI
         // `'type'` seul (clé composite absente faute de sous-type sur ces lignes) —

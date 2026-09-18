@@ -2326,6 +2326,9 @@ class AccountController extends ChangeNotifier {
           resolution.valuations,
           accountId: accountId,
           accountCurrency: account.currency,
+          // Refactor B16 lot 3 : vocabulaire des VRAIS dépôts externes lu
+          // sur le PROFIL, plus jamais un littéral codé dans le moteur.
+          externalDepositKinds: profile.crypto!.externalDepositKinds,
         );
         unvaluedForPreview = [
           for (final m in resolution.manual)
@@ -2453,6 +2456,8 @@ class AccountController extends ChangeNotifier {
       _lastCryptoValuations,
       accountId: accountId,
       accountCurrency: account.currency,
+      // Refactor B16 lot 3 : même relais que `_previewCryptoImport`.
+      externalDepositKinds: profile.crypto!.externalDepositKinds,
     );
     // Ne restent en arbitrage manuel que les entrées SANS valorisation (ni étage 1,
     // ni saisie manuelle) — motif reporté tel quel depuis le cache posé au premier
