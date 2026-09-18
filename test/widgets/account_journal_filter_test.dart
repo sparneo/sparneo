@@ -48,13 +48,36 @@ void main() {
   final dividend1 = _tx(id: 'dv1', kind: TransactionKind.dividend, date: d60ago, symbol: 'MSFT');
   final deposit1 = _tx(id: 'dp1', kind: TransactionKind.deposit, date: d400ago);
   final withdrawal1 = _tx(id: 'w1', kind: TransactionKind.withdrawal, date: d60ago);
-  // Retrait ON-CHAIN (import crypto B16) : journalisé en NATURE, donc en
-  // transferOut, jamais en withdrawal — cf. cas spécial dans filterJournal.
+  // Retrait ON-CHAIN VRAI (import crypto B16, restreint : journalisé en NATURE,
+  // donc en transferOut, jamais en withdrawal — porte meta['inKindWithdrawal']
+  // == true (ligne source de type BRUT `withdrawal`) — cf. cas spécial RESTREINT
+  // dans filterJournal.
   final transferOut1 = _tx(
     id: 'to1',
     kind: TransactionKind.transferOut,
     date: d60ago,
     symbol: 'BTC-EUR',
+    meta: const {'inKindWithdrawal': true, 'importKey': 'ref:acc1:RIW1'},
+  );
+  // Poussière de délistage (import crypto B16, retour auteur, symétrique EXACT
+  // du Problème 1 côté dépôt, commit 78198a4) : même kind transferOut, IMPORTÉE
+  // (meta['importKey'] présente) mais SANS le flag dédié — écriture INTERNE de
+  // plateforme, ne doit PLUS fuiter sous « Retrait ».
+  final transferOutDelisting1 = _tx(
+    id: 'tod1',
+    kind: TransactionKind.transferOut,
+    date: d60ago,
+    symbol: 'ETH-EUR',
+    meta: const {'importKey': 'ref:acc1:RIW2'},
+  );
+  // Sortie en nature SAISIE À LA MAIN (formulaire du journal, jamais un
+  // import) : aucune meta['importKey'] — matche quand même la puce
+  // « Retrait » (discriminant manuel/importé retenu).
+  final transferOutManual1 = _tx(
+    id: 'tom1',
+    kind: TransactionKind.transferOut,
+    date: d60ago,
+    symbol: 'SOL-EUR',
   );
   // Dépôt ON-CHAIN (import crypto B16, demande auteur : journalisé en NATURE,
   // donc en adjustment VALORISÉ (meta['inKindDeposit'] == true), jamais en
@@ -92,7 +115,12 @@ void main() {
       _tx(id: 'padj1', kind: TransactionKind.adjustment, date: d60ago);
 
   final allTxs = [buy1, sell1, dividend1, deposit1, withdrawal1];
-  final allTxsWithTransferOut = [...allTxs, transferOut1];
+  final allTxsWithTransferOut = [
+    ...allTxs,
+    transferOut1,
+    transferOutDelisting1,
+    transferOutManual1,
+  ];
   final allTxsWithInKindDeposit = [
     ...allTxs,
     inKindDeposit1,
@@ -149,19 +177,27 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // Décision auteur, drive B16 : la puce « Retrait » matche AUSSI transferOut
-  // (retrait on-chain journalisé en nature à l'import crypto).
-  group('filterJournal — cas spécial withdrawal/transferOut (import crypto B16)', () {
+  // Décision auteur, drive B16, RESTREINTE (retour auteur, symétrique EXACT du
+  // Problème 1 côté dépôt, commit 78198a4) : la puce « Retrait » matche un
+  // transferOut SEULEMENT s'il est un VRAI retrait (meta['inKindWithdrawal'] ==
+  // true) ou SAISI À LA MAIN (pas de meta['importKey']) — les poussières de
+  // délistage importées SANS le flag (transferOutDelisting1) en sortent.
+  group('filterJournal — cas spécial withdrawal/transferOut (import crypto B16, restreint)', () {
     test(
-      'kind: withdrawal remonte le withdrawal espèces ET le transferOut '
-      'titre, aucun autre kind',
+      'kind: withdrawal remonte le withdrawal espèces, le VRAI retrait '
+      'transferOut flagué ET le transferOut manuel — mais PAS la poussière '
+      'de délistage importée sans le flag',
       () {
         final result = filterJournal(
           allTxsWithTransferOut,
           kind: TransactionKind.withdrawal,
         );
-        expect(result, containsAll([withdrawal1, transferOut1]));
-        expect(result, hasLength(2));
+        expect(
+          result,
+          containsAll([withdrawal1, transferOut1, transferOutManual1]),
+        );
+        expect(result, isNot(contains(transferOutDelisting1)));
+        expect(result, hasLength(3));
       },
     );
 

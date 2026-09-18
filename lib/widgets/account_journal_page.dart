@@ -28,15 +28,26 @@ import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 /// - Les transactions exactement à la date [notBefore] sont incluses.
 /// - L'ordre d'entrée est préservé.
 ///
-/// CAS SPÉCIAL — [kind] == [TransactionKind.withdrawal] matche AUSSI
-/// [TransactionKind.transferOut] (décision auteur, drive B16, non
+/// CAS SPÉCIAL — [kind] == [TransactionKind.withdrawal] matche AUSSI certains
+/// [TransactionKind.transferOut] (décision auteur, drive B16, RESTREINTE, non
 /// rediscutable) : l'import crypto journalise un retrait ON-CHAIN (crypto
 /// envoyée hors du wallet suivi) en NATURE, donc en `transferOut` (cf.
-/// asset_transaction.dart), jamais en `withdrawal` (réservé au cash). Sans ce
-/// cas spécial, la puce « Retrait » d'un compte crypto resterait vide malgré
-/// des dizaines de retraits réels dans le relevé. Aucun autre kind ne
-/// bénéficie de cet élargissement : `kind: buy` par exemple ne remonte jamais
-/// un `transferOut`, seulement les `buy`.
+/// asset_transaction.dart), jamais en `withdrawal` (réservé au cash). Mais un
+/// `transferOut` importé recouvre AUSSI les poussières de délistage
+/// (`transfer/delistingconversion` et consorts, écritures INTERNES de
+/// plateforme redirigées par SIGNE, cf.
+/// `CryptoLedgerNormalizer._processDepositOrWithdrawal`) — retour auteur
+/// (symétrique EXACT du Problème 1 côté dépôt, commit 78198a4) : celles-ci ne
+/// doivent PLUS fuiter sous « Retrait ». Un `transferOut` matche donc la puce
+/// SEULEMENT si `meta['inKindWithdrawal'] == true` (VRAI retrait, ligne source
+/// de type BRUT `withdrawal`) OU si le mouvement est SAISI À LA MAIN
+/// (`meta?['importKey'] == null` — un mouvement importé porte TOUJOURS cette
+/// clé, jamais un mouvement créé depuis le formulaire du journal). Aucun autre
+/// kind ne bénéficie de cet élargissement : `kind: buy` par exemple ne remonte
+/// jamais un `transferOut`, seulement les `buy`. Note : les `transferOut` déjà
+/// journalisés en base AVANT ce correctif n'ont pas la clé et sortent donc de
+/// la puce (y compris de vrais retraits) — assumé, aucune migration écrite ici,
+/// le nettoyage relève d'un autre chantier.
 ///
 /// CAS SPÉCIAL SYMÉTRIQUE — [kind] == [TransactionKind.deposit] matche AUSSI
 /// tout [TransactionKind.adjustment] portant `meta['inKindDeposit'] == true`
@@ -56,7 +67,9 @@ List<AssetTransaction> filterJournal(
     final kindOk = kind == null ||
         tx.kind == kind ||
         (kind == TransactionKind.withdrawal &&
-            tx.kind == TransactionKind.transferOut) ||
+            tx.kind == TransactionKind.transferOut &&
+            (tx.meta?['inKindWithdrawal'] == true ||
+                tx.meta?['importKey'] == null)) ||
         (kind == TransactionKind.deposit &&
             tx.kind == TransactionKind.adjustment &&
             tx.meta?['inKindDeposit'] == true);

@@ -1112,6 +1112,17 @@ class CryptoLedgerNormalizer {
       meta: {
         'seq': leg.seq,
         'importKey': importKey,
+        // Retour auteur (symétrique EXACT du Problème 1 côté dépôt, commit 78198a4) : la
+        // puce « Retrait » ramassait aussi les poussières de délistage
+        // (`transfer/delistingconversion`, type BRUT `transfer`) — des écritures
+        // INTERNES de plateforme redirigées ICI par SIGNE, jamais un vrai retrait vers
+        // un wallet externe. Seule une ligne SOURCE de type BRUT `withdrawal`
+        // (`leg.kindLabel`, JAMAIS le composite avec sous-type) est un VRAI retrait —
+        // décision portée par cette clé DÉDIÉE, lue par `filterJournal`
+        // (`account_journal_page.dart`) pour restreindre son cas spécial
+        // withdrawal/transferOut. Absente pour toute jambe `transfer*` : le mouvement
+        // (quantité, coût) reste inchangé, seule la puce l'ignore.
+        if (leg.kindLabel == 'withdrawal') 'inKindWithdrawal': true,
         // Demande auteur, drive B16 (« voir la quantité de crypto retirée et
         // l'équivalent en cash ») : la valeur USD de LA JAMBE (colonne `amountusd`,
         // même source que pour un échange, cf. `_Leg. valuationUsd`) est posée ICI en

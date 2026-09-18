@@ -905,6 +905,62 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
+  // Retour auteur (symétrique EXACT du Problème 1 côté dépôt, commit 78198a4) : la
+  // puce « Retrait » ramassait aussi les poussières de délistage
+  // (`transfer/delistingconversion`, type BRUT `transfer`) — des écritures
+  // INTERNES de plateforme redirigées par SIGNE, jamais un vrai retrait vers un
+  // wallet externe. `meta['inKindWithdrawal']` n'est posée que pour une ligne
+  // SOURCE de type BRUT `withdrawal` (`leg.kindLabel`), JAMAIS pour la famille
+  // `transfer*` — le mouvement journalisé (quantité, absence de cash) reste
+  // rigoureusement identique par ailleurs.
+  // -------------------------------------------------------------------------
+  group('Lot 2 — retrait en nature : meta inKindWithdrawal (retour auteur)', () {
+    test(
+        'ligne SOURCE `withdrawal` (VRAI retrait vers un wallet externe) → '
+        'meta[\'inKindWithdrawal\'] posée', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RIW1', time: '2024-06-01 08:00:00', type: 'withdrawal',
+          asset: 'RRR', amount: '-2', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(m.transaction!.meta!['inKindWithdrawal'], isTrue);
+    });
+
+    test(
+        '`transfer/delistingconversion` (poussière de délistage, écriture '
+        'INTERNE de plateforme, PAS un retrait utilisateur) → '
+        'meta[\'inKindWithdrawal\'] ABSENTE, le mouvement (transferOut, '
+        'quantité) reste inchangé par ailleurs', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RIW2', time: '2024-06-02 08:00:00', type: 'transfer',
+          subtype: 'delistingconversion', asset: 'SSS', amount: '-0.001',
+          subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(m.transaction!.quantity, equals('0.001'));
+      expect(m.transaction!.meta!.containsKey('inKindWithdrawal'), isFalse);
+    });
+
+    test(
+        '`transfer` BARE (sans sous-type), net négatif — même redirection '
+        'par SIGNE que `delistingconversion` — écarte AUSSI '
+        'meta[\'inKindWithdrawal\']', () {
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RIW3', time: '2024-06-03 08:00:00', type: 'transfer',
+          asset: 'TTT', amount: '-0.5', subclass: 'crypto');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      final m = plan.movements.singleWhere((mv) => !mv.isRejected);
+      expect(m.transaction!.kind, equals(TransactionKind.transferOut));
+      expect(m.transaction!.meta!.containsKey('inKindWithdrawal'), isFalse);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Test 5 — refus global N1 (ancien format Kraken).
   // -------------------------------------------------------------------------
   test('N1 : ancien format Kraken (sans wallet/subclass/amountusd) → refus global motivé', () {
