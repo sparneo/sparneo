@@ -49,7 +49,7 @@ abstract class MarketDataProvider {
   ///  - `null` : TOUTE AUTRE issue (timeout, `429` même après backoff,
   ///    erreur socket, autre statut HTTP, `200` sans résultat exploitable…) —
   ///    *inconnu*, jamais assimilable à `false`. Un symbole crypto valide
-  ///    (ex. `POL-USD`) peut ne pas être vérifiable par la voie `search`
+  ///    (ex. `POL28321-USD`) peut ne pas être vérifiable par la voie `search`
   ///    existante (§14.9) ; cette méthode ne doit jamais le faire passer à
   ///    tort pour inexistant sur une simple panne réseau.
   ///

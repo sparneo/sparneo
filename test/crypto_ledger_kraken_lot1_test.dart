@@ -1363,7 +1363,7 @@ void main() {
             subtype: 'tradespot', asset: code, amount: '1', subclass: 'crypto');
       }
       buy('CA1', 'ZZZ'); // étage 1 : position existante
-      buy('CA2', 'POL'); // étage 2 : quoteAliases du profil (POL→POL-USD)
+      buy('CA2', 'POL'); // étage 2 : quoteAliases du profil (POL→POL28321-USD)
       buy('CA3', 'WWW'); // étage 3 : réseau <code>-EUR trouvé
       buy('CA4', 'WWW'); // même code : doit réutiliser le cache (mémoïsation)
       buy('CA5', 'VVV'); // étage 4 : <code>-EUR absent, <code>-USD trouvé
@@ -1379,13 +1379,16 @@ void main() {
       expect(newByCode.containsKey('ZZZ'), isFalse);
 
       // Étage 2 : alias de cotation, AUCUN appel réseau.
-      expect(newByCode['POL']!.proposedSymbol, equals('POL-USD'));
+      expect(newByCode['POL']!.proposedSymbol, equals('POL28321-USD'));
       expect(newByCode['POL']!.quotable, isTrue);
       expect(fakeMarket.callLog.contains('POL-EUR'), isFalse);
-      // B-3 (revue adversariale) : l'alias de cotation porte sa propre
-      // devise dans son SUFFIXE (`POL-USD`) — l'actif doit être créé en USD
-      // (cotation Yahoo réelle), PAS en EUR (devise du compte, AVANT le
-      // correctif) sous peine de sous-évaluation silencieuse et permanente.
+      // B-3 (revue adversariale) : l'alias de cotation porte sa propre devise dans
+      // son SUFFIXE (`POL28321-USD`) — l'actif doit être créé en USD (cotation Yahoo
+      // réelle), PAS en EUR (devise du compte, AVANT le correctif) sous peine de
+      // sous-évaluation silencieuse et permanente. L'id CoinMarketCap préfixé au code
+      // (piège d'identité corrigé, cf. broker_profile.dart) ne perturbe pas
+      // l'extraction : celle-ci cherche le DERNIER tiret (`lastIndexOf`), jamais un
+      // split sur le premier — le suffixe `-USD` reste lu correctement.
       final polMovement = preview.toCreate.firstWhere((m) => m.ledgerCode == 'POL');
       expect(polMovement.transaction!.currency, equals('USD'));
 
@@ -1410,6 +1413,22 @@ void main() {
       expect(newByCode['TTT']!.proposedSymbol, equals('crypto:TTT'));
       expect(newByCode['TTT']!.quotable, isFalse);
       expect(fakeMarket.callLog.contains('TTT-USD'), isFalse);
+    });
+
+    test('quoteAliases du profil Kraken : les 3 identités à collision (18/09/2026) pointent vers le ticker désambiguïsé par id CoinMarketCap, pas vers l\'homonyme', () {
+      final aliases = profile.crypto!.quoteAliases;
+      // POL-USD nu répond « Proof Of Liquidity », SGB-USD nu répond
+      // « SubGame », STRK-USD nu répond « Strike » — homonymes sans rapport
+      // avec Polygon/Songbird/Starknet. Vérifié à la main le 18/09/2026.
+      expect(aliases['POL'], equals('POL28321-USD'));
+      expect(aliases['SGB'], equals('SGB12186-USD'));
+      expect(aliases['STRK'], equals('STRK22691-USD'));
+      // Les 4 autres alias sont les bonnes identités, sans collision — ne
+      // doivent pas régresser vers une forme à id lors d'un futur amendement.
+      expect(aliases['FLR'], equals('FLR-USD'));
+      expect(aliases['MOVR'], equals('MOVR-USD'));
+      expect(aliases['GLMR'], equals('GLMR-USD'));
+      expect(aliases['ETHW'], equals('ETHW-USD'));
     });
 
     // -----------------------------------------------------------------------

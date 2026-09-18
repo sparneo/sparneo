@@ -167,7 +167,7 @@ class CryptoLedgerSpec {
   final Map<String, String> identityAliases;
 
   /// Alias de COTATION : associe une identité à un ticker de MARCHÉ
-  /// (`Asset.symbol`, ex. `POL`→`POL-USD`). Table DISTINCTE de
+  /// (`Asset.symbol`, ex. `POL`→`POL28321-USD`). Table DISTINCTE de
   /// [identityAliases] — voir sa doc pour le piège qui impose cette
   /// séparation (conception interne).
   final Map<String, String> quoteAliases;

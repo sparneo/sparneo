@@ -733,7 +733,7 @@ void main() {
         final tx = AssetTransaction(
           id: 'tx-inkind-deposit-usd-manual',
           accountId: _accountId,
-          symbol: 'STRK-USD',
+          symbol: 'STRK22691-USD',
           kind: TransactionKind.adjustment,
           quantity: '4.67848',
           unitPrice: '1.709957080077',

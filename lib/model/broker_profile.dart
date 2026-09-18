@@ -426,12 +426,20 @@ class BrokerProfile {
           'LUNA': 'LUNC',
         },
         // Alias de COTATION, table DISTINCTE (N12) : ces identités ne cotent
-        // qu'en USD chez Yahoo (`<CODE>-EUR` répond 404).
+        // qu'en USD chez Yahoo (`<CODE>-EUR` répond 404). Piège vérifié à la
+        // main le 18/09/2026 : un ticker `-USD` NU peut désigner un homonyme
+        // sans rapport (Yahoo désambiguïse les identités crypto ambiguës par
+        // un id CoinMarketCap suffixé au code) — `POL-USD` répond « Proof Of
+        // Liquidity », `SGB-USD` répond « SubGame », `STRK-USD` répond
+        // « Strike », alors que les identités visées sont respectivement
+        // Polygon, Songbird et Starknet. D'où les trois tickers à id
+        // numérique ci-dessous, vérifiés un par un (les 4 autres alias sont
+        // les bonnes identités, sans collision).
         quoteAliases: const {
-          'POL': 'POL-USD',
+          'POL': 'POL28321-USD',
           'FLR': 'FLR-USD',
-          'SGB': 'SGB-USD',
-          'STRK': 'STRK-USD',
+          'SGB': 'SGB12186-USD',
+          'STRK': 'STRK22691-USD',
           'MOVR': 'MOVR-USD',
           'GLMR': 'GLMR-USD',
           'ETHW': 'ETHW-USD',
