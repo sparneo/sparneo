@@ -100,9 +100,66 @@ enum CryptoLedgerAction {
   /// Rien au journal ; la base de coût reste attachée à la position.
   assetMigration,
 
+  /// Achat fiat→crypto (chantier B16 lot 3, conception interne — Coinbase `Buy`) :
+  /// ligne UNIQUE portant À LA FOIS la quantité crypto ([MovementField.quantity])
+  /// et un montant de valorisation ([MovementField.amount], devise
+  /// [MovementField.currency]) — contrairement à [exchangeLeg] (deux jambes
+  /// séparées à réunir), tout est déjà sur la même ligne. Traité par
+  /// `CryptoLedgerNormalizer. _processFiatTrade`, SOUS LA GARDE « Price Currency »
+  /// : chemin fiat direct (`buy`, cash pris tel quel) si la devise de valorisation
+  /// est celle DU COMPTE, cascade de valorisation (comme un échange à jambe fiat
+  /// étrangère, étage 1-quater) sinon. Distinct de [fiatSell] (plutôt que
+  /// sign-checké comme `deposit`/`withdrawal`) : la nature EST déjà la direction,
+  /// sans lecture de signe — la quantité crypto d'une ligne `Buy`/`Sell` Coinbase
+  /// est toujours positive, un signe n'aurait rien à valider.
+  fiatBuy,
+
+  /// Vente crypto→fiat, symétrique exact de [fiatBuy] (Coinbase `Sell`).
+  fiatSell,
+
   /// Ambigu → REJET MOTIVÉ, jamais journalisé automatiquement — miroir
   /// exact de [CorporateActionKind.manualReview].
   manualReview,
+}
+
+/// Redirection DÉCLARATIVE de l'action d'une ligne selon la valeur d'une colonne
+/// ANNEXE du relevé (chantier B16 lot 3, conception interne — Coinbase : un
+/// `Receive` dont `Sender Address` vaut littéralement `Coinbase Earn` est une
+/// récompense de staking, pas un dépôt en nature ordinaire, décision auteur §5.7
+/// q.4). Une DONNÉE (colonne/valeur/action cible), JAMAIS une closure — même
+/// discipline que le reste de ce fichier (« le profil déclare un EFFET, jamais
+/// une branche de code »).
+///
+/// Consommée par `CryptoLedgerNormalizer._resolveAction` : APRÈS résolution
+/// de l'action normale (composite `type/subtype` ou repli `type`), pour les
+/// lignes dont [kindLabel] coïncide ET dont la cellule [matchColumn]
+/// (comparaison EXACTE après `trim`, SENSIBLE À LA CASSE — un identifiant de
+/// service n'est jamais une saisie libre à normaliser) vaut [matchValue],
+/// [action] REMPLACE le résultat normal. Sans effet sur les autres lignes du
+/// même [kindLabel] dont la colonne ne matche pas (elles suivent
+/// [CryptoLedgerSpec.actions] normalement) ni si [matchColumn] est absente
+/// du fichier (`null` silencieux, jamais un plantage — B4).
+class ConditionalActionRedirect {
+  /// Type BRUT visé (`_Leg.kindLabel`, ex. `'Receive'`).
+  final String kindLabel;
+
+  /// Colonne ANNEXE à consulter, désignée PAR NOM (comme
+  /// [CryptoLedgerSpec.walletColumn]) — pas un [MovementField].
+  final String matchColumn;
+
+  /// Valeur EXACTE attendue dans [matchColumn] pour déclencher la
+  /// redirection.
+  final String matchValue;
+
+  /// Action appliquée quand [matchColumn] vaut [matchValue].
+  final CryptoLedgerAction action;
+
+  const ConditionalActionRedirect({
+    required this.kindLabel,
+    required this.matchColumn,
+    required this.matchValue,
+    required this.action,
+  });
 }
 
 /// Spécification DÉCLARATIVE d'un relevé crypto (grand livre de jambes),
@@ -139,6 +196,12 @@ class CryptoLedgerSpec {
   /// pour [LegGroupingStrategy.counterpartyNote]. Un échec de correspondance
   /// est un REJET MOTIVÉ, jamais un repli heuristique.
   final RegExp? counterpartyPattern;
+
+  /// Colonne TEXTE LIBRE portant la note à faire matcher par
+  /// [counterpartyPattern] (ex. `Notes` Coinbase), désignée PAR NOM (comme
+  /// [walletColumn]) — pas un [MovementField] (aucun équivalent titre).
+  /// `null` sauf pour [LegGroupingStrategy.counterpartyNote].
+  final String? notesColumn;
 
   /// Vocabulaire des natures de ligne → effet crypto ([CryptoLedgerAction]).
   /// CLÉ COMPOSITE quand le format a un sous-type : lookup `'type/subtype'`
@@ -221,6 +284,18 @@ class CryptoLedgerSpec {
 
   /// Devise de [valuationAmountColumn] (`'USD'` pour les trois plateformes
   /// analysées) — sert à sourcer le taux de change historique vers EUR.
+  ///
+  /// GARDE « Price Currency » (B-2, revue adversariale, chantier B16 lot 3) :
+  /// dès qu'un profil mappe [MovementField.currency], `CryptoLedgerNormalizer.
+  /// planCryptoImport` compare CETTE cellule à [valuationCurrency] et annule
+  /// `leg.valuationUsd` en cas de désaccord — la garde suppose donc que
+  /// [MovementField.currency], PARTOUT où un profil le mappe, désigne bien la
+  /// devise de [valuationAmountColumn] sur CETTE ligne (le cas Coinbase,
+  /// `Price Currency`). Un futur profil qui mapperait [MovementField.currency]
+  /// à un AUTRE usage (ex. devise de RÈGLEMENT, sans lien avec la colonne de
+  /// valorisation) verrait ses valorisations silencieusement annulées par
+  /// cette même garde — vérifier cette hypothèse avant de réutiliser ce champ
+  /// pour un nouveau profil crypto.
   final String valuationCurrency;
 
   /// Écart relatif maximal toléré entre les deux valorisations USD des jambes
@@ -284,11 +359,17 @@ class CryptoLedgerSpec {
   /// confirment la même forme, pas avant.
   final Set<String> externalWithdrawalKinds;
 
+  /// Redirections déclaratives d'action pilotées par une colonne annexe (cf.
+  /// [ConditionalActionRedirect]) — vide par défaut (repli neutre, aucun
+  /// effet sur un profil qui n'en déclare pas).
+  final List<ConditionalActionRedirect> conditionalActionRedirects;
+
   CryptoLedgerSpec({
     required this.grouping,
     this.groupKeyColumn,
     this.groupingWindow = Duration.zero,
     this.counterpartyPattern,
+    this.notesColumn,
     this.actions = const {},
     this.subKindColumn,
     this.stakedSuffixes = const {},
@@ -308,5 +389,6 @@ class CryptoLedgerSpec {
     this.signFixedKinds = const {},
     this.externalDepositKinds = const {},
     this.externalWithdrawalKinds = const {},
+    this.conditionalActionRedirects = const [],
   });
 }

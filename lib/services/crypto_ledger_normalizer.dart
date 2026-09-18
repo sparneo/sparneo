@@ -24,9 +24,11 @@
 // sont PRIVÉES à leur fichier (décision architecturale interne : le pipeline
 // crypto vit dans un fichier séparé), donc inaccessibles ici. Le sous-ensemble
 // nécessaire aux trois formats crypto (année d'abord, suffixe horaire UTC/GMT,
-// décimale point) est plus simple que le cas général titres (pas de `compactYmd`,
-// pas de symbole monétaire) : la duplication reste petite et testée
-// indépendamment.
+// décimale point) est plus simple que le cas général titres (pas de `compactYmd`)
+// : la duplication reste petite et testée indépendamment. Le symbole monétaire
+// ANCRÉ tête/queue (`$`/`€`/`£`, conception interne) a rejoint ce sous-ensemble
+// au lot 3 (Coinbase) — absent chez Kraken/Binance, sans effet sur ces deux
+// profils.
 //
 // POLITIQUE B4 partout : additif, idempotent, aperçu avant écriture, JAMAIS
 // de coercition — une nature/format non reconnu est un REJET MOTIVÉ, jamais
@@ -47,6 +49,27 @@ class _Leg {
   final int sourceIndex; // n° de ligne PHYSIQUE 1-based
   final List<String> source;
   final DateTime date;
+
+  /// Horodatage PRÉCIS (jusqu'à la seconde si le relevé la fournit) — À L'USAGE
+  /// EXCLUSIF de la fenêtre de tolérance [CryptoLedgerSpec. groupingWindow]
+  /// ([LegGroupingStrategy.counterpartyNote], chantier B16 lot 3, conception
+  /// interne). DISTINCT de [date] (granularité JOUR, volontairement conservée
+  /// ainsi PARTOUT AILLEURS dans ce pipeline — agrégation mensuelle, ordre
+  /// chronologique global, `AssetTransaction. date`… — cf. les commentaires de
+  /// `_RewardBucket`/`addReward` sur cette granularité ASSUMÉE) : y toucher
+  /// aurait un rayon d'effet bien plus large que le seul besoin d'appariement
+  /// Coinbase. Repli (relevé sans heure sur CETTE ligne) : minuit UTC du jour de
+  /// [date] — TOUJOURS le référentiel UTC, JAMAIS `date` telle quelle (M-r1,
+  /// contre-revue, CORRECTIF : `date` est construite par le constructeur LOCAL,
+  /// cf. `_parseCryptoDate` — un repli qui la renvoyait directement mélangeait
+  /// les référentiels sur un fichier MIXTE, une jambe avec heure comparée à une
+  /// jambe sans heure, décalant la fenêtre `groupingWindow` de l'offset local
+  /// entier). Le repli n'est donc PAS un simple « diff en jours pleins » : sous
+  /// ce format (Coinbase fournit systématiquement une heure), il n'est en
+  /// pratique jamais exercé, mais reste correct (minuit UTC) si un futur profil
+  /// `counterpartyNote` omettait l'heure sur certaines lignes.
+  final DateTime preciseDate;
+
   final String kindLabel;
   final String? subKind;
   final String rawAsset; // code TEL QUE DANS LE FICHIER, avant alias
@@ -57,6 +80,31 @@ class _Leg {
   final String? assetClass; // 'fiat' / 'stable_coin' / … (subclass)
   final Decimal? valuationUsd; // amountusd — null si absente/illisible (N2)
   final String? operationReference;
+
+  /// Montant de RÈGLEMENT porté par CETTE MÊME ligne (`MovementField.
+  /// amount`, ex. `Subtotal` Coinbase) — DISTINCT de [valuationUsd] par le
+  /// PROPOS (celui-ci sert au chemin fiat DIRECT d'un `Buy`/`Sell` collapsé
+  /// sur une seule ligne, cf. `CryptoLedgerNormalizer._processFiatTrade`),
+  /// même si les deux colonnes SOURCE coïncident chez Coinbase (`Subtotal`
+  /// alimente les deux). `null` pour un profil qui ne mappe pas
+  /// `MovementField.amount` (Kraken) — repli neutre, aucun effet.
+  final Decimal? amount;
+
+  /// Devise de [amount] (`MovementField.currency`, ex. `Price Currency`
+  /// Coinbase) — garde §5.3.4 : seule une valeur ÉGALE à la devise du
+  /// compte autorise le chemin fiat direct. `null` si le profil ne mappe
+  /// pas `MovementField.currency`.
+  final String? amountCurrency;
+
+  /// Texte libre de la colonne [CryptoLedgerSpec.notesColumn] (ex. `Notes`
+  /// Coinbase) — `null` si le profil ne déclare pas cette colonne.
+  final String? notes;
+
+  /// Cellules des colonnes ANNEXES référencées par
+  /// [CryptoLedgerSpec.conditionalActionRedirects] (ex. `Sender Address`),
+  /// résolues une fois par nom de colonne — vide pour un profil qui n'en
+  /// déclare aucune (Kraken).
+  final Map<String, String?> conditionalColumns;
 
   /// Séquence MONOTONE dans l'ordre chronologique de traitement (posée en
   /// `meta['seq']` des mouvements émis, départage intraday — même rôle que
@@ -75,6 +123,7 @@ class _Leg {
     required this.sourceIndex,
     required this.source,
     required this.date,
+    required this.preciseDate,
     required this.kindLabel,
     required this.subKind,
     required this.rawAsset,
@@ -85,6 +134,10 @@ class _Leg {
     required this.assetClass,
     required this.valuationUsd,
     required this.operationReference,
+    required this.amount,
+    required this.amountCurrency,
+    required this.notes,
+    required this.conditionalColumns,
     required this.seq,
   });
 
@@ -107,7 +160,24 @@ class _RewardBucket {
   int? firstSeq;
   int? lastSeq;
 
+  /// Somme de `_Leg.valuationUsd` des lignes du bucket (chantier B16 lot 3,
+  /// conception interne — Coinbase `Reward Income`, `Subtotal` USD EN META
+  /// SEULEMENT, jamais utilisé pour le coût — les récompenses restent à coût 0).
+  /// `null` dès qu'UNE ligne du bucket n'a pas de valorisation lisible (jamais
+  /// une somme PARTIELLE trompeuse, B4).
+  Decimal? valuationUsdSum = Decimal.zero;
+
   _RewardBucket(this.baseAsset, this.month);
+}
+
+/// Contrepartie CIBLE extraite du texte libre `Notes` d'une jambe `Convert`
+/// sortante (chantier B16 lot 3, conception interne) — `qty`/`asset` du motif
+/// [CryptoLedgerSpec.counterpartyPattern], jamais exposée hors de ce fichier.
+class _ConvertTarget {
+  final Decimal qty;
+  final String asset;
+
+  const _ConvertTarget({required this.qty, required this.asset});
 }
 
 /// Pipeline PUR de normalisation d'un grand livre crypto. Voir doc de fichier.
@@ -163,6 +233,34 @@ class CryptoLedgerNormalizer {
     final balanceIdx = _byNameIndex(header, crypto.balanceColumn);
     final classIdx = _byNameIndex(header, crypto.assetClassColumn);
     final valuationIdx = _byNameIndex(header, crypto.valuationAmountColumn);
+    // `MovementField.amount`/`currency` : SANS équivalent Kraken (`null` pour
+    // tout profil qui ne les mappe pas, ex. `BrokerProfile.kraken`) — servent au
+    // seul chemin `_processFiatTrade` (lot 3, Buy/Sell Coinbase collapsés sur une
+    // ligne unique, conception interne).
+    final amountIdx = _fieldIndex(header, profile, MovementField.amount);
+    final currencyIdx = _fieldIndex(header, profile, MovementField.currency);
+    final notesIdx = _byNameIndex(header, crypto.notesColumn);
+
+    // ---- Refus GLOBAL motivé (M-3, revue adversariale) : colonne Notes
+    // ATTENDUE par le profil (`crypto.notesColumn` non nul, ex. `Notes`
+    // Coinbase) mais ABSENTE de l'en-tête réel — message DÉDIÉ, distinct de
+    // « langue non reconnue » (ci-dessous), qui autrement induirait en erreur
+    // (SANS colonne Notes, chaque tentative d'extraction échoue de toute
+    // façon, mais la cause n'est pas linguistique). Évalué EN PREMIER,
+    // indépendamment de la présence de lignes `Convert` dans le fichier.
+    if (crypto.grouping == LegGroupingStrategy.counterpartyNote &&
+        crypto.notesColumn != null &&
+        notesIdx == null) {
+      return const CryptoImportPlan.rejectedGlobally(
+        'cryptoConvertNotesColumnMissing',
+      );
+    }
+    // Colonnes ANNEXES référencées par les redirections déclaratives
+    // (`Sender Address` Coinbase…) — résolues UNE fois, jamais par ligne.
+    final conditionalColumnIndices = <String, int?>{
+      for (final redirect in crypto.conditionalActionRedirects)
+        redirect.matchColumn: _byNameIndex(header, redirect.matchColumn),
+    };
 
     // ---- PASSE 1 : extraction brute + parsing, ordre du FICHIER ----
     final legs = <_Leg>[];
@@ -196,6 +294,17 @@ class CryptoLedgerNormalizer {
         earlyRejects.add(reject('invalidCryptoDate'));
         continue;
       }
+      // Repli en UTC (M-r1, contre-revue, CORRECTIF) — `date` est du
+      // référentiel LOCAL (`_parseCryptoDate`, constructeur `DateTime`
+      // nu) : la renvoyer telle quelle aurait mélangé les référentiels sur
+      // un fichier MIXTE (une jambe datée avec heure → `DateTime.utc` via
+      // `_parseCryptoTimeOfDay`, l'autre sans heure → `date` LOCAL),
+      // décalant `groupingWindow` de l'offset local entier (mesuré : 2 h
+      // 00 min 05 s au lieu de 5 s sous Europe/Paris). `DateTime.utc` sur
+      // les mêmes année/mois/jour fixe le même référentiel dans les deux
+      // branches.
+      final preciseDate = _parseCryptoTimeOfDay(dateRaw, date) ??
+          DateTime.utc(date.year, date.month, date.day);
       if (qtyRaw == null) {
         earlyRejects.add(reject('missingCryptoQuantity'));
         continue;
@@ -216,11 +325,35 @@ class CryptoLedgerNormalizer {
 
       final balanceRaw = _cell(row, balanceIdx);
       final valuationRaw = _cell(row, valuationIdx);
+      final amountRaw = _cell(row, amountIdx);
+      final amountCurrencyRaw = _cell(row, currencyIdx);
+
+      // GARDE « Price Currency » (B-2, revue adversariale, CORRECTIF) : la
+      // colonne [crypto.valuationAmountColumn] (ex. `Subtotal` Coinbase) est
+      // DOCUMENTÉE comme étant en [CryptoLedgerSpec.valuationCurrency] (ex.
+      // `USD`) — mais un relevé qui MAPPE `MovementField.currency` (`Price
+      // Currency`) peut porter une devise DIFFÉRENTE sur CETTE ligne (ex. un
+      // compte dont Coinbase a facturé en EUR). AVANT ce correctif, `leg.
+      // valuationUsd` était pris tel quel dans ce cas — un compte EUR aurait
+      // vu son propre `Subtotal` EUR traité comme du USD par la cascade de
+      // valorisation (`usdPaid`/`usdReceived` d'un `Convert`, `usdReceived`
+      // d'un dépôt en nature, `meta['valuationUsd']` d'un retrait) : ×taux
+      // USD→EUR appliqué à un montant DÉJÀ en EUR, falsification silencieuse
+      // (~14 % dans l'exemple de la revue). Seule une colonne `currency`
+      // RENSEIGNÉE ET DIFFÉRENTE (comparaison insensible à la casse) annule
+      // la valorisation — `null` (illisible/absente) reste neutre, comme
+      // avant ce correctif : la ligne retombe alors en arbitrage manuel
+      // visible (`UnvaluedExchange` sans `usdPaid`/`usdReceived`, jamais un
+      // montant faux).
+      final priceCurrencyMismatch = currencyIdx != null &&
+          amountCurrencyRaw != null &&
+          amountCurrencyRaw.toUpperCase() != crypto.valuationCurrency.toUpperCase();
 
       legs.add(_Leg(
         sourceIndex: srcIndex,
         source: row,
         date: date,
+        preciseDate: preciseDate,
         kindLabel: kindRaw,
         subKind: _cell(row, subKindIdx),
         rawAsset: assetRaw,
@@ -233,10 +366,21 @@ class CryptoLedgerNormalizer {
             ? null
             : _parseCryptoDecimal(balanceRaw, profile.decimalSeparator),
         assetClass: _cell(row, classIdx),
-        valuationUsd: valuationRaw == null
+        valuationUsd: priceCurrencyMismatch
             ? null
-            : _parseCryptoDecimal(valuationRaw, profile.decimalSeparator),
+            : (valuationRaw == null
+                ? null
+                : _parseCryptoDecimal(valuationRaw, profile.decimalSeparator)),
         operationReference: _cell(row, refIdx),
+        amount: amountRaw == null
+            ? null
+            : _parseCryptoDecimal(amountRaw, profile.decimalSeparator),
+        amountCurrency: amountCurrencyRaw,
+        notes: _cell(row, notesIdx),
+        conditionalColumns: {
+          for (final entry in conditionalColumnIndices.entries)
+            entry.key: _cell(row, entry.value),
+        },
         seq: 0, // réassigné après le tri chronologique, cf. plus bas
       ));
     }
@@ -266,6 +410,38 @@ class CryptoLedgerNormalizer {
       leg.action = _resolveAction(leg, crypto);
     }
 
+    // ---- Refus GLOBAL motivé (langue non reconnue, chantier B16 lot 3, conception
+    // interne) — [LegGroupingStrategy.counterpartyNote] UNIQUEMENT : le motif
+    // [CryptoLedgerSpec.counterpartyPattern] ne matche AUCUNE ligne `Convert`
+    // SORTANTE (quantité négative) du fichier entier → message DÉDIÉ, jamais 19
+    // rejets muets ligne à ligne (une seule ligne qui matche suffit à écarter ce
+    // diagnostic ; les autres échecs individuels restent des rejets motivés
+    // `convertNotesUnparsed`, cf. la boucle de groupage plus bas).
+    //
+    // SEUIL ≥ 2 (M-3, revue adversariale, CORRECTIF) : SOUS ce seuil (0 ou 1
+    // sortante non matchée), le diagnostic « langue non reconnue » est
+    // disproportionné — un unique fichier synthétique/test à une seule
+    // conversion malformée partait en refus GLOBAL alors qu'un simple rejet
+    // ligne à ligne motivé (`convertNotesUnparsed`) suffit à le signaler
+    // SANS priver le reste du fichier de son import. `negativeConverts.
+    // every(...)` restant `true` implique que TOUTES les sortantes ont
+    // échoué : la longueur de la liste EST donc le compte de non-matchées,
+    // pas seulement son plancher.
+    if (crypto.grouping == LegGroupingStrategy.counterpartyNote &&
+        crypto.counterpartyPattern != null) {
+      final negativeConverts = legs.where((l) =>
+          l.action == CryptoLedgerAction.exchangeLeg &&
+          l.quantity.sign < 0);
+      if (negativeConverts.length >= 2 &&
+          negativeConverts.every((l) =>
+              crypto.counterpartyPattern!.firstMatch(l.notes ?? '') ==
+              null)) {
+        return const CryptoImportPlan.rejectedGlobally(
+          'cryptoConvertNotesLanguageUnrecognized',
+        );
+      }
+    }
+
     // ---- Oracle `balance` (§5.1.10) — rejeu sur l'actif BRUT/wallet, TOUTES
     // les jambes (indépendant de l'action résolue : le fichier est ou n'est
     // pas auto-cohérent, quelle que soit notre compréhension des codes) ----
@@ -292,9 +468,6 @@ class CryptoLedgerNormalizer {
       finalBalanceByRawKey[key] = leg.balance!;
     }
 
-    // ---- [2ter] Groupage des jambes ----
-    final groups = _groupLegs(legs, crypto);
-
     final movements = <ImportedMovement>[...earlyRejects];
     final unvaluedExchanges = <UnvaluedExchange>[];
     final internalTransferTally = <String, Decimal>{};
@@ -310,6 +483,11 @@ class CryptoLedgerNormalizer {
       ));
     }
 
+    // ---- [2ter] Groupage des jambes — APRÈS la déclaration de `reject`
+    // (l'appariement `counterpartyNote` rejette directement les jambes
+    // Convert non appariées, cf. `_groupByCounterpartyNote`) ----
+    final groups = _groupLegs(legs, crypto, profile.decimalSeparator, reject);
+
     void addReward(_Leg leg) {
       final month =
           '${leg.date.year.toString().padLeft(4, '0')}-${leg.date.month.toString().padLeft(2, '0')}';
@@ -319,6 +497,14 @@ class CryptoLedgerNormalizer {
       bucket.netSum += leg.net;
       bucket.feeInKind += leg.fee;
       bucket.rowCount++;
+      // Cf. la doc de `_RewardBucket.valuationUsdSum` : somme EXACTE si
+      // TOUTES les lignes du bucket ont une valorisation lisible, `null`
+      // dès la première absente (jamais une somme partielle).
+      if (leg.valuationUsd == null || bucket.valuationUsdSum == null) {
+        bucket.valuationUsdSum = null;
+      } else {
+        bucket.valuationUsdSum = bucket.valuationUsdSum! + leg.valuationUsd!;
+      }
       // Comparaison ROBUSTE sur `seq` (jamais sur `date` seule) : l'ordre
       // d'itération des GROUPES (par `refid`) n'implique pas que les jambes
       // d'un même bucket (actif, mois) soient visitées en ordre
@@ -453,6 +639,26 @@ class CryptoLedgerNormalizer {
           );
           break;
 
+        case CryptoLedgerAction.fiatBuy:
+        case CryptoLedgerAction.fiatSell:
+          // Toujours des groupes SINGLETON (`_groupByCounterpartyNote`
+          // n'apparie jamais ces natures) — une ligne = une opération
+          // complète (quantité crypto + montant de règlement), à la
+          // différence de `exchangeLeg` qui a besoin d'une contrepartie.
+          for (final leg in activeLegs) {
+            _processFiatTrade(
+              leg,
+              action,
+              refid: refid,
+              accountId: accountId,
+              accountCurrency: accountCurrency,
+              movements: movements,
+              unvaluedExchanges: unvaluedExchanges,
+              reject: reject,
+            );
+          }
+          break;
+
         case CryptoLedgerAction.manualReview:
           // Filtré plus haut (jamais dans activeLegs) — case gardée pour
           // l'exhaustivité du switch.
@@ -481,6 +687,11 @@ class CryptoLedgerNormalizer {
         'aggregatedFrom': _isoDay(bucket.firstDate!),
         'aggregatedTo': _isoDay(bucket.lastDate!),
         'aggregatedFeeInKind': bucket.feeInKind.toString(),
+        // Cf. `_RewardBucket.valuationUsdSum` — INFORMATIF seulement (le
+        // coût de la récompense reste 0), absent si une seule ligne du
+        // bucket manquait de valorisation lisible.
+        if (bucket.valuationUsdSum != null)
+          'aggregatedValuationUsd': bucket.valuationUsdSum!.toString(),
         'ledgerCode': bucket.baseAsset,
         // Datation et `seq` sur la PREMIÈRE ligne du mois (`firstDate`/
         // `firstSeq`), PAS la dernière : la projection (`replayLedger`,
@@ -546,13 +757,24 @@ class CryptoLedgerNormalizer {
       for (final leg in legs)
         if (_isFiat(leg, crypto)) leg.rawAsset,
     };
-    final quantityGaps = _computeQuantityGaps(
-      movements,
-      unvaluedExchanges,
-      finalBalanceByRawKey,
-      crypto,
-      fiatRawAssets,
-    );
+    // SANS oracle `balance` (`crypto.balanceColumn == null`, ex. Coinbase —
+    // chantier B16 lot 3, conception interne), il n'existe AUCUNE valeur «
+    // rapportée » de référence : `finalBalanceByRawKey` reste vide pour TOUS les
+    // actifs, et comparer un rapporté à 0 par défaut à la quantité PROJETÉE
+    // fabriquerait un « écart » fantôme sur CHAQUE actif importé — exactement
+    // l'inverse de la garde Kraken ci-dessus (qui exclut le fiat d'une carte par
+    // ailleurs légitime). Le profil ANNONCE l'absence d'oracle (aucune carte,
+    // jamais une carte fausse) : aucune carte du tout plutôt qu'une carte 100 %
+    // fausse positifs.
+    final quantityGaps = crypto.balanceColumn == null
+        ? const <QuantityGap>[]
+        : _computeQuantityGaps(
+            movements,
+            unvaluedExchanges,
+            finalBalanceByRawKey,
+            crypto,
+            fiatRawAssets,
+          );
 
     return CryptoImportPlan(
       movements: movements,
@@ -979,6 +1201,8 @@ class CryptoLedgerNormalizer {
   static Map<String, List<_Leg>> _groupLegs(
     List<_Leg> legs,
     CryptoLedgerSpec crypto,
+    DecimalSeparator decimalSeparator,
+    void Function(_Leg, String) reject,
   ) {
     switch (crypto.grouping) {
       case LegGroupingStrategy.operationReference:
@@ -997,11 +1221,184 @@ class CryptoLedgerNormalizer {
           'horodatage exact) est réservé au lot 4 — non implémenté.',
         );
       case LegGroupingStrategy.counterpartyNote:
-        throw UnsupportedError(
-          'LegGroupingStrategy.counterpartyNote (appariement Coinbase par '
-          'texte libre Notes) est réservé au lot 3 — non implémenté.',
-        );
+        return _groupByCounterpartyNote(legs, crypto, decimalSeparator, reject);
     }
+  }
+
+  /// Appariement DÉTERMINISTE des jambes `Convert` (chantier B16 lot 3, conception
+  /// interne) : la jambe SORTANTE (quantité négative) extrait sa contrepartie
+  /// attendue `(qty_cible, ticker_cible)` du texte libre
+  /// [CryptoLedgerSpec.notesColumn] via [CryptoLedgerSpec.counterpartyPattern]
+  /// (groupes nommés `qty`/`asset`), puis cherche parmi les jambes ENTRANTES
+  /// (quantité positive) l'UNIQUE candidate de même actif BRUT et de quantité
+  /// EXACTEMENT égale (comparaison `Decimal`, jamais `double`), dans la fenêtre
+  /// [CryptoLedgerSpec.groupingWindow]. Trois contraintes CUMULATIVES, chacune un
+  /// rejet motivé distinct en cas d'échec — JAMAIS de repli heuristique (une jambe
+  /// non appariée journalisée seule fabriquerait une sortie/entrée imaginaire et
+  /// casserait le PRU) :
+  ///   - motif imparsable sur la sortante → `convertNotesUnparsed` ;
+  ///   - aucune candidate (quantité non exacte OU hors fenêtre) →
+  ///     `convertNoMatch` ;
+  ///   - pluralité — PLUSIEURS candidates pour une sortante, OU plusieurs
+  ///     sortantes revendiquant la MÊME entrante (unicité 1-1 STRICTE dans
+  ///     les deux sens) → `convertAmbiguousMatch`, abandon des DEUX côtés.
+  ///
+  /// Les lignes NON-`Convert` (Receive/Send/Reward Income/Buy/Sell…) ne
+  /// s'apparient jamais : chacune forme sa PROPRE clé de groupe (comme le
+  /// repli `solo:` de [LegGroupingStrategy.operationReference]) — leur
+  /// action respective se traite déjà ligne à ligne dans la boucle
+  /// principale de `planCryptoImport`, indépendamment de la taille du
+  /// groupe.
+  ///
+  /// Clé de groupe d'une paire réussie : l'`ID` (référence d'opération) de la jambe
+  /// SORTANTE — convention conception interne (`ref:accountId:ID#rôle`), déjà
+  /// assurée par [_processExchangeGroup] qui reçoit cette clé comme `refid`.
+  static Map<String, List<_Leg>> _groupByCounterpartyNote(
+    List<_Leg> legs,
+    CryptoLedgerSpec crypto,
+    DecimalSeparator decimalSeparator,
+    void Function(_Leg, String) reject,
+  ) {
+    final groups = <String, List<_Leg>>{};
+    final convertLegs = <_Leg>[];
+    for (final leg in legs) {
+      if (leg.action == CryptoLedgerAction.exchangeLeg) {
+        convertLegs.add(leg);
+        continue;
+      }
+      final ref = leg.operationReference;
+      final key =
+          (ref != null && ref.isNotEmpty) ? ref : 'solo:${leg.sourceIndex}';
+      // ACCUMULE (I-3, revue adversariale, CORRECTIF) — jamais un
+      // remplacement (`groups[key] = [leg]` PERDAIT silencieusement toute
+      // ligne précédente partageant la même clé, ex. un `ID` dupliqué par le
+      // courtier) : même idiome que la stratégie sœur
+      // [LegGroupingStrategy.operationReference] ci-dessus.
+      (groups[key] ??= <_Leg>[]).add(leg);
+    }
+    if (convertLegs.isEmpty) return groups;
+
+    final pattern = crypto.counterpartyPattern;
+    final negatives = convertLegs.where((l) => l.quantity.sign < 0).toList();
+    final positives = convertLegs.where((l) => l.quantity.sign >= 0).toList();
+
+    // Extraction de la contrepartie — UNIQUEMENT sur les sortantes (§2
+    // point 1). Échec de motif = rejet DIRECT, jamais de tentative
+    // d'appariement sur une info absente.
+    final targets = <_Leg, _ConvertTarget>{};
+    for (final neg in negatives) {
+      final match = pattern?.firstMatch(neg.notes ?? '');
+      final qtyRaw = match?.namedGroup('qty');
+      final assetRaw = match?.namedGroup('asset');
+      final qty = qtyRaw == null ? null : _parseNoteQuantity(qtyRaw, decimalSeparator);
+      if (match == null || qty == null || assetRaw == null || assetRaw.isEmpty) {
+        reject(neg, 'convertNotesUnparsed');
+        continue;
+      }
+      targets[neg] = _ConvertTarget(qty: qty, asset: assetRaw);
+    }
+
+    // Candidats par sortante : entrantes de même actif BRUT (avant alias —
+    // le texte de la note cite le ticker TEL QU'IL APPARAÎT sur le relevé)
+    // et de quantité EXACTEMENT égale, dans la fenêtre de tolérance.
+    final candidatesOf = <_Leg, List<_Leg>>{};
+    for (final entry in targets.entries) {
+      final target = entry.value;
+      candidatesOf[entry.key] = positives.where((pos) {
+        if (pos.rawAsset != target.asset) return false;
+        if (pos.quantity != target.qty) return false;
+        // `preciseDate` (jusqu'à la seconde), JAMAIS `date` (granularité
+        // JOUR) — cf. la doc de `_Leg.preciseDate`.
+        return pos.preciseDate.difference(entry.key.preciseDate).abs() <=
+            crypto.groupingWindow;
+      }).toList();
+    }
+
+    // Unicité 1-1 STRICTE côté ENTRANTE : combien de sortantes (à candidate
+    // UNIQUE) revendiquent chaque entrante.
+    final claimsOnPositive = <_Leg, List<_Leg>>{};
+    for (final entry in candidatesOf.entries) {
+      if (entry.value.length == 1) {
+        (claimsOnPositive[entry.value.single] ??= <_Leg>[]).add(entry.key);
+      }
+    }
+
+    // Entrantes IMPLIQUÉES dans une ambiguïté « côté sortante » (M-1, revue
+    // adversariale, CORRECTIF) : une sortante à PLUSIEURS candidates (`entry.
+    // value.length > 1`, ci-dessus EXCLUE de `claimsOnPositive`) abandonne
+    // les deux côtés — mais AVANT ce correctif, ses candidates ne portaient
+    // ZÉRO revendication (absentes de `claimsOnPositive`) et retombaient
+    // donc, plus bas, sur `convertNoMatch` (« aucune candidate ») au lieu de
+    // `convertAmbiguousMatch` (« plusieurs candidates, on a dû choisir entre
+    // elles ») — motif TROMPEUR : ces entrantes N'ONT PAS été ignorées, elles
+    // ont concouru pour la même sortante et ont PERDU à égalité. Toute
+    // entrante figurant dans la liste de candidates d'UNE sortante ambiguë
+    // porte donc désormais le même motif que cette sortante, qu'elle soit
+    // par ailleurs revendiquée ou non.
+    final ambiguousPositives = <_Leg>{};
+    for (final entry in candidatesOf.entries) {
+      if (entry.value.length > 1) {
+        ambiguousPositives.addAll(entry.value);
+      }
+    }
+
+    final pairedPositives = <_Leg>{};
+    for (final neg in negatives) {
+      final target = targets[neg];
+      if (target == null) continue; // déjà rejetée (note imparsable)
+      final candidates = candidatesOf[neg]!;
+      if (candidates.length > 1) {
+        reject(neg, 'convertAmbiguousMatch');
+        continue;
+      }
+      if (candidates.isEmpty) {
+        reject(neg, 'convertNoMatch');
+        continue;
+      }
+      final pos = candidates.single;
+      if ((claimsOnPositive[pos]?.length ?? 0) > 1) {
+        // Pluralité côté ENTRANTE (≥ 2 sortantes revendiquent la même
+        // candidate) — abandon des DEUX côtés, lignes inchangées.
+        reject(neg, 'convertAmbiguousMatch');
+        continue;
+      }
+      pairedPositives.add(pos);
+      final key = (neg.operationReference != null && neg.operationReference!.isNotEmpty)
+          ? neg.operationReference!
+          : 'solo:${neg.sourceIndex}';
+      // ACCUMULE (I-3, même correctif que ci-dessus) — une clé `ID` déjà
+      // occupée par une ligne NON-Convert (cas dégénéré, `ID` dupliqué par
+      // le courtier) ne doit pas non plus disparaître silencieusement.
+      (groups[key] ??= <_Leg>[])
+        ..add(neg)
+        ..add(pos);
+    }
+
+    for (final pos in positives) {
+      if (pairedPositives.contains(pos)) continue;
+      final claimants = claimsOnPositive[pos]?.length ?? 0;
+      final ambiguous = claimants > 1 || ambiguousPositives.contains(pos);
+      reject(pos, ambiguous ? 'convertAmbiguousMatch' : 'convertNoMatch');
+    }
+
+    return groups;
+  }
+
+  /// Quantité extraite d'un texte libre (`Notes`) — reprend en miniature
+  /// [_parseCryptoDecimal] : la valeur capturée par [CryptoLedgerSpec.
+  /// counterpartyPattern] (groupe `qty`) peut porter un séparateur de
+  /// milliers occasionnel (virgule si la décimale du profil est le point,
+  /// point si elle est la virgule) — retiré avant parsing, jamais confondu
+  /// avec la décimale elle-même.
+  static Decimal? _parseNoteQuantity(String raw, DecimalSeparator sep) {
+    var s = raw.trim();
+    if (s.isEmpty) return null;
+    if (sep == DecimalSeparator.comma) {
+      s = s.replaceAll('.', '').replaceAll(',', '.');
+    } else {
+      s = s.replaceAll(',', '');
+    }
+    return Decimal.tryParse(s);
   }
 
   // ---------------------------------------------------------------------
@@ -1158,6 +1555,117 @@ class CryptoLedgerNormalizer {
       ledgerCode: leg.baseAsset,
       needsAssetResolution: true,
       importKey: importKey,
+    ));
+  }
+
+  /// Traite une ligne `Buy`/`Sell` (chantier B16 lot 3, conception interne —
+  /// Coinbase) : contrairement à `Convert`/Kraken, TOUT est déjà sur la MÊME
+  /// ligne (quantité crypto via `MovementField.quantity`, montant de règlement
+  /// via `MovementField.amount`, devise de ce montant via
+  /// `MovementField.currency`) — aucune contrepartie à chercher.
+  ///
+  /// GARDE « Price Currency » (§5.3.4, revue adversariale du design
+  /// OBLIGATOIRE) : les valorisations fichier sont dans la devise DE LA
+  /// LIGNE (`leg.amountCurrency`), pas forcément celle du compte. Le chemin
+  /// fiat DIRECT (montant pris tel quel, comme un trade Kraken à jambe
+  /// fiat) n'est empruntable QUE si `leg.amountCurrency == accountCurrency`
+  /// — sinon la ligne part comme un `UnvaluedExchange` à jambe fiat
+  /// ÉTRANGÈRE, résolu par la MÊME cascade que l'étage 1-quater existant
+  /// (`CryptoValuationService`, `CryptoValuation.source == 'fiatLeg'` —
+  /// automatique seulement si cette devise est littéralement `USD`, sinon
+  /// arbitrage manuel `foreignFiat`, comme toute autre jambe fiat
+  /// étrangère). Sans cette garde, un compte EUR importerait un `Subtotal`
+  /// USD comme des euros — falsification silencieuse du cash.
+  static void _processFiatTrade(
+    _Leg leg,
+    CryptoLedgerAction action, {
+    required String refid,
+    required String accountId,
+    required String accountCurrency,
+    required List<ImportedMovement> movements,
+    required List<UnvaluedExchange> unvaluedExchanges,
+    required void Function(_Leg, String) reject,
+  }) {
+    final quantity = leg.quantity;
+    if (quantity == Decimal.zero) {
+      reject(leg, 'cryptoZeroNetMovement');
+      return;
+    }
+    final cashAmount = leg.amount?.abs();
+    final cashCurrency = leg.amountCurrency;
+    if (cashAmount == null || cashCurrency == null || cashAmount == Decimal.zero) {
+      reject(leg, 'cryptoFiatTradeUnreadableAmount');
+      return;
+    }
+    final isSell = action == CryptoLedgerAction.fiatSell;
+
+    if (cashCurrency.toUpperCase() == accountCurrency.toUpperCase()) {
+      // Chemin fiat DIRECT — même modèle qu'un trade Kraken à jambe fiat
+      // (`_processExchangeGroup`, branche `nonFiatLegs.length == 1`) :
+      // `sell` crédite le cash (montant positif), `buy` le débite.
+      final kind = isSell ? TransactionKind.sell : TransactionKind.buy;
+      final signedAmount = isSell ? cashAmount : -cashAmount;
+      final unitPrice =
+          (cashAmount / quantity.abs()).toDecimal(scaleOnInfinitePrecision: 12);
+      final role = '${isSell ? 'sell' : 'buy'}:${leg.baseAsset}';
+      final importKey = 'ref:$accountId:$refid#$role';
+      final tx = AssetTransaction(
+        id: AssetTransaction.generateId(),
+        accountId: accountId,
+        symbol: null,
+        kind: kind,
+        quantity: quantity.abs().toString(),
+        unitPrice: unitPrice.toString(),
+        amount: signedAmount.toString(),
+        // `accountCurrency` (M-4, revue adversariale, CORRECTIF), PAS
+        // `cashCurrency` : ce dernier est la casse BRUTE de la cellule
+        // `Price Currency` (ex. `usd` en minuscules) — la comparaison
+        // ci-dessus est déjà insensible à la casse, mais émettre la valeur
+        // brute aurait tout de même laissé passer un mouvement étiqueté
+        // `usd` plutôt que `USD`, incohérent avec le reste du pipeline (qui
+        // normalise systématiquement sur la devise DU COMPTE).
+        currency: accountCurrency,
+        settlementCurrency: accountCurrency,
+        date: leg.date,
+        meta: {'seq': leg.seq, 'importKey': importKey},
+      );
+      movements.add(ImportedMovement.candidate(
+        sourceRow: leg.source,
+        sourceRowIndex: leg.sourceIndex,
+        transaction: tx,
+        ledgerCode: leg.baseAsset,
+        needsAssetResolution: true,
+        importKey: importKey,
+      ));
+      return;
+    }
+
+    // Price Currency ÉTRANGÈRE à la devise du compte : cascade de
+    // valorisation, comme un échange à jambe fiat étrangère — jamais un
+    // montant pris au pair (B-2, même garde que `_processExchangeGroup`).
+    final importKey = 'ref:$accountId:$refid';
+    unvaluedExchanges.add(UnvaluedExchange(
+      kind: 'exchange',
+      date: leg.date,
+      codePaid: isSell ? leg.baseAsset : cashCurrency,
+      quantityPaid: (isSell ? quantity.abs() : cashAmount).toString(),
+      codeReceived: isSell ? cashCurrency : leg.baseAsset,
+      quantityReceived: (isSell ? cashAmount : quantity.abs()).toString(),
+      // `usdPaid`/`usdReceived` ne portent QUE la valorisation USD
+      // DOCUMENTÉE de la jambe crypto (`leg.valuationUsd`, colonne
+      // `CryptoLedgerSpec.valuationAmountColumn`) — jamais le montant de la
+      // jambe fiat elle-même (`cashAmount`), dont la devise réelle
+      // ([cashCurrency]) n'est PAS forcément USD malgré le nom du champ ;
+      // c'est `quantityPaid`/`quantityReceived` (toujours exacts, ci-dessus)
+      // que l'étage 1-quater (`CryptoValuationService`) consulte pour la
+      // jambe fiat, jamais ces deux champs.
+      usdPaid: isSell ? leg.valuationUsd?.toString() : null,
+      usdReceived: isSell ? null : leg.valuationUsd?.toString(),
+      sourceLines: [leg.sourceIndex],
+      importKey: importKey,
+      seq: leg.seq,
+      codePaidIsFiat: !isSell,
+      codeReceivedIsFiat: isSell,
     ));
   }
 
@@ -1584,13 +2092,27 @@ class CryptoLedgerNormalizer {
   /// maintenant TOUJOURS un rejet motivé `unknownCryptoAction` (B4 : jamais
   /// de coercition), jamais un repli.
   static CryptoLedgerAction? _resolveAction(_Leg leg, CryptoLedgerSpec crypto) {
-    if (leg.subKind != null && leg.subKind!.isNotEmpty) {
-      return crypto.actions['${leg.kindLabel}/${leg.subKind}'];
+    final base = leg.subKind != null && leg.subKind!.isNotEmpty
+        ? crypto.actions['${leg.kindLabel}/${leg.subKind}']
+        // Sous-type ABSENT (ex. `spend`/`receive`/`deposit`/`withdrawal`
+        // bruts Kraken, qui n'ont jamais de `subtype` renseigné hors
+        // dustsweeping) : repli légitime sur le type nu.
+        : crypto.actions[leg.kindLabel];
+
+    // Redirection déclarative par colonne annexe (chantier B16 lot 3, conception
+    // interne — Coinbase `Receive` / `Sender Address`) : REMPLACE [base] pour
+    // cette ligne UNIQUEMENT quand le type ET la valeur de la colonne coïncident —
+    // cf. la doc de [ConditionalActionRedirect]. Sans effet (retombe sur [base])
+    // si aucune redirection ne matche, ou si la colonne visée est absente du
+    // fichier (`conditionalColumns[...]` alors `null`, jamais un plantage).
+    for (final redirect in crypto.conditionalActionRedirects) {
+      if (redirect.kindLabel != leg.kindLabel) continue;
+      final value = leg.conditionalColumns[redirect.matchColumn];
+      if (value != null && value.trim() == redirect.matchValue) {
+        return redirect.action;
+      }
     }
-    // Sous-type ABSENT (ex. `spend`/`receive`/`deposit`/`withdrawal` bruts
-    // Kraken, qui n'ont jamais de `subtype` renseigné hors dustsweeping) :
-    // repli légitime sur le type nu.
-    return crypto.actions[leg.kindLabel];
+    return base;
   }
 
   /// `true` si [leg] est classifiée FIAT — colonne dédiée
@@ -1664,6 +2186,7 @@ class CryptoLedgerNormalizer {
         sourceIndex: leg.sourceIndex,
         source: leg.source,
         date: leg.date,
+        preciseDate: leg.preciseDate,
         kindLabel: leg.kindLabel,
         subKind: leg.subKind,
         rawAsset: leg.rawAsset,
@@ -1674,6 +2197,10 @@ class CryptoLedgerNormalizer {
         assetClass: leg.assetClass,
         valuationUsd: leg.valuationUsd,
         operationReference: leg.operationReference,
+        amount: leg.amount,
+        amountCurrency: leg.amountCurrency,
+        notes: leg.notes,
+        conditionalColumns: leg.conditionalColumns,
         seq: seq,
       );
 
@@ -1719,9 +2246,56 @@ class CryptoLedgerNormalizer {
     return date;
   }
 
+  /// Heure/minute/seconde éventuelles de [raw] — à l'USAGE EXCLUSIF de
+  /// `_Leg.preciseDate` (fenêtre de tolérance `CryptoLedgerSpec. groupingWindow`,
+  /// chantier B16 lot 3, conception interne). [_parseCrypto Date] ci-dessus JETTE
+  /// délibérément cette information (granularité JOUR assumée PARTOUT ailleurs dans
+  /// ce pipeline) — cette méthode la récupère SÉPARÉMENT, sans toucher au
+  /// comportement de [_parseCryptoDate]. `null` si [raw] ne porte aucune heure
+  /// reconnaissable (repli sur [dateOnly] à l'appelant).
+  static final RegExp _timeOfDayPattern =
+      RegExp(r'(\d{1,2})[:hH](\d{2})(?::(\d{2}))?');
+
+  static DateTime? _parseCryptoTimeOfDay(String? raw, DateTime dateOnly) {
+    if (raw == null) return null;
+    final m = _timeOfDayPattern.firstMatch(raw);
+    if (m == null) return null;
+    final hour = int.tryParse(m.group(1)!);
+    final minute = int.tryParse(m.group(2)!);
+    final second = m.group(3) == null ? 0 : int.tryParse(m.group(3)!);
+    if (hour == null || minute == null || second == null) return null;
+    if (hour > 23 || minute > 59 || second > 59) return null;
+    // `DateTime.utc` (M-2, revue adversariale, CORRECTIF), JAMAIS le
+    // constructeur LOCAL : les relevés crypto (Coinbase, suffixe ` UTC`
+    // dépouillé en amont par `_timeSuffix`) donnent une heure-mur qui EST
+    // déjà l'heure UTC — l'interpréter comme une heure LOCALE ferait
+    // dépendre le calcul de `groupingWindow` (`preciseDate.difference`) du
+    // fuseau d'exécution de l'application. Sous `Europe/Paris`, le repli
+    // d'heure d'hiver (heure-mur RÉPÉTÉE deux fois) rendrait deux jambes
+    // RÉELLEMENT distantes de quelques secondes tantôt indiscernables
+    // (fausse fenêtre), tantôt distantes d'une heure fantôme (`convertNo
+    // Match` erroné) — alors qu'aucune ambiguïté n'existe côté fichier
+    // (heure-mur UTC, jamais répétée). `DateTime.utc` fixe la même valeur
+    // NUMÉRIQUE sans jamais consulter le fuseau local, quel qu'il soit.
+    return DateTime.utc(
+        dateOnly.year, dateOnly.month, dateOnly.day, hour, minute, second);
+  }
+
+  /// Symbole monétaire éventuel (`$`/`€`/`£`), toléré en tête (signe optionnel
+  /// + symbole) OU en queue (symbole seul), jamais au MILIEU — même motif, même
+  /// garde ANCRÉE que `StatementImportService. _currencySymbol` (conception
+  /// interne, export Coinbase : préfixe `$` INCONSTANT au sein du même fichier,
+  /// ex. `Fees and/or Spread`/ `Subtotal`). DUPLIQUÉ ici (pas de symbole
+  /// monétaire chez Kraken/ Binance — cf. l'en-tête de fichier) plutôt
+  /// qu'exposé depuis `StatementImportService`, sans effet sur ces deux
+  /// profils.
+  static final RegExp _currencySymbol = RegExp(r'^([+-]?)[\$€£]|[\$€£]$');
+
   static Decimal? _parseCryptoDecimal(String? raw, DecimalSeparator sep) {
     if (raw == null) return null;
     var s = raw.trim();
+    if (s.isEmpty) return null;
+    s = s.replaceAllMapped(_currencySymbol, (m) => m.group(1) ?? '');
     if (s.isEmpty) return null;
     if (sep == DecimalSeparator.comma) {
       s = s.replaceAll('.', '').replaceAll(',', '.');

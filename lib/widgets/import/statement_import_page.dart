@@ -68,13 +68,15 @@ import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
 enum _ImportStep { pickFile, configureProfile, preview, resolveAssets, done }
 
 /// Choix de profil courtier proposé à l'étape 1 (segment, pas une étape à part
-/// entière) : « Bourse Direct » et « Kraken » sautent l'étape 2 (mapping manuel —
-/// le profil est déjà entièrement pré-rempli, cf.
-/// [BrokerProfile.bourseDirect]/[BrokerProfile.kraken]) et vont directement à la
-/// prévisualisation ; « Générique / manuel » conserve le parcours historique.
-/// Kraken (chantier B16, lot 1) est un profil CRYPTO (`profile.crypto != null`) :
-/// grand livre de jambes, pas un journal d'opérations — cf. la conception interne
-enum _ImportProfileChoice { genericManual, bourseDirect, kraken }
+/// entière) : « Bourse Direct », « Kraken » et « Coinbase » sautent l'étape 2
+/// (mapping manuel — le profil est déjà entièrement pré-rempli, cf.
+/// [BrokerProfile.bourseDirect]/[BrokerProfile.kraken]/
+/// [BrokerProfile.coinbase]) et vont directement à la prévisualisation ; «
+/// Générique / manuel » conserve le parcours historique. Kraken (chantier B16,
+/// lot 1) et Coinbase (lot 3) sont des profils CRYPTO (`profile.crypto !=
+/// null`) : grand livre de jambes/journal d'opérations crypto, pas le parcours
+/// titres générique — cf. la conception interne
+enum _ImportProfileChoice { genericManual, bourseDirect, kraken, coinbase }
 
 class StatementImportPage extends StatefulWidget {
   /// Contrôleur DÉJÀ initialisé du compte ouvrant l'assistant (celui
@@ -345,8 +347,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return;
       case _ImportStep.preview:
         setState(() {
-          // Bourse Direct ET Kraken sautent l'étape de mapping manuel (profil
-          // pré-rempli, cf. _pickFile) : retour direct à la sélection de fichier.
+          // Bourse Direct, Kraken ET Coinbase sautent l'étape de mapping
+          // manuel (profil pré-rempli, cf. _pickFile) : retour direct à la
+          // sélection de fichier.
           _step = _profileChoice == _ImportProfileChoice.genericManual
               ? _ImportStep.configureProfile
               : _ImportStep.pickFile;
@@ -376,6 +379,17 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return widget.controller.activeAccount;
   }
 
+  /// `true` pour tout profil CRYPTO (chantier B16 : Kraken lot 1, Coinbase
+  /// lot 3 — Binance, lot 4, s'y ajoutera) : factorisé plutôt qu'une
+  /// comparaison ponctuelle à [_ImportProfileChoice.kraken] (revue
+  /// adversariale du lot 3), pour qu'un futur profil crypto n'ait pas à
+  /// redécouvrir un par un chaque site qui en dépend (la garde de nature de
+  /// compte ci-dessous, aujourd'hui la seule, mais pas nécessairement la
+  /// dernière).
+  bool get _isCryptoProfileChoice =>
+      _profileChoice == _ImportProfileChoice.kraken ||
+      _profileChoice == _ImportProfileChoice.coinbase;
+
   /// Garde de nature de compte (chantier B16, conception interne) : un profil
   /// CRYPTO choisi sur un compte dont la nature n'est PAS [AccountKind.crypto]
   /// avertit — jamais bloquant, l'utilisateur reste libre de continuer (ex. un
@@ -388,7 +402,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// widget (file_picker/file_selector n'ont pas d'implémentation dans cet
   /// environnement) — et de toute façon, c'est bien « avant l'aperçu ».
   Future<bool> _confirmCryptoAccountKindIfNeeded() async {
-    if (_profileChoice != _ImportProfileChoice.kraken) return true;
+    if (!_isCryptoProfileChoice) return true;
     final kind = _targetAccount?.kind;
     if (kind == null || kind == AccountKind.crypto) return true;
 
@@ -484,6 +498,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
       // Idem Bourse Direct : profil Kraken entièrement déclaratif (conception
       // interne), aucun mapping manuel de colonnes.
       await _runPreviewWithProfile(BrokerProfile.kraken());
+      return;
+    }
+    if (_profileChoice == _ImportProfileChoice.coinbase) {
+      // Idem Kraken : profil Coinbase entièrement déclaratif (chantier B16 lot 3,
+      // conception interne), aucun mapping manuel de colonnes.
+      await _runPreviewWithProfile(BrokerProfile.coinbase());
       return;
     }
 
@@ -1507,6 +1527,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
               value: _ImportProfileChoice.kraken,
               label: Text(l10n.importProfileKrakenLabel),
             ),
+            ButtonSegment(
+              value: _ImportProfileChoice.coinbase,
+              label: Text(l10n.importProfileCoinbaseLabel),
+            ),
           ],
           selected: {_profileChoice},
           onSelectionChanged: _loadingPreview
@@ -1522,6 +1546,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
         if (_profileChoice == _ImportProfileChoice.kraken) ...[
           const SizedBox(height: 12),
           _buildKrakenInfoCard(l10n),
+        ],
+        // Carte d'information Coinbase (chantier B16 lot 3, conception interne) :
+        // même patron que Kraken ci-dessus, annonce en PLUS l'absence d'oracle de
+        // complétude, la conversion via série FX historique et la dépendance à un
+        // export en anglais (appariement Convert).
+        if (_profileChoice == _ImportProfileChoice.coinbase) ...[
+          const SizedBox(height: 12),
+          _buildCoinbaseInfoCard(l10n),
         ],
         const SizedBox(height: 24),
         if (_previewError != null) ...[
@@ -1548,6 +1580,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importPickFileHintBourseDirect;
       case _ImportProfileChoice.kraken:
         return l10n.importPickFileHintKraken;
+      case _ImportProfileChoice.coinbase:
+        return l10n.importPickFileHintCoinbase;
       case _ImportProfileChoice.genericManual:
         return l10n.importPickFileHint;
     }
@@ -1575,6 +1609,43 @@ class _StatementImportPageState extends State<StatementImportPage> {
             Expanded(
               child: Text(
                 l10n.importKrakenInfoCardBody,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Carte d'information Coinbase (chantier B16 lot 3, conception interne) : même
+  /// patron que [_buildKrakenInfoCard], mais annonce en PLUS les trois
+  /// spécificités propres à ce profil (revue adversariale, point 6 du câblage UI)
+  /// — l'ABSENCE d'oracle de complétude (aucune colonne balance/portefeuille sur
+  /// ce format, contrairement à Kraken), la conversion des montants via la série
+  /// FX historique (`Price Currency` pas nécessairement celle du compte, §5.3.4),
+  /// et la dépendance de l'appariement des lignes `Convert` à un export en
+  /// ANGLAIS (texte libre `Notes`, §5.3.1).
+  Widget _buildCoinbaseInfoCard(AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 18,
+              color: theme.colorScheme.onSecondaryContainer,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                l10n.importCoinbaseInfoCardBody,
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
               ),
@@ -1860,6 +1931,22 @@ class _StatementImportPageState extends State<StatementImportPage> {
       case 'cryptoLegacyFormatUnsupported':
         title = l10n.importCryptoLegacyFormatTitle;
         message = l10n.importCryptoLegacyFormatMessage;
+        break;
+      case 'cryptoConvertNotesLanguageUnrecognized':
+        // Chantier B16 lot 3 (conception interne) : le motif d'appariement `Convert`
+        // (`CryptoLedgerSpec.counterpartyPattern`) ne matche AUCUNE ligne du fichier —
+        // message dédié plutôt que 19 rejets muets ligne à ligne.
+        title = l10n.importCryptoConvertLanguageTitle;
+        message = l10n.importCryptoConvertLanguageMessage;
+        break;
+      case 'cryptoConvertNotesColumnMissing':
+        // M-3 (revue adversariale) : la colonne de contrepartie
+        // (`CryptoLedgerSpec.notesColumn`, ex. `Notes` Coinbase) est
+        // carrément ABSENTE de l'en-tête — message DISTINCT du précédent
+        // (« langue non reconnue » induirait ici en erreur : la cause n'est
+        // pas linguistique, c'est une colonne manquante).
+        title = l10n.importCryptoConvertNotesColumnMissingTitle;
+        message = l10n.importCryptoConvertNotesColumnMissingMessage;
         break;
       default:
         title = l10n.importCryptoLegacyFormatTitle;
@@ -3788,6 +3875,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importRejectCryptoMigrationNotBalanced;
       case 'cryptoImportKeyCollision':
         return l10n.importRejectCryptoImportKeyCollision;
+      case 'convertNotesUnparsed':
+        return l10n.importRejectConvertNotesUnparsed;
+      case 'convertNoMatch':
+        return l10n.importRejectConvertNoMatch;
+      case 'convertAmbiguousMatch':
+        return l10n.importRejectConvertAmbiguousMatch;
+      case 'cryptoFiatTradeUnreadableAmount':
+        return l10n.importRejectCryptoFiatTradeUnreadableAmount;
       default:
         return l10n.importRejectGeneric;
     }

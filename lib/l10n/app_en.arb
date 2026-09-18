@@ -2486,6 +2486,22 @@
   "@importRejectCryptoImportKeyCollision": {
     "description": "Reject reason label (crypto ledger import): a re-import found the same dedup key already in the journal, but with different content, and it is not a monthly reward aggregate replacement"
   },
+  "importRejectConvertNotesUnparsed": "Could not read the counterparty of this conversion in the Notes column — check/enter it manually",
+  "@importRejectConvertNotesUnparsed": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 3): the counterparty pattern found no match in this Convert line's free-text notes"
+  },
+  "importRejectConvertNoMatch": "No matching counterparty found for this conversion — look for it in your statement and enter it manually",
+  "@importRejectConvertNoMatch": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 3): a Convert leg found zero exact-quantity candidate within the matching window — I-2, revue adversariale: the message must point the user towards searching/entering the counterparty manually"
+  },
+  "importRejectConvertAmbiguousMatch": "Several possible counterparties for this conversion — could not decide, enter it manually",
+  "@importRejectConvertAmbiguousMatch": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 3): a Convert leg found more than one exact-quantity candidate (or a candidate claimed by several outgoing legs), both sides abandoned rather than guessed"
+  },
+  "importRejectCryptoFiatTradeUnreadableAmount": "Unreadable settlement amount for this buy/sell — enter it manually",
+  "@importRejectCryptoFiatTradeUnreadableAmount": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 3): a Buy/Sell line is missing a readable settlement amount/currency on its own row"
+  },
 
   "importStep4Heading": "Resolve new assets",
   "@importStep4Heading": {
@@ -2637,6 +2653,19 @@
     "description": "Info card shown before the preview when the Kraken profile is selected (doc 20 §5.5.1) — sets expectations about the file format, date handling and reward aggregation before the user picks a file"
   },
 
+  "importProfileCoinbaseLabel": "Coinbase",
+  "@importProfileCoinbaseLabel": {
+    "description": "Segmented button label for the Coinbase broker profile (B16 lot 3) — skips the manual column-mapping step, like Bourse Direct and Kraken"
+  },
+  "importPickFileHintCoinbase": "Select the CSV \"Transactions\" export from your Coinbase account.",
+  "@importPickFileHintCoinbase": {
+    "description": "Hint text on the file-pick step when the Coinbase profile is selected"
+  },
+  "importCoinbaseInfoCardBody": "Coinbase's \"Transactions\" statement, CSV format. This statement has no completeness check (no balance/wallet column). Dates are in UTC and are kept as written. Your rewards will be grouped by month. Amounts are converted from their statement currency (\"Price Currency\") via the historical exchange-rate series. Matching \"Convert\" lines to their counterpart relies on an ENGLISH-language export.",
+  "@importCoinbaseInfoCardBody": {
+    "description": "Info card shown before the preview when the Coinbase profile is selected (B16 lot 3, doc 20 §5.3) — sets expectations about the missing completeness oracle, date handling, reward aggregation, currency conversion and the English-only Convert matching before the user picks a file"
+  },
+
   "importCryptoAccountKindWarningTitle": "Account type",
   "@importCryptoAccountKindWarningTitle": {
     "description": "Dialog title for the crypto-account-kind guard (B16 lot 1)"
@@ -2656,6 +2685,24 @@
   "importCryptoLegacyFormatMessage": "This Kraken export is in an older format: it contains neither the dollar valuation nor the originating wallet. Re-export your \"Ledgers\" statements from Kraken.",
   "@importCryptoLegacyFormatMessage": {
     "description": "Body of the dedicated failure screen for the legacy Kraken export format — the whole file is refused rather than imported in a degraded form"
+  },
+
+  "importCryptoConvertLanguageTitle": "Statement language not recognised",
+  "@importCryptoConvertLanguageTitle": {
+    "description": "Heading of the dedicated failure screen when the Convert counterparty pattern (Coinbase Notes text) matches no line at all in the file — B16 lot 3, doc 20 §5.3.1"
+  },
+  "importCryptoConvertLanguageMessage": "This statement's \"Convert\" lines could not be matched to their counterpart: the wording of the Notes column does not match what this app expects (a different export language?). No line was journalled.",
+  "@importCryptoConvertLanguageMessage": {
+    "description": "Body of the dedicated failure screen for cryptoConvertNotesLanguageUnrecognized — the whole file is refused rather than producing silent per-line rejects"
+  },
+
+  "importCryptoConvertNotesColumnMissingTitle": "\"Notes\" column not found",
+  "@importCryptoConvertNotesColumnMissingTitle": {
+    "description": "Heading of the dedicated failure screen when the counterparty-notes column expected by the profile (e.g. Coinbase's \"Notes\") is missing from the file's header row — M-3, revue adversariale: distinct from importCryptoConvertLanguageTitle, which would otherwise wrongly suggest a language issue"
+  },
+  "importCryptoConvertNotesColumnMissingMessage": "This statement is missing the \"Notes\" column, needed to match \"Convert\" lines to their counterpart. Check that you exported the full statement, with all its columns.",
+  "@importCryptoConvertNotesColumnMissingMessage": {
+    "description": "Body of the dedicated failure screen for cryptoConvertNotesColumnMissing"
   },
 
   "importGroupUnvaluedExchanges": "Exchanges to value ({count})",

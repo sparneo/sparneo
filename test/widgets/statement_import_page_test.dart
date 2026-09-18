@@ -1473,6 +1473,79 @@ void main() {
     });
   });
 
+  group('StatementImportPage — profil Coinbase (chantier B16, lot 3)', () {
+    testWidgets(
+        'sélectionner le profil Coinbase affiche l\'indication dédiée et la '
+        'carte d\'information (conception interne)', (tester) async {
+      await tester.pumpWidget(_host(null));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Coinbase'));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text(
+          "Sélectionnez l'export CSV « Transactions » de votre compte "
+          'Coinbase.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.textContaining('Relevé « Transactions » de Coinbase'),
+        findsOneWidget,
+      );
+      // Aucune fuite de la carte Kraken (chaque profil affiche la SIENNE
+      // seule).
+      expect(
+        find.textContaining('Relevé « Ledgers » de Kraken'),
+        findsNothing,
+      );
+      // Le bouton de sélection de fichier reste présent (aucun mapping
+      // manuel, comme Bourse Direct/Kraken).
+      expect(find.text('Choisir un fichier'), findsOneWidget);
+    });
+
+    testWidgets(
+        'profil générique : AUCUNE carte d\'information Coinbase (parcours '
+        'inchangé)', (tester) async {
+      await tester.pumpWidget(_host(null));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.textContaining('Relevé « Transactions » de Coinbase'),
+        findsNothing,
+      );
+    });
+
+    testWidgets(
+        'sur 360 dp, les 4 segments du sélecteur de profil tiennent à '
+        'l\'écran (câblage UI lot 3, point 2 : historique de bandeaux de '
+        'débordement sur ce projet)', (tester) async {
+      tester.view.physicalSize = const Size(360, 800);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await tester.pumpWidget(_host(null));
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      for (final label in [
+        'Générique (manuel)',
+        'Bourse Direct',
+        'Kraken',
+        'Coinbase',
+      ]) {
+        expect(find.text(label), findsOneWidget);
+      }
+
+      // Chaque segment reste sélectionnable sans exception (aucun
+      // débordement silencieux qui empêcherait le tap d'atteindre sa cible).
+      await tester.tap(find.text('Coinbase'));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    });
+  });
+
   group('StatementImportPage — garde de nature de compte (chantier B16)', () {
     testWidgets(
         'profil Kraken choisi sur un compte non-crypto : avertissement '

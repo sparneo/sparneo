@@ -515,6 +515,134 @@ class BrokerProfile {
     );
   }
 
+  /// Profil « Coinbase » (export « Transactions » CSV, lot 3 du chantier B16 —
+  /// conception interne). Contrairement à Kraken (grand livre de JAMBES, une
+  /// opération = plusieurs lignes reliées par `refid`), un export Coinbase est un
+  /// JOURNAL D'OPÉRATIONS classique (une ligne = une opération), SAUF `Convert` qui
+  /// reste éclaté en deux lignes (sortante + entrante) à réunir — d'où
+  /// [LegGroupingStrategy.counterpartyNote] plutôt que
+  /// [LegGroupingStrategy.operationReference] : aucune référence commune n'existe
+  /// entre les deux jambes d'un `Convert`, seul le texte libre `Notes` de la jambe
+  /// sortante nomme sa contrepartie.
+  ///
+  /// LIGNES PARASITES (3 avant l'en-tête réelle, dont une ligne d'IDENTITÉ
+  /// utilisateur — nom réel + identifiant de compte) : éliminées par
+  /// [headerDetectionColumn] SEUL, même mécanisme générique que
+  /// [bourseDirect] (`CodeOperation`) — aucun code spécifique crypto,
+  /// aucune fuite possible dans un `sourceRow`/rejet/`meta` (ces lignes
+  /// n'atteignent jamais la normalisation).
+  ///
+  /// PAS D'ORACLE DE COMPLÉTUDE (contrairement à Kraken) : aucune colonne
+  /// `balance`/`wallet` sur ce format — [balanceColumn]/[walletColumn]
+  /// restent `null`, ce qui désactive PROPREMENT (`CryptoLedgerNormalizer.
+  /// planCryptoImport`) les deux cartes « Relevé incomplet »/« Écart de
+  /// quantité », plutôt que de les laisser produire un faux positif sur
+  /// CHAQUE actif importé (aucune valeur « rapportée » de référence sans
+  /// cette colonne).
+  ///
+  /// GARDE « Price Currency » (§5.3.4) : les valorisations fichier
+  /// (`Subtotal`) sont dans la devise de [MovementField.currency]
+  /// (`Price Currency`, USD chez l'auteur), PAS forcément celle du compte —
+  /// `CryptoLedgerNormalizer._processFiatTrade` (natures [fiatBuy]/
+  /// [fiatSell]) n'emprunte le chemin fiat direct QUE si elle coïncide avec
+  /// la devise du compte, sinon cascade de valorisation comme un échange.
+  ///
+  /// REDIRECTION `Sender Address` (§5.3.2 point 2, décision auteur §5.7
+  /// q.4) : un `Receive` dont `Sender Address` vaut littéralement
+  /// `Coinbase Earn` est une récompense de staking (agrégée mensuellement,
+  /// coût 0), pas un dépôt en nature ordinaire — cf.
+  /// [ConditionalActionRedirect].
+  factory BrokerProfile.coinbase() {
+    return BrokerProfile(
+      id: 'coinbase-transactions',
+      label: 'Coinbase',
+      delimiter: ',',
+      encoding: utf8,
+      hasHeaderRow: true,
+      headerDetectionColumn: 'Transaction Type',
+      dateFormat: const DateFormatSpec(separator: '-', yearFirst: true),
+      decimalSeparator: DecimalSeparator.dot,
+      columns: const ColumnMapping(byName: {
+        MovementField.date: 'Timestamp',
+        MovementField.kindLabel: 'Transaction Type',
+        MovementField.symbol: 'Asset',
+        MovementField.quantity: 'Quantity Transacted',
+        // PAS de `MovementField.fee` (B-1, revue adversariale — CORRECTIF,
+        // jamais `'Fees and/or Spread'`) : cette colonne n'est PAS un frais
+        // en nature déductible sur ce format, contrairement à Kraken.
+        // (a) Sur l'immense majorité des lignes réelles, c'est un montant
+        // FIAT (préfixé `$`) — l'invariant `net = quantity − fee` du moteur
+        // (`_Leg.net`) y soustrairait des DOLLARS à une QUANTITÉ de crypto
+        // (falsification de quantité, ex. un retrait de 3 unités + frais
+        // `$0.50` aurait sorti 3,5 unités). (b) Sur les jambes `Convert`
+        // ENTRANTES, le frais en nature est déjà EXCLU de `Quantity
+        // Transacted` par Coinbase lui-même (identité vérifiée sur le
+        // fichier réel : `Total_entrant ≈ Subtotal_entrant + frais×Prix` −
+        // le déduire une seconde fois ici compterait double. Sans mapping,
+        // `feeIdx` est `null` → `leg.fee` vaut TOUJOURS `Decimal.zero` pour
+        // ce profil → `net == quantity` partout, ce qui résout (a) et (b)
+        // simultanément sans aucune logique spéciale côté moteur.
+        //
+        // `MovementField.amount` vise désormais `Total (inclusive of fees and/or
+        // spread)`, PAS `Subtotal` (I-1, même revue) : c'est ce montant — la sortie de
+        // caisse RÉELLE, frais compris — qui doit alimenter le chemin fiat direct d'un
+        // `Buy`/`Sell` (`_process FiatTrade`), pour que `unitPrice = Total / quantité`
+        // intègre les frais au PRU (§5.1.7b point 5). [valuationAmountColumn]
+        // ci-dessous reste `Subtotal` À DESSEIN (INCHANGÉ) : pour une jambe SORTANTE,
+        // `Subtotal == Total` (identité vérifiée sur le fichier réel), et c'est
+        // `Subtotal` qui sert de valorisation USD documentée (`leg.valuationUsd`) à la
+        // cascade d'un `Convert`/dépôt/retrait.
+        MovementField.amount: 'Total (inclusive of fees and/or spread)',
+        MovementField.currency: 'Price Currency',
+        MovementField.operationReference: 'ID',
+      }),
+      kindLexicon: const {},
+      crypto: CryptoLedgerSpec(
+        grouping: LegGroupingStrategy.counterpartyNote,
+        groupingWindow: const Duration(seconds: 10),
+        // Motif DANS le profil, corrigeable sans code (§2) — texte anglais
+        // observé par l'auteur ; un motif qui ne matche AUCUNE ligne
+        // `Convert` du fichier déclenche le refus global dédié
+        // `cryptoConvertNotesLanguageUnrecognized` (langue non reconnue),
+        // jamais un rejet muet ligne à ligne.
+        counterpartyPattern: RegExp(r'to\s+(?<qty>[\d.,]+)\s+(?<asset>[A-Z0-9]{2,10})\b'),
+        notesColumn: 'Notes',
+        valuationAmountColumn: 'Subtotal',
+        valuationCurrency: 'USD',
+        rewards: RewardAggregation.monthly,
+        // Vocabulaire des types EXTERNES (§3, cohérent avec la table de
+        // mapping ci-dessous) : `Receive` = entrée externe (dépôt on-chain/
+        // airdrop), `Send` = sortie externe (retrait vers un wallet
+        // externe) — `Convert`/`Buy`/`Sell` n'y figurent jamais (jambes
+        // d'échange, pas des mouvements de fonds).
+        signFixedKinds: const {'Receive': true, 'Send': false},
+        externalDepositKinds: const {'Receive'},
+        externalWithdrawalKinds: const {'Send'},
+        // Redirection déclarative (§5.3.2 point 2) : `Receive` en
+        // provenance de `Coinbase Earn` est une récompense, pas un dépôt.
+        conditionalActionRedirects: const [
+          ConditionalActionRedirect(
+            kindLabel: 'Receive',
+            matchColumn: 'Sender Address',
+            matchValue: 'Coinbase Earn',
+            action: CryptoLedgerAction.reward,
+          ),
+        ],
+        // Table de mapping (conception interne) — SANS sous-type (`Transaction Type`
+        // Coinbase n'a pas de colonne sous-type comparable à Kraken) : chaque nature est
+        // directement sa propre clé.
+        actions: const {
+          'Reward Income': CryptoLedgerAction.reward,
+          'Receive': CryptoLedgerAction.depositIn,
+          'Convert': CryptoLedgerAction.exchangeLeg,
+          'Send': CryptoLedgerAction.withdrawalOut,
+          'Buy': CryptoLedgerAction.fiatBuy,
+          'Sell': CryptoLedgerAction.fiatSell,
+        },
+      ),
+    );
+  }
+
   BrokerProfile copyWith({
     String? delimiter,
     Encoding? encoding,

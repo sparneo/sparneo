@@ -479,6 +479,10 @@
   "importRejectMixedCryptoActionsInGroup": "Opération mêlant des natures différentes — à ressaisir manuellement si elle modifie vos quantités",
   "importRejectCryptoMigrationNotBalanced": "Migration d'actif déséquilibrée — quantités source et cible différentes",
   "importRejectCryptoImportKeyCollision": "Ce relevé revalorise une opération déjà importée avec un autre montant — l'existant est conservé ; supprimez l'ancien mouvement du journal pour ré-importer celle-ci",
+  "importRejectConvertNotesUnparsed": "Contrepartie de cette conversion illisible dans la colonne Notes — vérifiez/saisissez-la manuellement",
+  "importRejectConvertNoMatch": "Aucune contrepartie correspondante trouvée pour cette conversion — recherchez-la dans votre relevé et saisissez-la manuellement",
+  "importRejectConvertAmbiguousMatch": "Plusieurs contreparties possibles pour cette conversion — impossible de trancher, saisissez-la manuellement",
+  "importRejectCryptoFiatTradeUnreadableAmount": "Montant de règlement illisible pour cet achat/vente — saisissez-le manuellement",
 
   "importStep4Heading": "Résoudre les nouveaux actifs",
   "importResolveHint": "Vérifiez ou complétez le symbole (Yahoo Finance) de chaque nouvel actif.",
@@ -516,11 +520,21 @@
   "importPickFileHintKraken": "Sélectionnez l'export CSV « Ledgers » de votre compte Kraken.",
   "importKrakenInfoCardBody": "Relevé « Ledgers » de Kraken, format CSV. Les dates de ce relevé sont en UTC et sont conservées telles quelles. Vos récompenses de staking seront regroupées par mois.",
 
+  "importProfileCoinbaseLabel": "Coinbase",
+  "importPickFileHintCoinbase": "Sélectionnez l'export CSV « Transactions » de votre compte Coinbase.",
+  "importCoinbaseInfoCardBody": "Relevé « Transactions » de Coinbase, format CSV. Ce relevé n'a aucun contrôle de complétude (aucune colonne de solde/portefeuille). Les dates sont en UTC et sont conservées telles quelles. Vos récompenses seront regroupées par mois. Les montants sont convertis depuis la devise du relevé (« Price Currency ») via la série historique des taux de change. L'appariement des lignes « Convert » à leur contrepartie repose sur un export en ANGLAIS.",
+
   "importCryptoAccountKindWarningTitle": "Nature du compte",
   "importCryptoAccountKindWarningMessage": "Ce relevé décrit un compte de crypto-monnaies ; le compte ouvert est un {kind}. Continuer ?",
 
   "importCryptoLegacyFormatTitle": "Format d'export non pris en charge",
   "importCryptoLegacyFormatMessage": "Cet export Kraken est d'un format antérieur : il ne contient ni la valorisation en dollars ni le portefeuille d'origine. Réexportez vos relevés « Ledgers » depuis Kraken.",
+
+  "importCryptoConvertLanguageTitle": "Langue du relevé non reconnue",
+  "importCryptoConvertLanguageMessage": "Les lignes « Convert » de ce relevé n'ont pas pu être appariées à leur contrepartie : le texte de la colonne Notes ne correspond pas à ce que l'application attend (export dans une autre langue ?). Aucune ligne n'a été journalisée.",
+
+  "importCryptoConvertNotesColumnMissingTitle": "Colonne « Notes » introuvable",
+  "importCryptoConvertNotesColumnMissingMessage": "Ce relevé ne contient pas la colonne « Notes », nécessaire pour apparier les lignes « Convert » à leur contrepartie. Vérifiez que vous avez exporté le relevé complet, avec toutes ses colonnes.",
 
   "importGroupUnvaluedExchanges": "Échanges à valoriser ({count})",
   "importUnvaluedExchangesExplain": "Ces échanges entre crypto-monnaies n'ont pas pu être valorisés automatiquement. Saisissez un montant en euros pour chacun d'eux : ils seront importés dès que ce montant est renseigné.",
