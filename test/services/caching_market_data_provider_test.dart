@@ -63,6 +63,29 @@ class _FakeProvider implements MarketDataProvider {
     lastSymbolExists = symbol;
     return symbolExistsToReturn;
   }
+
+  // Étage 2 « cours en-app » (import crypto B16, lot 4, conception interne) :
+  // même style que [getHistoricalData] ci-dessus — compte les appels RÉELS au
+  // délégué (preuve du hit/miss du cache par PLAGE du décorateur).
+  AssetHistoricalData? rangeToReturn;
+  int rangeCallCount = 0;
+  String? lastRangeSymbol;
+  DateTime? lastRangeFrom;
+  DateTime? lastRangeTo;
+
+  @override
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  }) async {
+    rangeCallCount++;
+    lastRangeSymbol = symbol;
+    lastRangeFrom = from;
+    lastRangeTo = to;
+    return rangeToReturn;
+  }
 }
 
 void main() {
@@ -294,5 +317,92 @@ void main() {
         expect(delegate.historicalCallCount, 2);
       },
     );
+  });
+
+  group('CachingMarketDataProvider — cache par plage (getHistoricalRange, import crypto B16 lot 4)', () {
+    test('premier appel : délègue et renvoie la donnée', () async {
+      final range = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime.utc(2024, 5, 10)],
+        prices: [50000.0],
+      );
+      delegate.rangeToReturn = range;
+
+      final result = await provider.getHistoricalRange(
+        'BTC-EUR',
+        DateTime.utc(2024, 5, 1),
+        DateTime.utc(2024, 5, 10),
+      );
+
+      expect(result, same(range));
+      expect(delegate.lastRangeSymbol, 'BTC-EUR');
+      expect(delegate.rangeCallCount, 1);
+    });
+
+    test('2e appel MÊME (symbol, plage) : ne redélègue PAS (0 appel réseau)', () async {
+      final range = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime.utc(2024, 5, 10)],
+        prices: [50000.0],
+      );
+      delegate.rangeToReturn = range;
+
+      final from = DateTime.utc(2024, 5, 1);
+      final to = DateTime.utc(2024, 5, 10);
+      final first = await provider.getHistoricalRange('BTC-EUR', from, to);
+      // Si la clé ne protégeait pas correctement, une réponse CHANGÉE ici
+      // serait servie au second appel — `same(first)` le prouve.
+      delegate.rangeToReturn = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime.utc(2024, 6, 1)],
+        prices: [99999.0],
+      );
+      final second = await provider.getHistoricalRange('BTC-EUR', from, to);
+
+      expect(second, same(first));
+      expect(delegate.rangeCallCount, 1);
+    });
+
+    test('des bornes différentes (même symbole) ne partagent PAS le cache', () async {
+      delegate.rangeToReturn = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime.utc(2024, 5, 10)],
+        prices: [50000.0],
+      );
+
+      await provider.getHistoricalRange(
+          'BTC-EUR', DateTime.utc(2024, 5, 1), DateTime.utc(2024, 5, 10));
+      await provider.getHistoricalRange(
+          'BTC-EUR', DateTime.utc(2024, 6, 1), DateTime.utc(2024, 6, 10));
+
+      expect(delegate.rangeCallCount, 2);
+    });
+
+    test('des symboles différents (même plage) ne partagent PAS le cache', () async {
+      delegate.rangeToReturn = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime.utc(2024, 5, 10)],
+        prices: [50000.0],
+      );
+
+      final from = DateTime.utc(2024, 5, 1);
+      final to = DateTime.utc(2024, 5, 10);
+      await provider.getHistoricalRange('BTC-EUR', from, to);
+      await provider.getHistoricalRange('ETH-EUR', from, to);
+
+      expect(delegate.rangeCallCount, 2);
+    });
+
+    test('réponse null (échec/introuvable) : jamais mise en cache', () async {
+      delegate.rangeToReturn = null;
+
+      final from = DateTime.utc(2024, 5, 1);
+      final to = DateTime.utc(2024, 5, 10);
+      await provider.getHistoricalRange('UNKNOWN-EUR', from, to);
+      final second = await provider.getHistoricalRange('UNKNOWN-EUR', from, to);
+
+      expect(second, isNull);
+      expect(delegate.rangeCallCount, 2);
+    });
   });
 }

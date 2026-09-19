@@ -117,6 +117,57 @@ class CachingMarketDataProvider implements MarketDataProvider {
   // historiques rejouées à chaque switch de période).
   @override
   Future<bool?> symbolExists(String symbol) => _delegate.symbolExists(symbol);
+
+  /// Cache mémoire des plages historiques ([getHistoricalRange]), clé
+  /// `"symbol|joursFrom|joursTo"` — DISTINCT de [_historyCache]
+  /// ([getHistoricalData]) : bornes explicites plutôt qu'un nombre de jours
+  /// glissant. Import crypto B16 lot 4 (conception interne) : l'étage 2 de la
+  /// cascade de valorisation appelle cette méthode UNE FOIS PAR ACTIF résolu
+  /// (fenêtre englobant TOUTES ses opérations non valorisées, même esprit que la
+  /// fenêtre FX unique de l'étage 1) — ce cache protège seulement contre un RAPPEL
+  /// de la même fenêtre pour le même symbole (ex. un second aperçu après
+  /// correction manuelle d'AUTRES lignes), pas contre un appel par opération (déjà
+  /// évité en amont par le groupage par symbole côté appelant).
+  ///
+  /// SANS TTL, contrairement à [_historyCache] : une barre JOURNALIÈRE passée ne
+  /// change jamais rétroactivement (même doctrine que le cache FX journalier de
+  /// `ExchangeRateService.getDailyRatesToEur`, conception interne) — portée = la
+  /// durée de vie de CETTE instance, jamais de persistance disque. Ne mémorise
+  /// QUE les réponses non-null, même raisonnement que [_historyCache] (un
+  /// échec/panne ne doit jamais rester figé « introuvable » pour tout le reste de
+  /// la session).
+  final Map<String, AssetHistoricalData> _rangeCache = {};
+
+  @override
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  }) async {
+    final key = _rangeCacheKey(symbol, from, to);
+    final cached = _rangeCache[key];
+    if (cached != null) return cached;
+
+    final data = await _delegate.getHistoricalRange(
+      symbol,
+      from,
+      to,
+      maxAttempts: maxAttempts,
+    );
+    if (data != null) {
+      _rangeCache[key] = data;
+    }
+    return data;
+  }
+
+  String _rangeCacheKey(String symbol, DateTime from, DateTime to) =>
+      '$symbol|${_dayKey(from)}|${_dayKey(to)}';
+
+  String _dayKey(DateTime d) =>
+      '${d.year.toString().padLeft(4, '0')}-'
+      '${d.month.toString().padLeft(2, '0')}-'
+      '${d.day.toString().padLeft(2, '0')}';
 }
 
 /// Entrée du cache mémoire des séries historiques ([CachingMarketDataProvider._historyCache]).

@@ -259,6 +259,105 @@ class YahooFinanceProvider implements MarketDataProvider {
   }
 
   @override
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  }) async {
+    // Bornes en secondes Unix, jours CALENDAIRES UTC (conception interne, chantier
+    // B16 lot 4) : `period1` = minuit UTC du jour [from], `period2` = minuit UTC du
+    // LENDEMAIN de [to] — ce décalage d'un jour côté `period2` garantit d'inclure
+    // la barre du jour [to] lui-même, même si Yahoo horodate certaines barres
+    // crypto légèrement avant minuit UTC (observé sur le terrain) : une borne
+    // EXCLUSIVE au jour même aurait pu la couper.
+    final period1 = DateTime.utc(from.year, from.month, from.day)
+            .millisecondsSinceEpoch ~/
+        1000;
+    final period2 = DateTime.utc(to.year, to.month, to.day)
+            .add(const Duration(days: 1))
+            .millisecondsSinceEpoch ~/
+        1000;
+
+    final url = Uri.https(
+      'query1.finance.yahoo.com',
+      '/v8/finance/chart/$symbol',
+      {
+        'period1': '$period1',
+        'period2': '$period2',
+        'interval': '1d',
+      },
+    );
+
+    try {
+      // Tentatives avec backoff ; lève une ApiError en cas de statut non-200.
+      // [maxAttempts] transmis tel quel (I-1, revue adversariale LOT 4) —
+      // voir la doc du contrat [MarketDataProvider.getHistoricalRange].
+      return await retryWithBackoff<AssetHistoricalData?>(
+        context: 'getHistoricalRange($symbol)',
+        maxAttempts: maxAttempts,
+        () async {
+          final response = await http
+              .get(url, headers: _headers)
+              .timeout(const Duration(seconds: 10));
+
+          if (response.statusCode != 200) {
+            throw ApiError.fromStatusCode(response.statusCode);
+          }
+
+          final data = jsonDecode(response.body);
+
+          if (data['chart']['result'] == null ||
+              data['chart']['result'].isEmpty) {
+            return null;
+          }
+
+          final result = data['chart']['result'][0];
+          final timestamps = result['timestamp'] as List<dynamic>?;
+          final quotes =
+              result['indicators']['quote'][0]['close'] as List<dynamic>?;
+
+          if (timestamps == null || quotes == null) {
+            return null;
+          }
+
+          final dates = <DateTime>[];
+          final prices = <num>[];
+
+          for (int i = 0; i < timestamps.length; i++) {
+            final timestamp = timestamps[i];
+            final price = quotes[i];
+
+            if (timestamp != null && price != null) {
+              // UTC EXPLICITE (contrairement à `getHistoricalData`, qui convertit en heure
+              // LOCALE pour l'affichage d'un graphique) : l'étage 2 compare cette date au
+              // jour UTC EXACT de l'opération importée (conception interne, « UTC conservé
+              // tel quel ») — une conversion locale décalerait la date au voisinage de minuit
+              // sur certains fuseaux, cassant le lookup jour-exact.
+              dates.add(DateTime.fromMillisecondsSinceEpoch(
+                timestamp * 1000,
+                isUtc: true,
+              ));
+              prices.add(price);
+            }
+          }
+
+          return AssetHistoricalData(
+            symbol: symbol,
+            dates: dates,
+            prices: prices,
+          );
+        },
+      );
+    } catch (e) {
+      // Échec final : on conserve le comportement historique en retournant null.
+      final apiError = ApiError.fromException(e);
+      AppLogger.error('Erreur historique (plage) pour $symbol: $apiError');
+      return null;
+    }
+  }
+
+  @override
   Future<List<IsinSearchHit>> searchByIsin(String isin, {int quotesCount = 8}) async {
     // Endpoint public non officiel `v1/finance/search` (mêmes en-têtes /
     // retry que les cotations). `newsCount=0` : on ne veut que les titres.

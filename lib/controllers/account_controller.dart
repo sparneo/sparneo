@@ -10,6 +10,8 @@
 //   3. Les dialogs (_showAdd…, _editAccountName) restent en vue (dépendent du
 //      BuildContext — risque R4).
 
+import 'dart:async';
+
 import 'package:decimal/decimal.dart';
 import 'package:flutter/foundation.dart';
 import 'package:portfolio_tracker/model/account.dart';
@@ -304,6 +306,56 @@ class AccountController extends ChangeNotifier {
   String? _lastCryptoAccountId;
   BrokerProfile? _lastCryptoProfile;
   bool _lastCryptoFxUnavailable = false;
+
+  /// Cache PERSISTANT de résolution ledgerCode→ticker (I-3, revue
+  /// adversariale LOT 4), à travers TOUS les rebuilds successifs d'UN MÊME
+  /// aperçu crypto ([_previewCryptoImport], puis chaque [applyManualCryptoValuations]/
+  /// [revertCryptoValuationToManual] ultérieur) — sans lui, chaque
+  /// reconstruction (ex. un clic sur « Repasser en saisie manuelle ») partait
+  /// d'un cache VIDE et ré-interrogeait `symbolExists` en réseau pour TOUS
+  /// les ledgerCode déjà résolus lors d'un appel précédent (jusqu'à 2 allers-
+  /// retours par code, ~80 sur 40 codes distincts). Remis à zéro au même
+  /// point que [_lastCryptoPlan] (nouvel aperçu = nouveau contexte).
+  ///
+  /// Alimenté via [_persistTickerCache] APRÈS chaque résolution — jamais
+  /// directement passé comme `cache` mutable à [_resolveCryptoTicker] (voir
+  /// cette méthode) : les résolutions marquées [_CryptoTickerResolution.
+  /// networkFailure] en sont TOUJOURS exclues, pour qu'une panne PASSAGÈRE ne
+  /// fige pas un actif en « non coté » pour le reste de la session — un
+  /// prochain rebuild retente alors sa résolution au lieu de resservir cet
+  /// échec.
+  final Map<String, _CryptoTickerResolution> _lastCryptoTickerCache = {};
+
+  /// I-2 (revue adversariale, LOT 4) : verrou UNIQUE de reconstruction
+  /// d'aperçu crypto — [applyManualCryptoValuations]/
+  /// [revertCryptoValuationToManual] se REFUSENT (retournent `null`, aperçu
+  /// affiché INCHANGÉ) tant qu'un rebuild PRÉCÉDENT n'est pas terminé,
+  /// plutôt que de laisser DEUX reconstructions concurrentes s'exécuter.
+  /// SANS ce verrou : chaque rebuild lit/mute l'état PARTAGÉ du contrôleur
+  /// (`_lastCryptoValuations`/`_lastCryptoManualReasons`) et calcule un
+  /// [ImportPreview] de façon asynchrone (dédup au journal, résolution
+  /// ticker) — si l'utilisateur enchaîne deux actions rapprochées sur DEUX
+  /// lignes DIFFÉRENTES (chacune désactive seulement SON propre bouton côté
+  /// UI, `_revertingValuationKeys`), le rebuild qui a COMMENCÉ en premier
+  /// peut malgré tout se TERMINER en second : son résultat — calculé sur un
+  /// instantané `_lastCryptoValuations` antérieur au retrait de la SECONDE
+  /// ligne — écrase alors l'aperçu affiché avec une version où cette ligne
+  /// est encore valorisée au cours du marché, alors que l'utilisateur a
+  /// explicitement demandé l'arbitrage manuel pour elle. Un SEUL rebuild en
+  /// vol à la fois élimine la course : plus rien à réordonner.
+  bool _valuationRebuildInFlight = false;
+
+  /// Fusionne [freshCache] (résultat d'UNE résolution, potentiellement
+  /// enrichi de nouvelles entrées) dans [_lastCryptoTickerCache] — voir la
+  /// doc de ce champ pour la garde `networkFailure` (I-3, revue adversariale
+  /// LOT 4).
+  void _persistTickerCache(Map<String, _CryptoTickerResolution> freshCache) {
+    for (final entry in freshCache.entries) {
+      if (!entry.value.networkFailure) {
+        _lastCryptoTickerCache[entry.key] = entry.value;
+      }
+    }
+  }
 
   /// Valorisations déjà résolues (étage 1 « fichier » + saisies manuelles
   /// cumulées d'un appel à l'autre) — clé = `UnvaluedExchange.importKey`, la
@@ -1786,6 +1838,7 @@ class AccountController extends ChangeNotifier {
     _lastCryptoFxUnavailable = false;
     _lastCryptoValuations.clear();
     _lastCryptoManualReasons.clear();
+    _lastCryptoTickerCache.clear();
 
     // ---- Pipeline CRYPTO (chantier B16, lot 1 — conception interne) : branche
     // DÉDIÉE, isolée du chemin titres ci-dessous. La cascade de résolution
@@ -2080,14 +2133,18 @@ class AccountController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   /// Résolution d'un ticker de marché pour [code] (`ledgerCode`), mémoïsée dans
-  /// [cache] par l'appelant — cascade à 5 étages (conception interne) : ① position
-  /// existante du compte portant `asset.ledgerCode == code` ; ②
-  /// [CryptoLedgerSpec.quoteAliases] du profil ; ③ `<code>-<devise du compte>`
-  /// vérifié en réseau ; ④ `<code>-USD` vérifié, devise forcée USD ; ⑤ repli non
-  /// coté (`quotable = false`, `symbol = 'crypto:<code>'`). `symbolExists` → `null`
-  /// (panne réseau/inconnu) : les étages RÉSEAU suivants ne sont PAS tentés,
-  /// l'actif part en non coté avec [_CryptoTickerResolution.networkFailure] =
-  /// `true` — jamais assimilé à une invalidité constatée (conception interne).
+  /// [cache] par l'appelant — cascade à 5 étages (conception interne) : ①
+  /// position existante du compte portant `asset.ledgerCode == code` (`quotable =
+  /// false` si son `symbol` porte déjà la sentinelle non coté `'crypto:<code>'`
+  /// de l'étage ⑤ — M-1, revue adversariale LOT 4 : sinon un jeton constaté non
+  /// coté à un import ANTÉRIEUR redéclencherait un appel réseau garanti-404 à
+  /// chaque ré-import) ; ② [CryptoLedgerSpec. quoteAliases] du profil ; ③
+  /// `<code>-<devise du compte>` vérifié en réseau ; ④ `<code>-USD` vérifié,
+  /// devise forcée USD ; ⑤ repli non coté (`quotable = false`, `symbol =
+  /// 'crypto:<code>'`). `symbolExists` → `null` (panne réseau/inconnu) : les
+  /// étages RÉSEAU suivants ne sont PAS tentés, l'actif part en non coté avec
+  /// [_CryptoTickerResolution. networkFailure] = `true` — jamais assimilé à une
+  /// invalidité constatée (conception interne).
   Future<_CryptoTickerResolution> _resolveCryptoTicker(
     String code, {
     required Map<String, String> quoteAliases,
@@ -2101,7 +2158,18 @@ class AccountController extends ChangeNotifier {
     _CryptoTickerResolution result;
     final existingPosition = positionByLedgerCode[code];
     if (existingPosition != null) {
-      result = _CryptoTickerResolution(symbol: existingPosition.symbol);
+      // M-1 (revue adversariale, LOT 4) : une position EXISTANTE peut
+      // elle-même porter la sentinelle « non coté » `'crypto:<code>'` (étage
+      // ⑤ ci-dessous, posée lors d'un import ANTÉRIEUR) — la retenir comme
+      // `quotable` par défaut ferait tenter un appel réseau GARANTI-404 (ou,
+      // pire côté étage 2, un `getHistoricalRange` sur un symbole qui n'a
+      // jamais existé chez Yahoo) à CHAQUE ré-import de cet actif. Jamais
+      // cotable dans ce cas précis, quotable normalement sinon (comportement
+      // inchangé pour toute position portant un VRAI symbole de marché).
+      result = _CryptoTickerResolution(
+        symbol: existingPosition.symbol,
+        quotable: !existingPosition.symbol.startsWith('crypto:'),
+      );
     } else {
       final alias = quoteAliases[code];
       if (alias != null) {
@@ -2302,6 +2370,332 @@ class AccountController extends ChangeNotifier {
       '${d.month.toString().padLeft(2, '0')}-'
       '${d.day.toString().padLeft(2, '0')}';
 
+  /// Deadline GLOBALE du bloc réseau de l'étage 2 « cours en-app »
+  /// (`_resolveMarketHistoryValuations`, I-1 — revue adversariale LOT 4) :
+  /// barres ET séries FX confondues. Avec `maxAttempts: 1` sur chaque appel
+  /// (voir cette méthode), la latence réelle reste bornée par ce délai quel
+  /// que soit le nombre de symboles/devises — jamais les ~4 min pires-cas
+  /// d'un `retryWithBackoff` par défaut (3 tentatives × 10 s) multiplié par
+  /// les vagues `mapBounded` sur ~40 symboles Binance.
+  static const Duration _marketHistoryStageDeadline = Duration(seconds: 20);
+
+  /// Étage 2 « cours en-app » (chantier B16, LOT 4, conception interne) — pour les
+  /// [UnvaluedExchange] restés en arbitrage manuel au motif SEUL
+  /// [CryptoValuationManualReason.unreadable] (aucune valorisation étage 1
+  /// exploitable — Binance systématique faute de colonne, ou valeur illisible
+  /// Kraken) : cherche la CLÔTURE JOURNALIÈRE de la JAMBE PAYÉE au jour UTC exact
+  /// de l'opération (repli sur la jambe REÇUE si la payée n'est pas cotable — même
+  /// hiérarchie que l'étage 1, §5.1.7b — et systématiquement la jambe reçue pour
+  /// un `depositInKind`, forme dégénérée sans jambe payée), via
+  /// [MarketDataService.getHistoricalRange] (§5.1.7d, extension recommandée —
+  /// [MarketDataService.getHistoricalData] dégrade en hebdomadaire/mensuel au-delà
+  /// de quelques années, inutilisable ici).
+  ///
+  /// Les AUTRES motifs (`spread`/`foreignFiat`/`ambiguousGroup`) — filtrés dès
+  /// l'entrée de cette méthode — ne passent JAMAIS par cet étage : ils portent
+  /// une ambiguïté que le cours du jour ne lève pas (conception interne, table
+  /// des étages).
+  ///
+  /// JAMAIS BLOQUANT (B4) : toute défaillance — ticker introuvable/panne
+  /// réseau lors de sa résolution, panne réseau Yahoo, pas de barre le jour
+  /// exact, série FX historique indisponible pour la devise de cotation —
+  /// laisse SIMPLEMENT l'entrée concernée sans valorisation à cet étage :
+  /// elle retombe à l'étage 3 (arbitrage manuel), motif `unreadable`
+  /// INCHANGÉ, jamais d'exception propagée à l'appelant.
+  ///
+  /// BORNE DE LATENCE RÉELLE (I-1, revue adversariale LOT 4) : chaque appel
+  /// réseau de CET étage (barres ET séries FX) tente UNE SEULE fois
+  /// (`maxAttempts: 1` — `retryWithBackoff` à 3 tentatives/10 s resterait
+  /// jusqu'à ~31,5 s PAR symbole, inadapté à un best-effort dont l'échec est
+  /// de toute façon absorbé par l'étage 3), et l'ENSEMBLE du bloc réseau
+  /// (barres PUIS séries FX, chacune bornée en concurrence via [mapBounded]/
+  /// [maxConcurrentMarketRequests]) est plafonné par [_marketHistoryStageDeadline]
+  /// — passé ce délai, les symboles/devises dont la tâche n'a pas eu le temps
+  /// de s'écrire dans les tables partagées restent simplement ABSENTS,
+  /// résultats PARTIELS assumés, jamais d'attente indéfinie de l'aperçu.
+  ///
+  /// [quoteAliases]/[positionByLedgerCode]/[tickerCache] : mêmes paramètres
+  /// que [_resolveCryptoTicker] — l'appelant ([_previewCryptoImport]) passe
+  /// le MÊME [tickerCache] (et le même instantané de positions) à
+  /// [_finishCryptoPreview] ensuite pour qu'un ledgerCode déjà résolu ICI ne
+  /// soit jamais re-résolu en réseau pour finaliser le mouvement
+  /// correspondant.
+  ///
+  /// [existingImportKeys] (M-2, revue adversariale LOT 4 : retour au
+  /// comportement du lot 2) — clés `meta['importKey']` DÉJÀ présentes au
+  /// journal du compte (mouvements CONFIRMÉS d'un import antérieur, jamais
+  /// reparsés ici). Un échange dont la clé DÉRIVÉE (`#sell:`/`#buy:`/
+  /// `#deposit:`, calculée exactement comme le fera `finalizeCryptoExchanges`)
+  /// y figure déjà N'EST JAMAIS soumis à cet étage : le valoriser produirait
+  /// un montant DIFFÉRENT de celui déjà en base pour la même clé, donc un
+  /// rejet `cryptoImportKeyCollision` à la place d'une ligne « à valoriser »
+  /// silencieuse — exactement le bruit que le lot 2 évitait déjà pour
+  /// l'étage 1. La ligne reste éligible à l'arbitrage manuel normal (motif
+  /// `unreadable` inchangé), où l'utilisateur peut « importer sans ces
+  /// échanges » sans jamais toucher à l'existant.
+  ///
+  /// Retourne la table `importKey -> CryptoValuation` des entrées résolues à
+  /// cet étage (`source: 'marketHistory'`) — à FUSIONNER par l'appelant dans
+  /// la table de l'étage 1 AVANT `finalizeCryptoExchanges` ; ne mute jamais
+  /// [manualEntries] ni aucun état du contrôleur.
+  Future<Map<String, CryptoValuation>> _resolveMarketHistoryValuations(
+    List<CryptoValuationManual> manualEntries, {
+    required Map<String, String> quoteAliases,
+    required Map<String, Position> positionByLedgerCode,
+    required String accountCurrency,
+    required Map<String, _CryptoTickerResolution> tickerCache,
+    required Set<String> existingImportKeys,
+  }) async {
+    final candidates = [
+      for (final m in manualEntries)
+        if (m.reason == CryptoValuationManualReason.unreadable &&
+            !_hasExistingJournalEntry(m.source, existingImportKeys))
+          m,
+    ];
+    if (candidates.isEmpty) return const {};
+
+    // ---- Résolution de la jambe à coter (payée d'abord, repli reçue) ----
+    final quotable = <_MarketHistoryCandidate>[];
+    for (final m in candidates) {
+      final u = m.source;
+      String? leg;
+      _CryptoTickerResolution? resolved;
+
+      if (u.codePaid != null && u.quantityPaid != null) {
+        final r = await _resolveCryptoTicker(
+          u.codePaid!,
+          quoteAliases: quoteAliases,
+          positionByLedgerCode: positionByLedgerCode,
+          accountCurrency: accountCurrency,
+          cache: tickerCache,
+        );
+        if (r.quotable) {
+          leg = 'paid';
+          resolved = r;
+        }
+      }
+      if (resolved == null) {
+        final r = await _resolveCryptoTicker(
+          u.codeReceived,
+          quoteAliases: quoteAliases,
+          positionByLedgerCode: positionByLedgerCode,
+          accountCurrency: accountCurrency,
+          cache: tickerCache,
+        );
+        if (r.quotable) {
+          leg = 'received';
+          resolved = r;
+        }
+      }
+      if (resolved == null || leg == null) {
+        continue; // ni l'une ni l'autre jambe cotable — reste à l'étage 3.
+      }
+      quotable.add(
+        _MarketHistoryCandidate(manual: m, leg: leg, symbol: resolved.symbol),
+      );
+    }
+    if (quotable.isEmpty) return const {};
+
+    // ---- Barres journalières, UNE requête par SYMBOLE (fenêtre englobant
+    // toutes ses opérations), concurrence bornée. ----
+    final bySymbol = <String, List<_MarketHistoryCandidate>>{};
+    for (final c in quotable) {
+      bySymbol.putIfAbsent(c.symbol, () => []).add(c);
+    }
+
+    // I-1 (revue adversariale, LOT 4) : `closesBySymbol`/`ratesByCurrency`
+    // sont des tables PARTAGÉES écrites DIRECTEMENT par chaque tâche au fil
+    // de l'eau (jamais assemblées seulement APRÈS un `mapBounded` complet) —
+    // c'est ce qui rend le résultat PARTIEL exploitable si la deadline
+    // globale ci-dessous expire pendant que certaines tâches sont encore en
+    // vol : les entrées déjà écrites restent utilisables, les autres
+    // symboles/devises retombent simplement à l'étage 3.
+    final closesBySymbol = <String, Map<DateTime, num>>{};
+    final ratesByCurrency = <String, Map<DateTime, double>>{};
+
+    Future<void> fetchStage2Data() async {
+      // ---- Barres ----
+      await mapBounded<MapEntry<String, List<_MarketHistoryCandidate>>, void>(
+        bySymbol.entries,
+        maxConcurrentMarketRequests,
+        (entry) async {
+          var minDate = entry.value.first.manual.source.date;
+          var maxDate = minDate;
+          for (final c in entry.value.skip(1)) {
+            final d = c.manual.source.date;
+            if (d.isBefore(minDate)) minDate = d;
+            if (d.isAfter(maxDate)) maxDate = d;
+          }
+          AssetHistoricalData? data;
+          try {
+            data = await _marketService.getHistoricalRange(
+              entry.key,
+              minDate,
+              maxDate,
+              // I-1 : UNE seule tentative à cet étage best-effort — voir la
+              // doc de tête de cette méthode.
+              maxAttempts: 1,
+            );
+          } catch (_) {
+            // B4 — jamais bloquant : ce symbole reste simplement sans
+            // cotation à cet étage, ses candidats retomberont à l'étage 3.
+            data = null;
+          }
+          if (data == null || data.hasError) return;
+          // Index jour UTC -> close — lookup au jour UTC EXACT, JAMAIS de
+          // repli (une crypto cote tous les jours, contrairement à la série
+          // FX ci-dessous).
+          final byDay = <DateTime, num>{};
+          final n = data.dates.length < data.prices.length
+              ? data.dates.length
+              : data.prices.length;
+          for (var i = 0; i < n; i++) {
+            final d = data.dates[i];
+            byDay[DateTime.utc(d.year, d.month, d.day)] = data.prices[i];
+          }
+          closesBySymbol[entry.key] = byDay;
+        },
+      );
+
+      // ---- Conversion EUR — devise du SUFFIXE du ticker : direct si
+      // `-EUR`, sinon série FX historique frankfurter (même chemin que
+      // l'étage 1, §5.1.7c), UNE requête par devise NON-EUR nécessaire,
+      // elle aussi bornée en concurrence (I-1 : remplace l'ancienne boucle
+      // SÉRIELLE, qui pouvait à elle seule dépasser la minute sur plusieurs
+      // devises). ----
+      final datesByCurrency = <String, List<DateTime>>{};
+      for (final c in quotable) {
+        if (!closesBySymbol.containsKey(c.symbol)) continue;
+        final currency =
+            (_quoteCurrencySuffix(c.symbol) ?? accountCurrency).toUpperCase();
+        if (currency == 'EUR') continue;
+        datesByCurrency.putIfAbsent(currency, () => []).add(c.manual.source.date);
+      }
+
+      await mapBounded<MapEntry<String, List<DateTime>>, void>(
+        datesByCurrency.entries,
+        maxConcurrentMarketRequests,
+        (entry) async {
+          var minDate = entry.value.first;
+          var maxDate = minDate;
+          for (final d in entry.value.skip(1)) {
+            if (d.isBefore(minDate)) minDate = d;
+            if (d.isAfter(maxDate)) maxDate = d;
+          }
+          try {
+            ratesByCurrency[entry.key] =
+                await _exchangeService.getDailyRatesToEur(
+              entry.key,
+              from: minDate,
+              to: maxDate,
+            );
+          } on ExchangeRateUnavailable {
+            // B4 — best-effort : cette devise reste simplement non résolue,
+            // ses candidats retomberont à l'étage 3.
+          }
+        },
+      );
+    }
+
+    try {
+      await fetchStage2Data().timeout(_marketHistoryStageDeadline);
+    } on TimeoutException {
+      // I-1 : deadline GLOBALE dépassée — voir la doc de tête de cette
+      // méthode. Les symboles/devises jamais écrits dans `closesBySymbol`/
+      // `ratesByCurrency` restent simplement absents, traités plus bas
+      // exactement comme un échec ordinaire (B4, jamais bloquant).
+    }
+
+    // ---- Valorisation finale ----
+    final valuations = <String, CryptoValuation>{};
+    for (final c in quotable) {
+      final closes = closesBySymbol[c.symbol];
+      if (closes == null) continue;
+      final u = c.manual.source;
+      final day = DateTime.utc(u.date.year, u.date.month, u.date.day);
+      final close = closes[day];
+      if (close == null) continue; // pas de barre CE jour exact — étage 3.
+
+      final quantityRaw = c.leg == 'paid' ? u.quantityPaid : u.quantityReceived;
+      final quantity =
+          quantityRaw == null ? null : Decimal.tryParse(quantityRaw)?.abs();
+      if (quantity == null) continue; // défensif — jamais atteint en pratique.
+
+      final closeDecimal = Decimal.tryParse(close.toString());
+      if (closeDecimal == null) continue; // défensif (donnée Yahoo dégénérée).
+
+      final quoteCurrency =
+          (_quoteCurrencySuffix(c.symbol) ?? accountCurrency).toUpperCase();
+
+      Decimal amountEur;
+      double? fxRate;
+      DateTime? fxDate;
+      if (quoteCurrency == 'EUR') {
+        // Doc 20 §5.1.7d : cotation déjà en EUR — AUCUNE conversion FX.
+        amountEur = closeDecimal * quantity;
+      } else {
+        final rates = ratesByCurrency[quoteCurrency];
+        final entry =
+            rates == null ? null : _lastFxRateOnOrBefore(rates, u.date);
+        if (entry == null) continue; // FX indisponible — étage 3.
+        fxRate = entry.value;
+        fxDate = entry.key;
+        amountEur =
+            closeDecimal * quantity * Decimal.parse(entry.value.toString());
+      }
+
+      valuations[u.importKey] = CryptoValuation(
+        amountEur: amountEur,
+        fxRate: fxRate,
+        fxDate: fxDate,
+        source: 'marketHistory',
+        quoteSymbol: c.symbol,
+        quoteDate: day,
+        quoteInterval: '1d',
+        quoteLeg: c.leg,
+      );
+    }
+
+    return valuations;
+  }
+
+  /// M-2 (revue adversariale, LOT 4 — retour au comportement du lot 2) :
+  /// `true` si la clé DÉRIVÉE que `CryptoLedgerNormalizer.
+  /// finalizeCryptoExchanges` calculerait pour [u] (`#sell:`/`#buy:` pour un
+  /// échange à 2 jambes, `#deposit:` pour un dépôt en nature) figure DÉJÀ
+  /// dans [existingImportKeys] (journal du compte, mouvements CONFIRMÉS d'un
+  /// import antérieur) — voir la doc de [_resolveMarketHistoryValuations]
+  /// pour le raisonnement complet. Calcul délibérément DUPLIQUÉ (plutôt que
+  /// factorisé avec `finalizeCryptoExchanges`, PUR et sans accès au journal)
+  /// : ce contrôle a lieu AVANT la valorisation elle-même, alors que
+  /// `finalizeCryptoExchanges` n'agit qu'APRÈS.
+  static bool _hasExistingJournalEntry(
+    UnvaluedExchange u,
+    Set<String> existingImportKeys,
+  ) {
+    if (u.kind == 'exchange') {
+      if (u.codePaid != null &&
+          existingImportKeys.contains('${u.importKey}#sell:${u.codePaid}')) {
+        return true;
+      }
+      return existingImportKeys
+          .contains('${u.importKey}#buy:${u.codeReceived}');
+    }
+    return existingImportKeys
+        .contains('${u.importKey}#deposit:${u.codeReceived}');
+  }
+
+  /// Devise du SUFFIXE d'un ticker résolu (`'BTC-EUR'` → `'EUR'`,
+  /// `'FLR-USD'` → `'USD'`) — `null` si aucun tiret (repli non coté
+  /// `'crypto:<code>'`, jamais atteint ici : `quotable` l'exclut déjà en
+  /// amont dans [_resolveMarketHistoryValuations]).
+  String? _quoteCurrencySuffix(String symbol) {
+    final dash = symbol.lastIndexOf('-');
+    return dash > 0 && dash < symbol.length - 1
+        ? symbol.substring(dash + 1)
+        : null;
+  }
+
   Future<ImportPreview> _previewCryptoImport(
     Uint8List bytes,
     BrokerProfile profile, {
@@ -2351,6 +2745,23 @@ class AccountController extends ChangeNotifier {
     var financeMovements = const <ImportedMovement>[];
     var unvaluedForPreview = plan.unvaluedExchanges;
     var cryptoFxUnavailable = false;
+    // LOT 4 (conception interne) : instantané de positions éventuellement peuplé par
+    // l'étage 2 ci-dessous — transmis à [_finishCryptoPreview] pour qu'un ledgerCode
+    // déjà résolu ICI (en réseau) ne le soit jamais une seconde fois pour finaliser
+    // le mouvement correspondant. Reste `null` si l'étage 2 n'a jamais tourné (pas
+    // d'échange non valorisé, ou tous résolus dès l'étage 1) —
+    // [_finishCryptoPreview] charge alors son propre instantané, comportement
+    // HISTORIQUE inchangé.
+    List<Position>? positionsForFinish;
+    // I-3 (revue adversariale, LOT 4) : SEEDÉ depuis le cache PERSISTANT du
+    // contrôleur (voir sa doc) plutôt que de repartir d'une map vide — un
+    // ledgerCode déjà résolu lors d'un aperçu/rebuild PRÉCÉDENT de CE MÊME
+    // import n'est jamais re-résolu en réseau. Jamais `null` désormais (à la
+    // différence de l'ancien `tickerCacheForFinish` nullable) : même à vide,
+    // ce cache reste le bon réceptacle où fusionner les résolutions de CET
+    // appel avant de les persister en fin de méthode.
+    final tickerCacheForFinish =
+        Map<String, _CryptoTickerResolution>.of(_lastCryptoTickerCache);
     if (plan.unvaluedExchanges.isNotEmpty) {
       try {
         final resolution = await _cryptoValuationService.resolve(
@@ -2364,7 +2775,39 @@ class AccountController extends ChangeNotifier {
           usdStableCodes: profile.crypto!.usdStableCodes,
         );
         _lastCryptoValuations.addAll(resolution.valuations);
+
+        // ---- LOT 4 : étage 2 « cours en-app » (conception interne) — pour les
+        // entrées restées manuelles au motif SEUL `unreadable`. Best-effort STRICT
+        // (B4) : ne lève jamais, voir la doc de la méthode.
+        final positions = await _storage.getPositions(accountId);
+        final positionByLedgerCode = <String, Position>{
+          for (final p in positions)
+            if (p.asset.ledgerCode != null) p.asset.ledgerCode!: p,
+        };
+        final quoteAliases = profile.crypto?.quoteAliases ?? const {};
+        // M-2 (revue adversariale, LOT 4) : clés déjà JOURNALISÉES pour ce
+        // compte — voir la doc de [_resolveMarketHistoryValuations].
+        final existingJournal = await _txStorage.getByAccount(accountId);
+        final existingImportKeys = <String>{
+          for (final t in existingJournal)
+            if (t.meta?['importKey'] is String)
+              t.meta!['importKey'] as String,
+        };
+        final marketHistoryValuations = await _resolveMarketHistoryValuations(
+          resolution.manual,
+          quoteAliases: quoteAliases,
+          positionByLedgerCode: positionByLedgerCode,
+          accountCurrency: account.currency,
+          tickerCache: tickerCacheForFinish,
+          existingImportKeys: existingImportKeys,
+        );
+        _lastCryptoValuations.addAll(marketHistoryValuations);
+        positionsForFinish = positions;
+
         for (final m in resolution.manual) {
+          if (marketHistoryValuations.containsKey(m.source.importKey)) {
+            continue; // résolu à l'étage 2 — ne reste plus manuel.
+          }
           _lastCryptoManualReasons[m.source.importKey] = (
             reason: m.reason.wire,
             spreadPct: m.valuationSpreadPct,
@@ -2376,7 +2819,7 @@ class AccountController extends ChangeNotifier {
         }
         financeMovements = StatementImportService.finalizeCryptoExchanges(
           plan,
-          resolution.valuations,
+          {...resolution.valuations, ...marketHistoryValuations},
           accountId: accountId,
           accountCurrency: account.currency,
           // Refactor B16 lot 3 : vocabulaire des VRAIS dépôts externes lu
@@ -2385,12 +2828,13 @@ class AccountController extends ChangeNotifier {
         );
         unvaluedForPreview = [
           for (final m in resolution.manual)
-            m.source.copyWith(
-              manualReason: m.reason.wire,
-              valuationSpreadPct: m.valuationSpreadPct,
-              suggestedPaidEur: m.suggestedPaidEur?.toString(),
-              suggestedReceivedEur: m.suggestedReceivedEur?.toString(),
-            ),
+            if (!marketHistoryValuations.containsKey(m.source.importKey))
+              m.source.copyWith(
+                manualReason: m.reason.wire,
+                valuationSpreadPct: m.valuationSpreadPct,
+                suggestedPaidEur: m.suggestedPaidEur?.toString(),
+                suggestedReceivedEur: m.suggestedReceivedEur?.toString(),
+              ),
         ];
       } on ExchangeRateUnavailable {
         // Aucune coercition (conception interne) : TOUS les échanges sans jambe fiat
@@ -2420,7 +2864,7 @@ class AccountController extends ChangeNotifier {
     _lastCryptoProfile = profile;
     _lastCryptoFxUnavailable = cryptoFxUnavailable;
 
-    return _finishCryptoPreview(
+    final preview = await _finishCryptoPreview(
       plan: plan,
       financeMovements: financeMovements,
       unvaluedForPreview: unvaluedForPreview,
@@ -2428,17 +2872,31 @@ class AccountController extends ChangeNotifier {
       account: account,
       accountId: accountId,
       profile: profile,
+      positionsSnapshot: positionsForFinish,
+      tickerResolutionCache: tickerCacheForFinish,
     );
+    // I-3 : persiste les résolutions de CET appel (étage 2 + résolution
+    // finale des mouvements par [_finishCryptoPreview], qui mute
+    // [tickerCacheForFinish] EN PLACE) pour les rebuilds ultérieurs — voir la
+    // doc de [_lastCryptoTickerCache]/[_persistTickerCache].
+    _persistTickerCache(tickerCacheForFinish);
+    return preview;
   }
 
   /// Applique des valorisations EUR SAISIES MANUELLEMENT (étage 3 « arbitrage
-  /// manuel », chantier B16, lot 2 — conception interne) aux échanges crypto encore
-  /// en attente du DERNIER aperçu crypto calculé ([previewStatementImport] avec
-  /// `profile.crypto != null`) : reconstruit l'aperçu complet SANS reparser le
-  /// fichier ni retoucher le réseau (le plan PUR et les valorisations déjà résolues
-  /// à l'étage 1 restent en cache sur le contrôleur, cf. `_lastCrypto*`) — seule la
+  /// manuel », chantier B16, lot 2 — conception interne) aux échanges crypto
+  /// encore en attente du DERNIER aperçu crypto calculé ([previewStatementImport]
+  /// avec `profile.crypto != null`) : reconstruit l'aperçu complet SANS reparser
+  /// le fichier (le plan PUR et les valorisations déjà résolues à l'étage 1
+  /// restent en cache sur le contrôleur, cf. `_lastCrypto*`) — seule la
   /// dédup/résolution de ticker/delta est rejouée, exactement comme un second
-  /// aperçu.
+  /// aperçu. CORRECTIF (I-3, revue adversariale LOT 4) : une affirmation
+  /// ANTÉRIEURE de ce commentaire prétendait ne « jamais retoucher le réseau » —
+  /// FAUX dans les deux sens : la résolution ticker/delta rejouée ICI peut
+  /// parfaitement appeler `symbolExists` pour un ledgerCode encore jamais vu ; ce
+  /// que ce rebuild ÉVITE réellement, c'est de le REFAIRE pour un ledgerCode déjà
+  /// résolu lors d'un appel PRÉCÉDENT de CE MÊME aperçu, via le cache persistant
+  /// [_lastCryptoTickerCache] (voir sa doc).
   ///
   /// [eurByImportKey] : clé = `UnvaluedExchange.importKey` (LA MÊME clé que
   /// `ImportPreview.unvaluedExchanges[i].importKey` — l'UI ne fabrique
@@ -2467,6 +2925,10 @@ class AccountController extends ChangeNotifier {
         profile == null) {
       return null;
     }
+    // I-2 (revue adversariale, LOT 4) : verrou UNIQUE — voir la doc de
+    // [_valuationRebuildInFlight]. Un rebuild déjà en vol (saisie manuelle OU
+    // repli d'une AUTRE ligne) rejette celui-ci tel quel, aperçu INCHANGÉ.
+    if (_valuationRebuildInFlight) return null;
 
     // B-1 (BLOQUANT, revue adversariale) : refuse (ignore) toute clé PARTAGÉE
     // par ≥ 2 `UnvaluedExchange` du plan — même garde que `resolve`/
@@ -2504,6 +2966,111 @@ class AccountController extends ChangeNotifier {
       );
     }
 
+    _valuationRebuildInFlight = true;
+    try {
+      return await _rebuildCryptoPreviewFromCache(
+        plan: plan,
+        account: account,
+        accountId: accountId,
+        profile: profile,
+      );
+    } finally {
+      _valuationRebuildInFlight = false;
+    }
+  }
+
+  /// UX « repasser en saisie manuelle » (chantier B16, LOT 4, conception interne)
+  /// — pour une ligne valorisée à l'étage 2 « cours en-app »
+  /// (`meta.valuationSource == 'marketHistory'`), moyen SOBRE de la renvoyer à
+  /// l'étage 3 (arbitrage manuel) : RETIRE sa valorisation du cache
+  /// ([_lastCryptoValuations]) et reconstruit l'aperçu, sans reparser le fichier —
+  /// même patron que [applyManualCryptoValuations] (voir sa doc, I-3 : ce rebuild
+  /// PEUT retoucher le réseau pour un ledgerCode jamais résolu, le cache
+  /// persistant [_lastCryptoTickerCache] n'évite que les résolutions déjà faites
+  /// lors d'un appel précédent).
+  ///
+  /// [baseImportKey] : la clé de BASE (`UnvaluedExchange.importKey`, celle
+  /// AVANT le suffixe de rôle `#sell:`/`#buy:`/`#deposit:` posé par
+  /// `finalizeCryptoExchanges`) — PAS la clé suffixée portée par le
+  /// mouvement finalisé affiché à l'écran (l'UI retire ce suffixe avant
+  /// d'appeler cette méthode, même convention que
+  /// [applyManualCryptoValuations]).
+  ///
+  /// GARDE DÉFENSIVE (B4, même doctrine que B-1/B-A ailleurs dans ce
+  /// contrôleur — ne jamais faire confiance à l'UI seule) : n'agit QUE si la
+  /// valorisation actuellement en cache pour cette clé porte bien
+  /// `source == 'marketHistory'` — reverser une valorisation étage 1 ou une
+  /// saisie manuelle par cette voie serait une régression silencieuse d'un
+  /// AUTRE mécanisme. Motif redevient `unreadable` (SEUL motif qui atteint
+  /// jamais l'étage 2, cf. [_resolveMarketHistoryValuations]) — posé ici
+  /// explicitement car [_lastCryptoManualReasons] n'a jamais été renseigné
+  /// pour cette clé (elle a été résolue à l'étage 2 avant d'y être écrite,
+  /// cf. [_previewCryptoImport]).
+  ///
+  /// Retourne `null` si aucun aperçu crypto n'est en cours, si
+  /// [baseImportKey] ne porte aucune valorisation `marketHistory` en cache
+  /// (rien à annuler), OU si un AUTRE rebuild est déjà en vol (I-2, revue
+  /// adversariale LOT 4 — voir la doc de [_valuationRebuildInFlight]) —
+  /// l'appelant garde alors l'aperçu affiché tel quel dans les trois cas.
+  Future<ImportPreview?> revertCryptoValuationToManual(
+    String baseImportKey,
+  ) async {
+    final plan = _lastCryptoPlan;
+    final account = _lastCryptoAccount;
+    final accountId = _lastCryptoAccountId;
+    final profile = _lastCryptoProfile;
+    if (plan == null ||
+        account == null ||
+        accountId == null ||
+        profile == null) {
+      return null;
+    }
+    // I-2 (revue adversariale, LOT 4) : verrou UNIQUE — voir la doc de
+    // [_valuationRebuildInFlight].
+    if (_valuationRebuildInFlight) return null;
+
+    final current = _lastCryptoValuations[baseImportKey];
+    if (current == null || current.source != 'marketHistory') {
+      return null; // rien à annuler à cet étage — défensif (B4).
+    }
+    _lastCryptoValuations.remove(baseImportKey);
+    _lastCryptoManualReasons.putIfAbsent(
+      baseImportKey,
+      () => (
+        reason: 'unreadable',
+        spreadPct: null,
+        suggestedPaidEur: null,
+        suggestedReceivedEur: null,
+      ),
+    );
+
+    _valuationRebuildInFlight = true;
+    try {
+      return await _rebuildCryptoPreviewFromCache(
+        plan: plan,
+        account: account,
+        accountId: accountId,
+        profile: profile,
+      );
+    } finally {
+      _valuationRebuildInFlight = false;
+    }
+  }
+
+  /// Reconstruit l'[ImportPreview] crypto depuis l'état COURANT de
+  /// [_lastCryptoValuations]/[_lastCryptoManualReasons] (cette méthode ne
+  /// DÉCIDE d'aucune valorisation — l'appelant a déjà mis le cache à jour) —
+  /// factorisé entre [applyManualCryptoValuations] (après une saisie
+  /// manuelle) et [revertCryptoValuationToManual] (LOT 4, après le retrait
+  /// d'une valorisation étage 2) pour que les deux chemins partagent
+  /// EXACTEMENT la même logique de dédup/résolution/delta
+  /// ([_finishCryptoPreview]).
+  Future<ImportPreview> _rebuildCryptoPreviewFromCache({
+    required CryptoImportPlan plan,
+    required Account account,
+    required String accountId,
+    required BrokerProfile profile,
+  }) async {
     final financeMovements = StatementImportService.finalizeCryptoExchanges(
       plan,
       _lastCryptoValuations,
@@ -2512,11 +3079,11 @@ class AccountController extends ChangeNotifier {
       // Refactor B16 lot 3 : même relais que `_previewCryptoImport`.
       externalDepositKinds: profile.crypto!.externalDepositKinds,
     );
-    // Ne restent en arbitrage manuel que les entrées SANS valorisation (ni étage 1,
-    // ni saisie manuelle) — motif reporté tel quel depuis le cache posé au premier
-    // aperçu (cf. [_lastCryptoManualReasons], jamais recalculé : il ne dépend que
-    // des jambes du relevé). Les suggestions EUR (amendement drive lot 2 (suite)
-    // suivent la MÊME règle : elles survivent donc, elles aussi, à une
+    // Ne restent en arbitrage manuel que les entrées SANS valorisation (ni étage
+    // 1/2, ni saisie manuelle) — motif reporté tel quel depuis le cache posé au
+    // premier aperçu (cf. [_lastCryptoManualReasons], jamais recalculé : il ne
+    // dépend que des jambes du relevé). Les suggestions EUR (amendement drive lot 2
+    // (suite) suivent la MÊME règle : elles survivent donc, elles aussi, à une
     // ré-application PARTIELLE.
     final unvaluedForPreview = [
       for (final u in plan.unvaluedExchanges)
@@ -2532,7 +3099,13 @@ class AccountController extends ChangeNotifier {
           ),
     ];
 
-    return _finishCryptoPreview(
+    // I-3 (revue adversariale, LOT 4) : SEEDÉ depuis le cache PERSISTANT —
+    // voir la doc de [_lastCryptoTickerCache] — plutôt que de repartir d'une
+    // map vide comme avant ce correctif (chaque rebuild rejouait ALORS la
+    // résolution réseau de TOUS les ledgerCode déjà connus).
+    final tickerCache =
+        Map<String, _CryptoTickerResolution>.of(_lastCryptoTickerCache);
+    final preview = await _finishCryptoPreview(
       plan: plan,
       financeMovements: financeMovements,
       unvaluedForPreview: unvaluedForPreview,
@@ -2540,7 +3113,10 @@ class AccountController extends ChangeNotifier {
       account: account,
       accountId: accountId,
       profile: profile,
+      tickerResolutionCache: tickerCache,
     );
+    _persistTickerCache(tickerCache);
+    return preview;
   }
 
   /// Termine la construction de l'[ImportPreview] crypto — dédup par
@@ -2558,6 +3134,16 @@ class AccountController extends ChangeNotifier {
     required Account account,
     required String accountId,
     required BrokerProfile profile,
+    // LOT 4 (conception interne) : instantané de positions + cache de résolution
+    // ticker déjà peuplés par l'étage 2 « cours en-app » de [_previewCryptoImport]
+    // (voir sa doc et celle de [_resolveMarketHistoryValuations]) — évite de relire
+    // les positions et de re-résoudre en réseau un ledgerCode déjà résolu à cet
+    // étage (le cas Binance vise ~370 opérations, souvent le même actif). `null`
+    // (défaut) : comportement HISTORIQUE inchangé, cette méthode charge son propre
+    // instantané — c'est le cas d'[applyManualCryptoValuations], qui ne passe jamais
+    // par l'étage 2.
+    List<Position>? positionsSnapshot,
+    Map<String, _CryptoTickerResolution>? tickerResolutionCache,
   }) async {
     final rejects = <ImportedMovement>[];
     final candidates = <ImportedMovement>[];
@@ -2623,7 +3209,8 @@ class AccountController extends ChangeNotifier {
     }
 
     // ---- Cascade de résolution ledgerCode → ticker (§5.1.6) ----
-    final existingPositions = await _storage.getPositions(accountId);
+    final existingPositions =
+        positionsSnapshot ?? await _storage.getPositions(accountId);
     final positionByLedgerCode = <String, Position>{};
     final existingSymbols = <String>{};
     for (final p in existingPositions) {
@@ -2632,7 +3219,8 @@ class AccountController extends ChangeNotifier {
       if (code != null) positionByLedgerCode[code] = p;
     }
     final quoteAliases = profile.crypto?.quoteAliases ?? const {};
-    final resolutionCache = <String, _CryptoTickerResolution>{};
+    final resolutionCache =
+        tickerResolutionCache ?? <String, _CryptoTickerResolution>{};
 
     final newAssets = <NewAssetCandidate>[];
     final newAssetCodesSeen = <String>{};
@@ -3079,5 +3667,23 @@ class _CryptoTickerResolution {
     this.currency,
     this.quotable = true,
     this.networkFailure = false,
+  });
+}
+
+/// Candidat étage 2 « cours en-app » — un [UnvaluedExchange] resté manuel
+/// au motif `unreadable`, dont l'une des deux jambes a été résolue à un
+/// ticker COTABLE (voir [AccountController._resolveMarketHistoryValuations]).
+class _MarketHistoryCandidate {
+  final CryptoValuationManual manual;
+
+  /// `'paid'` ou `'received'` — quelle jambe de [manual] a servi.
+  final String leg;
+
+  final String symbol;
+
+  const _MarketHistoryCandidate({
+    required this.manual,
+    required this.leg,
+    required this.symbol,
   });
 }

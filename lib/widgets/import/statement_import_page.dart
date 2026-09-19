@@ -225,6 +225,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// ce laps, cf. son `onPressed`) et évite un double appel concurrent.
   bool _applyingManualValuations = false;
 
+  /// Clés de BASE (`UnvaluedExchange.importKey`, AVANT suffixe de rôle) dont
+  /// [_revertCryptoValuationToManual] est EN COURS (chantier B16, LOT 4,
+  /// conception interne) — désactive le bouton « Repasser en saisie manuelle » de
+  /// la ligne concernée le temps de l'appel, même patron que
+  /// [_applyingManualValuations] mais par CLÉ (plusieurs lignes étage 2 peuvent
+  /// coexister, chacune reste actionnable indépendamment).
+  final Set<String> _revertingValuationKeys = {};
+
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
   final Map<String, TextEditingController> _newAssetSymbolControllers = {};
 
@@ -3447,6 +3455,24 @@ class _StatementImportPageState extends State<StatementImportPage> {
     // SEULEMENT sur les mouvements issus de `finalizeCryptoExchanges`
     // (`meta['valuationSource']` posé), jamais sur un mouvement titre ordinaire.
     final valuationLabel = _valuationSourceLabel(l10n, tx.meta);
+    // Étage 2 « cours en-app » (LOT 4, conception interne) : pastille « approché »
+    // + moyen sobre de repasser la ligne en saisie manuelle — SEULEMENT sur les
+    // mouvements finalisés à cet étage (`meta['valuationSource'] ==
+    // 'marketHistory'`).
+    final isMarketHistory = tx.meta?['valuationSource'] == 'marketHistory';
+    final baseKey = m.importKey == null ? null : _baseImportKey(m.importKey!);
+    final reverting =
+        baseKey != null && _revertingValuationKeys.contains(baseKey);
+    // M-3 (revue adversariale, LOT 4) : bouton porté par la SEULE jambe
+    // `#sell:` d'un échange à 2 jambes (jamais `#buy:` — les deux jambes
+    // partagent la MÊME clé de base, un second bouton identique par échange
+    // serait redondant) — un dépôt en nature (`#deposit:`, une SEULE jambe)
+    // le porte naturellement puisqu'il n'a pas de suffixe `#buy:` à exclure.
+    // La pastille « Approché » ci-dessus, elle, reste sur LES DEUX jambes
+    // (information de provenance, pas une action).
+    final showRevertButton = isMarketHistory &&
+        baseKey != null &&
+        (m.importKey == null || !m.importKey!.contains('#buy:'));
     return ListTile(
       dense: true,
       title: Text('$symbolLabel — ${_kindLabel(l10n, tx.kind)}'),
@@ -3463,25 +3489,110 @@ class _StatementImportPageState extends State<StatementImportPage> {
                   ),
             ),
           if (valuationLabel != null)
-            Text(
-              valuationLabel,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.onSurfaceVariant,
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    valuationLabel,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
                   ),
+                ),
+                if (isMarketHistory) ...[
+                  const SizedBox(width: 6),
+                  _approximateBadge(l10n),
+                ],
+              ],
+            ),
+          if (showRevertButton)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: SizedBox(
+                height: 24,
+                child: TextButton(
+                  onPressed: reverting
+                      ? null
+                      : () => _revertCryptoValuationToManual(baseKey),
+                  style: TextButton.styleFrom(
+                    padding: EdgeInsets.zero,
+                    minimumSize: const Size(0, 0),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    alignment: Alignment.centerLeft,
+                  ),
+                  child: Text(
+                    l10n.importValuationRevertToManualButton,
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
             ),
         ],
       ),
     );
   }
 
+  /// Pastille « approché » (chantier B16, LOT 4, conception interne, vocabulaire
+  /// des courbes B7 — conception interne) — pour une ligne valorisée à l'étage 2 «
+  /// cours en-app » : le cours historique retenu est structurellement une
+  /// approximation (une clôture journalière n'est pas le prix RÉEL de
+  /// l'exécution), à dire à l'écran plutôt que de le masquer. Même style que les
+  /// autres pastilles discrètes de l'app (cf. `total_value_card.dart`, badge «
+  /// partiel »).
+  Widget _approximateBadge(AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        l10n.importValuationApproximateBadge,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+      ),
+    );
+  }
+
+  /// Clé de BASE d'un `importKey` FINALISÉ (`UnvaluedExchange.importKey`,
+  /// celle AVANT le suffixe de rôle `#sell:`/`#buy:`/`#deposit:` posé par
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`) — c'est CETTE clé que
+  /// `AccountController.revertCryptoValuationToManual` attend (même
+  /// convention que `applyManualCryptoValuations`, qui ne connaît que les
+  /// clés `UnvaluedExchange.importKey`, jamais les clés suffixées dérivées).
+  String _baseImportKey(String key) {
+    final cut = _roleSuffixIndex(key);
+    return cut == -1 ? key : key.substring(0, cut);
+  }
+
+  /// UX « repasser en saisie manuelle » (chantier B16, LOT 4, conception interne) —
+  /// appelle `AccountController.revertCryptoValuationToManual` pour [baseImportKey]
+  /// et remplace [_preview] par l'aperçu reconstruit ; la ligne concernée quitte
+  /// alors le groupe « Échanges valorisés » et réapparaît dans « Échanges à
+  /// valoriser » (motif `unreadable`), comme n'importe quelle autre entrée en
+  /// arbitrage manuel.
+  Future<void> _revertCryptoValuationToManual(String baseImportKey) async {
+    setState(() => _revertingValuationKeys.add(baseImportKey));
+    final updated =
+        await widget.controller.revertCryptoValuationToManual(baseImportKey);
+    if (!mounted) return;
+    setState(() {
+      _revertingValuationKeys.remove(baseImportKey);
+      if (updated != null) _preview = updated;
+    });
+  }
+
   /// « Valorisé d'après le relevé » / « Valorisé d'après la contrepartie en
-  /// stablecoin dollar » / « Valorisé d'après la contrepartie en dollars » / «
-  /// Valorisé manuellement » — discret, SEULEMENT sur les mouvements crypto
+  /// stablecoin dollar » / « Valorisé d'après la contrepartie en dollars » /
+  /// « Valorisé manuellement » / « Valorisé au cours du JJ/MM/AAAA » (étage 2
+  /// « cours en-app », LOT 4) — discret, SEULEMENT sur les mouvements crypto
   /// finalisés (`meta['valuationSource']` posé par
-  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`, valeurs
-  /// `'statement'`/`'stableLeg'` (amendement drive lot 2/`'fiatLeg'` (amendement
-  /// voie (ii), jambe fiat étrangère USD)/`'manual'` au lot 2 ; `'marketHistory'`,
-  /// hors périmètre de ce lot, n'a PAS de libellé dédié ici). `null` sur tout
+  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`). `null` sur tout
   /// autre mouvement (aucun changement visible pour Bourse Direct/générique).
   String? _valuationSourceLabel(
     AppLocalizations l10n,
@@ -3494,6 +3605,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importValuationSourceStableLeg;
       case 'fiatLeg':
         return l10n.importValuationSourceFiatLeg;
+      case 'marketHistory':
+        final quoteDate = meta?['quoteDate'];
+        final parsed = quoteDate is String ? DateTime.tryParse(quoteDate) : null;
+        return parsed == null
+            ? null
+            : l10n.importValuationSourceMarketHistory(_formatDate(parsed));
       case 'manual':
         return l10n.importValuationSourceManual;
       default:

@@ -114,6 +114,20 @@ class MarketDataService {
   /// symboles titres saisis à la main.
   Future<bool?> symbolExists(String symbol) => _provider.symbolExists(symbol);
 
+  /// Barres JOURNALIÈRES de [symbol] sur `[from]..[to]` (voir
+  /// [MarketDataProvider.getHistoricalRange]) — utilisée par l'étage 2 « cours
+  /// en-app » de la cascade de valorisation de l'import crypto (conception
+  /// interne, chantier B16 lot 4), contrairement à [getHistoricalData] :
+  /// granularité journalière garantie sur toute fenêtre PASSÉE, y compris
+  /// ancienne.
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  }) =>
+      _provider.getHistoricalRange(symbol, from, to, maxAttempts: maxAttempts);
+
   // ==================== COTATIONS ORIENTÉES ACTIF ====================
   // Ces variantes prennent un [Asset] plutôt qu'un symbole brut. Pour un actif
   // classique elles délèguent simplement aux méthodes par symbole. Pour un

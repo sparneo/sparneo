@@ -20,8 +20,11 @@
 // un AccountController par défaut (jamais interrogé) suffit à ces tests.
 // Zéro appel réseau (aucune méthode réseau n'est appelée non plus).
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:intl/intl.dart';
 
 import 'package:portfolio_tracker/controllers/account_controller.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
@@ -158,6 +161,76 @@ class _FakeApplyManualValuationsController extends AccountController {
     confirmCalled = true;
     capturedConfirmPreview = preview;
     return null;
+  }
+}
+
+/// Fake SANS RÉSEAU qui capture la clé passée à
+/// [AccountController.revertCryptoValuationToManual] (chantier B16, LOT 4,
+/// conception interne) et renvoie [result] tel quel — même patron que
+/// [_FakeApplyManualValuationsController] : ce fake teste UNIQUEMENT le câblage
+/// UI → contrôleur (la clé de BASE, débarrassée du suffixe de rôle), pas la
+/// reconstruction elle-même (couverte par les tests d'intégration contrôleur de
+/// `crypto_ledger_market_history_lot4_test.dart`).
+class _FakeRevertValuationController extends AccountController {
+  _FakeRevertValuationController({this.result})
+      : super(initialAccountId: _accountId);
+
+  final ImportPreview? result;
+  String? capturedBaseImportKey;
+  int callCount = 0;
+
+  @override
+  Future<ImportPreview?> revertCryptoValuationToManual(
+    String baseImportKey,
+  ) async {
+    callCount++;
+    capturedBaseImportKey = baseImportKey;
+    return result;
+  }
+}
+
+/// Fake SANS RÉSEAU qui REPRODUIT le contrat du verrou
+/// `AccountController._valuationRebuildInFlight` (I-2, revue adversariale
+/// LOT 4, PRIORITAIRE — course entre deux reverts sur des clés différentes) :
+/// un SEUL appel « en vol » à la fois — un second appel déclenché PENDANT
+/// que le premier n'a pas encore résolu renvoie IMMÉDIATEMENT `null`, jamais
+/// mis en file. Une base SQLite réelle bloquant indéfiniment dans un
+/// `testWidgets` (cf. doc de tête de fichier), ce fake est le seul moyen
+/// d'exercer ICI le scénario de course : deux « Repasser en saisie
+/// manuelle » rapprochés sur des lignes DIFFÉRENTES ne doivent jamais laisser
+/// le second écraser l'aperçu affiché avec un résultat périmé.
+class _FakeGuardedRevertValuationController extends AccountController {
+  _FakeGuardedRevertValuationController()
+      : super(initialAccountId: _accountId);
+
+  /// Le test complète ce [Completer] pour laisser le PREMIER appel ACCEPTÉ
+  /// résoudre — simule un rebuild lent (réseau/DB) qui reste « en vol »
+  /// jusque-là.
+  final Completer<ImportPreview?> firstCallGate = Completer<ImportPreview?>();
+
+  bool _inFlight = false;
+
+  /// TOUTES les clés reçues, y compris celles rejetées par le verrou —
+  /// prouve que c'est bien le CONTRÔLEUR (pas le widget) qui filtre, comme
+  /// le fait réellement `_valuationRebuildInFlight`.
+  final List<String> attemptedKeys = [];
+
+  /// Nombre d'appels RÉELLEMENT acceptés (jamais plus d'un en vol).
+  int acceptedCallCount = 0;
+
+  @override
+  Future<ImportPreview?> revertCryptoValuationToManual(
+    String baseImportKey,
+  ) async {
+    attemptedKeys.add(baseImportKey);
+    if (_inFlight) return null; // même contrat que le verrou réel.
+    _inFlight = true;
+    acceptedCallCount++;
+    try {
+      return await firstCallGate.future;
+    } finally {
+      _inFlight = false;
+    }
   }
 }
 
@@ -672,6 +745,126 @@ List<ImportedMovement> _cryptoExchangePairValued(
           currency: 'EUR',
           date: DateTime(2024, 3, 5),
           meta: {'importKey': '$baseKey#buy:STB', 'valuationSource': valuationSource},
+        ),
+        isin: null,
+        label: 'STB',
+        ledgerCode: 'STB',
+        resolvedSymbol: 'STB-EUR',
+        importKey: '$baseKey#buy:STB',
+      ),
+    ];
+
+/// Jour ISO `'AAAA-MM-JJ'` (M-4, revue adversariale LOT 4) — MÊME format que
+/// `CryptoLedgerNormalizer._isoDay`, jamais `DateTime.toIso8601String()`
+/// (qui embarque l'heure/les millisecondes) : la fixture doit reproduire
+/// EXACTEMENT ce que la production écrit dans `meta['quoteDate']`, lu tel
+/// quel par `_valuationSourceLabel` (`DateTime.tryParse` sur cette chaîne).
+String _isoDay(DateTime d) =>
+    '${d.year.toString().padLeft(4, '0')}-'
+    '${d.month.toString().padLeft(2, '0')}-'
+    '${d.day.toString().padLeft(2, '0')}';
+
+/// Mouvement crypto FINALISÉ à l'étage 2 « cours en-app » (chantier B16, LOT 4,
+/// conception interne) — porte le méta complet posé par `CryptoLedgerNormalizer`
+/// pour cette provenance (`quoteDate` notamment, lu par `_valuationSourceLabel`
+/// pour composer le sous-titre daté, et `valuationSource == 'marketHistory'` qui
+/// déclenche la pastille « Approché » + le bouton « Repasser en saisie manuelle
+/// »).
+ImportedMovement _cryptoMovementValuedMarketHistory(
+  String id,
+  String importKey,
+  DateTime quoteDate, {
+  String quoteSymbol = 'ADA-EUR',
+  String quoteLeg = 'paid',
+}) =>
+    ImportedMovement.candidate(
+      sourceRow: const [],
+      sourceRowIndex: 2,
+      transaction: AssetTransaction(
+        id: id,
+        accountId: _accountId,
+        symbol: 'ADA-EUR',
+        kind: TransactionKind.buy,
+        quantity: '100',
+        unitPrice: '0.5',
+        amount: '-50',
+        currency: 'EUR',
+        date: DateTime(2024, 3, 5),
+        meta: {
+          'importKey': importKey,
+          'valuationSource': 'marketHistory',
+          'quoteSymbol': quoteSymbol,
+          'quoteDate': _isoDay(quoteDate),
+          'quoteInterval': '1d',
+          'quoteLeg': quoteLeg,
+        },
+      ),
+      isin: null,
+      label: 'ADA',
+      ledgerCode: 'ADA',
+      resolvedSymbol: 'ADA-EUR',
+      importKey: importKey,
+    );
+
+/// Paire sell+buy d'UN échange valorisé à l'étage 2 « cours en-app »
+/// (chantier B16, LOT 4) — même patron que [_cryptoExchangePairValued], pour
+/// vérifier que le bouton « Repasser en saisie manuelle » de N'IMPORTE
+/// LAQUELLE des deux jambes transmet la même clé de BASE (débarrassée du
+/// suffixe `#sell:`/`#buy:`) au contrôleur.
+List<ImportedMovement> _cryptoExchangePairValuedMarketHistory(
+  String baseKey,
+  DateTime quoteDate,
+) =>
+    [
+      ImportedMovement.candidate(
+        sourceRow: const [],
+        sourceRowIndex: 3,
+        transaction: AssetTransaction(
+          id: '$baseKey-sell',
+          accountId: _accountId,
+          symbol: 'AAA-EUR',
+          kind: TransactionKind.sell,
+          quantity: '2',
+          unitPrice: '90',
+          amount: '180',
+          currency: 'EUR',
+          date: DateTime(2024, 3, 5),
+          meta: {
+            'importKey': '$baseKey#sell:AAA',
+            'valuationSource': 'marketHistory',
+            'quoteSymbol': 'AAA-EUR',
+            'quoteDate': _isoDay(quoteDate),
+            'quoteInterval': '1d',
+            'quoteLeg': 'paid',
+          },
+        ),
+        isin: null,
+        label: 'AAA',
+        ledgerCode: 'AAA',
+        resolvedSymbol: 'AAA-EUR',
+        importKey: '$baseKey#sell:AAA',
+      ),
+      ImportedMovement.candidate(
+        sourceRow: const [],
+        sourceRowIndex: 3,
+        transaction: AssetTransaction(
+          id: '$baseKey-buy',
+          accountId: _accountId,
+          symbol: 'STB-EUR',
+          kind: TransactionKind.buy,
+          quantity: '120',
+          unitPrice: '1.5',
+          amount: '-180',
+          currency: 'EUR',
+          date: DateTime(2024, 3, 5),
+          meta: {
+            'importKey': '$baseKey#buy:STB',
+            'valuationSource': 'marketHistory',
+            'quoteSymbol': 'AAA-EUR',
+            'quoteDate': _isoDay(quoteDate),
+            'quoteInterval': '1d',
+            'quoteLeg': 'paid',
+          },
         ),
         isin: null,
         label: 'STB',
@@ -2773,6 +2966,211 @@ void main() {
       expect(find.text('Montants non saisis'), findsNothing);
       expect(controller.confirmCalled, isTrue);
       expect(controller.capturedConfirmPreview?.toCreate.length, 1);
+    });
+  });
+
+  group(
+      'StatementImportPage — étage 2 « cours en-app » (chantier B16, LOT 4, '
+      'conception interne)', () {
+    testWidgets(
+        'mouvement valorisé `marketHistory` : sous-titre « Valorisé au cours '
+        'du JJ/MM/AAAA » + pastille « Approché »', (tester) async {
+      final quoteDate = DateTime(2024, 3, 4);
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoMovementValuedMarketHistory('tx-mh', 'ref:acc:MH', quoteDate),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      final expectedDate = DateFormat.yMd('fr').format(quoteDate);
+      expect(find.text('Valorisé au cours du $expectedDate'), findsOneWidget);
+      expect(find.text('Approché'), findsOneWidget);
+      expect(
+        find.text('Repasser en saisie manuelle'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+        'aucune pastille « Approché » ni bouton de repli sur un échange '
+        'valorisé `statement` (contrôle négatif — réservé à `marketHistory`)',
+        (tester) async {
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoMovementValued('tx-stmt', 'ref:acc:STMT', 'statement'),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Approché'), findsNothing);
+      expect(find.text('Repasser en saisie manuelle'), findsNothing);
+    });
+
+    testWidgets(
+        'bouton « Repasser en saisie manuelle » : UNE SEULE fois par échange '
+        '(porté par la jambe `sell` seule, M-3 revue adversariale — la '
+        'pastille « Approché », elle, reste sur les DEUX jambes), appelle '
+        'revertCryptoValuationToManual avec la clé de BASE et rafraîchit '
+        'l\'aperçu affiché', (tester) async {
+      final controller = _FakeRevertValuationController(
+        result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
+      );
+      final preview = ImportPreview(
+        toCreate: _cryptoExchangePairValuedMarketHistory(
+          'ref:acc:EX1',
+          DateTime(2024, 3, 4),
+        ),
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // La pastille « Approché » reste sur LES DEUX jambes (simple
+      // information de provenance)...
+      expect(find.text('Approché'), findsNWidgets(2));
+      // ...mais le bouton d'action n'apparaît qu'UNE FOIS (jambe `sell`
+      // seule — un second bouton identique par échange serait redondant,
+      // les deux jambes partageant la MÊME clé de base).
+      final buttons = find.widgetWithText(
+        TextButton,
+        'Repasser en saisie manuelle',
+      );
+      expect(buttons, findsOneWidget);
+      await tester.tap(buttons);
+      await tester.pumpAndSettle();
+
+      expect(controller.callCount, 1);
+      expect(controller.capturedBaseImportKey, 'ref:acc:EX1');
+      // L'aperçu affiché est remplacé par celui renvoyé par le contrôleur :
+      // les lignes `marketHistory` disparaissent, le mouvement ordinaire du
+      // nouvel aperçu apparaît.
+      expect(find.text('Repasser en saisie manuelle'), findsNothing);
+      expect(find.text('Approché'), findsNothing);
+    });
+
+    testWidgets(
+        'résultat `null` du contrôleur → aperçu affiché INCHANGÉ (filet B4, '
+        'jamais de blocage)', (tester) async {
+      final controller = _FakeRevertValuationController(result: null);
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoMovementValuedMarketHistory(
+            'tx-mh',
+            'ref:acc:MH',
+            DateTime(2024, 3, 4),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Repasser en saisie manuelle'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(controller.callCount, 1);
+      expect(controller.capturedBaseImportKey, 'ref:acc:MH');
+      // `null` renvoyé (filet défensif de revertCryptoValuationToManual, cf.
+      // AccountController) : la ligne reste affichée telle quelle, la pastille
+      // et le bouton restent visibles — aucune régression silencieuse de
+      // l'aperçu affiché.
+      expect(find.text('Approché'), findsOneWidget);
+      expect(find.text('Repasser en saisie manuelle'), findsOneWidget);
+    });
+
+    testWidgets(
+        'I-2 (revue adversariale LOT 4, PRIORITAIRE) : deux « Repasser en '
+        'saisie manuelle » rapprochés sur des lignes DIFFÉRENTES — le second '
+        'reste INERTE tant que le premier rebuild n\'est pas posé (même '
+        'contrat que le verrou `_valuationRebuildInFlight` du contrôleur), '
+        'jamais d\'écrasement de l\'aperçu par un résultat périmé',
+        (tester) async {
+      final controller = _FakeGuardedRevertValuationController();
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoMovementValuedMarketHistory(
+            'tx-a',
+            'ref:acc:KEY-A',
+            DateTime(2024, 3, 4),
+          ),
+          _cryptoMovementValuedMarketHistory(
+            'tx-b',
+            'ref:acc:KEY-B',
+            DateTime(2024, 3, 4),
+            quoteSymbol: 'BBB-EUR',
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      final buttons =
+          find.widgetWithText(TextButton, 'Repasser en saisie manuelle');
+      expect(buttons, findsNWidgets(2));
+
+      // Tap #1 (ligne A) SANS attendre sa résolution : le premier appel
+      // reste « en vol », gaté par `firstCallGate`.
+      await tester.tap(buttons.at(0));
+      await tester.pump(); // lance l'appel, ne le résout pas.
+
+      // Tap #2 (ligne B), RAPPROCHÉ, PENDANT que le premier est encore en
+      // vol.
+      await tester.tap(buttons.at(1));
+      await tester.pump();
+
+      // Les DEUX tentatives sont bien arrivées jusqu'au contrôleur (le
+      // widget ne filtre rien lui-même, c'est le verrou du contrôleur qui
+      // protège)...
+      expect(
+        controller.attemptedKeys,
+        equals(['ref:acc:KEY-A', 'ref:acc:KEY-B']),
+      );
+      // ...mais UN SEUL appel a été RÉELLEMENT accepté : le second, engagé
+      // pendant que le premier était en vol, est resté inerte (retour `null`
+      // immédiat, même contrat que le verrou réel).
+      expect(controller.acceptedCallCount, 1);
+
+      // Résout enfin le PREMIER appel (ligne A) avec un aperçu où SEULE la
+      // ligne A a disparu — la ligne B, elle, DOIT rester valorisée au
+      // marché : si le widget avait appliqué un résultat du second appel
+      // (concurrent), elle aurait déjà disparu à ce stade — or ce second
+      // appel n'a jamais abouti (retour `null` immédiat ci-dessus).
+      controller.firstCallGate.complete(
+        ImportPreview(
+          toCreate: [
+            _cryptoMovementValuedMarketHistory(
+              'tx-b',
+              'ref:acc:KEY-B',
+              DateTime(2024, 3, 4),
+              quoteSymbol: 'BBB-EUR',
+            ),
+          ],
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // La ligne B reste affichée, TOUJOURS valorisée au marché — jamais
+      // repassée en saisie manuelle par erreur via le second appel inerte.
+      expect(find.text('Repasser en saisie manuelle'), findsOneWidget);
+      expect(find.text('Approché'), findsOneWidget);
     });
   });
 }

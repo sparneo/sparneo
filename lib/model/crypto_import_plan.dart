@@ -229,10 +229,41 @@ class CryptoValuation {
   /// historique du jour, amendement voie (ii) —
   /// `CryptoLedgerNormalizer.finalizeCryptoExchanges` émet alors la SEULE jambe
   /// crypto avec du cash réel, jamais la paire sell/buy opposée du modèle N4) /
-  /// `'marketHistory'` (étage 2, hors lot 2) / `'manual'` (saisie utilisateur, hors
-  /// lot 2 — l'UI viendra plus tard, l'API l'accepte déjà, cf.
-  /// `finalizeCryptoExchanges`).
+  /// `'marketHistory'` (étage 2, LOT 4 — cours historique Yahoo du jour de
+  /// l'opération, conception interne ; voir
+  /// [quoteSymbol]/[quoteDate]/[quoteInterval]/[quoteLeg] ci-dessous) / `'manual'`
+  /// (saisie utilisateur, hors lot 2 — l'UI viendra plus tard, l'API l'accepte déjà,
+  /// cf. `finalizeCryptoExchanges`).
   final String source;
+
+  /// Symbole de marché INTERROGÉ pour la cotation historique — renseigné
+  /// UNIQUEMENT quand [source] vaut `'marketHistory'` (étage 2, LOT 4,
+  /// conception interne) : le ticker résolu par la cascade EXISTANTE
+  /// (`AccountController._resolveCryptoTicker`) pour la jambe retenue en
+  /// [quoteLeg], ex. `'BTC-EUR'`/`'FLR-USD'`. `null` pour tout autre [source].
+  final String? quoteSymbol;
+
+  /// Jour UTC EXACT de l'opération pour lequel la clôture journalière
+  /// [MarketDataProvider.getHistoricalRange] a été retenue — TOUJOURS le
+  /// jour de l'échange lui-même (JAMAIS de repli sur un jour voisin,
+  /// contrairement à [fxDate] : une crypto cote tous les jours, week-ends
+  /// inclus, l'absence de barre ce jour-là fait simplement échouer cet
+  /// étage plutôt que d'approximer une seconde fois). `null` sauf
+  /// `source == 'marketHistory'`.
+  final DateTime? quoteDate;
+
+  /// Granularité de la cotation retenue — TOUJOURS `'1d'` au lot 4 (seule
+  /// interrogée par [MarketDataProvider.getHistoricalRange]), exposée en
+  /// `meta` pour traçabilité/évolution future. `null` sauf
+  /// `source == 'marketHistory'`.
+  final String? quoteInterval;
+
+  /// Quelle jambe de l'[UnvaluedExchange] a effectivement été cotée —
+  /// `'paid'` (jambe PAYÉE, cas nominal, cohérence avec l'étage 1 §5.1.7b)
+  /// ou `'received'` (repli, jambe payée non cotable, OU forme dégénérée
+  /// `depositInKind` qui n'a qu'une jambe reçue). `null` sauf
+  /// `source == 'marketHistory'`.
+  final String? quoteLeg;
 
   const CryptoValuation({
     required this.amountEur,
@@ -241,6 +272,10 @@ class CryptoValuation {
     this.fxDate,
     this.spreadPct,
     required this.source,
+    this.quoteSymbol,
+    this.quoteDate,
+    this.quoteInterval,
+    this.quoteLeg,
   });
 }
 

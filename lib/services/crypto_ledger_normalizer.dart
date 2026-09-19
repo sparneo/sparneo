@@ -1102,6 +1102,14 @@ class CryptoLedgerNormalizer {
       if (valuation.fxDate != null) 'fxDate': _isoDay(valuation.fxDate!),
       if (valuation.spreadPct != null)
         'valuationSpreadPct': valuation.spreadPct,
+      // Étage 2 « cours en-app » (LOT 4, conception interne) — voir la doc de ces
+      // champs sur `CryptoValuation` : renseignés UNIQUEMENT quand `valuation.source
+      // == 'marketHistory'`.
+      if (valuation.quoteSymbol != null) 'quoteSymbol': valuation.quoteSymbol,
+      if (valuation.quoteDate != null) 'quoteDate': _isoDay(valuation.quoteDate!),
+      if (valuation.quoteInterval != null)
+        'quoteInterval': valuation.quoteInterval,
+      if (valuation.quoteLeg != null) 'quoteLeg': valuation.quoteLeg,
       if (u.seq != null) 'seq': u.seq,
     };
   }

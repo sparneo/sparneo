@@ -56,4 +56,40 @@ abstract class MarketDataProvider {
   /// Pas de cache à ce stade (lot 0) : passthrough pur côté décorateur
   /// [CachingMarketDataProvider].
   Future<bool?> symbolExists(String symbol);
+
+  /// Barres JOURNALIÈRES de [symbol] sur la fenêtre PASSÉE [from]..[to] (bornes
+  /// incluses, jours calendaires), via `v8/finance/chart` avec `period1`/`period2`
+  /// explicites et `interval=1d` — extension recommandée par le design de l'import
+  /// crypto (conception interne, chantier B16 lot 4) : contrairement à
+  /// [getHistoricalData], dont l'implémentation Yahoo dégrade la granularité
+  /// (hebdomadaire au-delà de ~2 ans, mensuelle au-delà de ~5 ans, cf. son mapping
+  /// `days → range`) — donc INUTILISABLE pour retrouver la clôture d'UN jour
+  /// précis sur un historique ancien (l'étage 2 de la cascade de valorisation
+  /// crypto a justement besoin de la clôture EXACTE du jour d'une opération
+  /// passée, parfois vieille de plusieurs années). Vérifié à la main (18/09/2026)
+  /// : un actif crypto répond en granularité journalière dès son PREMIER jour
+  /// coté, quelle que soit l'ancienneté de la fenêtre demandée.
+  ///
+  /// Retourne `null` en cas d'échec définitif (après retries éventuels) —
+  /// même politique que [getHistoricalData]. Une fenêtre sans AUCUNE barre
+  /// (ex. jour non coté, week-end sur un actif qui ne trade pas 24/7) rend
+  /// un [AssetHistoricalData] aux listes VIDES plutôt que `null` — à
+  /// l'appelant de traiter l'absence de barre pour le jour recherché comme
+  /// un échec de CET étage (B4, jamais de coercition), pas une erreur de
+  /// transport.
+  ///
+  /// [maxAttempts] (I-1, revue adversariale LOT 4) : nombre de tentatives
+  /// transmis à `retryWithBackoff` côté implémentation — défaut `3` (même
+  /// politique que les autres méthodes de ce contrat). L'étage 2 de la
+  /// cascade de valorisation crypto ([AccountController.
+  /// _resolveMarketHistoryValuations]), best-effort dont l'échec est de
+  /// toute façon absorbé par l'étage 3, l'appelle avec `1` pour borner sa
+  /// latence pire-cas (3 tentatives × 10 s de timeout, soit ~31,5 s PAR
+  /// symbole, serait inadapté à un aperçu synchrone).
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  });
 }

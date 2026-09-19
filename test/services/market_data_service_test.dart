@@ -75,6 +75,26 @@ class _FakeProvider implements MarketDataProvider {
     lastSymbolExists = symbol;
     return symbolExistsToReturn;
   }
+
+  // Étage 2 « cours en-app » (import crypto B16, lot 4, conception
+  // interne) — mêmes traces que les autres méthodes de ce fake.
+  AssetHistoricalData? rangeToReturn;
+  String? lastRangeSymbol;
+  DateTime? lastRangeFrom;
+  DateTime? lastRangeTo;
+
+  @override
+  Future<AssetHistoricalData?> getHistoricalRange(
+    String symbol,
+    DateTime from,
+    DateTime to, {
+    int maxAttempts = 3,
+  }) async {
+    lastRangeSymbol = symbol;
+    lastRangeFrom = from;
+    lastRangeTo = to;
+    return rangeToReturn;
+  }
 }
 
 void main() {
@@ -115,6 +135,30 @@ void main() {
       expect(fakeProvider.lastHistoricalSymbol, 'AAPL');
       expect(fakeProvider.lastHistoricalDays, 90);
       expect(result, same(fixedHistorical));
+    });
+
+    test('getHistoricalRange délègue au provider avec le symbole et les bornes transmis', () async {
+      final fakeProvider = _FakeProvider();
+      final fixedRange = AssetHistoricalData(
+        symbol: 'BTC-EUR',
+        dates: [DateTime(2024, 5, 10)],
+        prices: [50000.0],
+      );
+      fakeProvider.rangeToReturn = fixedRange;
+
+      final service = MarketDataService.forTesting(
+        _FakeExchangeRateService(),
+        provider: fakeProvider,
+      );
+
+      final from = DateTime(2024, 5, 1);
+      final to = DateTime(2024, 5, 10);
+      final result = await service.getHistoricalRange('BTC-EUR', from, to);
+
+      expect(fakeProvider.lastRangeSymbol, 'BTC-EUR');
+      expect(fakeProvider.lastRangeFrom, from);
+      expect(fakeProvider.lastRangeTo, to);
+      expect(result, same(fixedRange));
     });
 
     test('searchByIsin délègue au provider avec l\'ISIN transmis', () async {

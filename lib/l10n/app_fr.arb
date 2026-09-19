@@ -562,6 +562,9 @@
   "importValuationSourceStableLeg": "Valorisé d'après la contrepartie en stablecoin dollar",
   "importValuationSourceFiatLeg": "Valorisé d'après la contrepartie en dollars",
   "importValuationSourceManual": "Valorisé manuellement",
+  "importValuationSourceMarketHistory": "Valorisé au cours du {date}",
+  "importValuationApproximateBadge": "Approché",
+  "importValuationRevertToManualButton": "Repasser en saisie manuelle",
   "importGroupValuedExchanges": "Échanges valorisés ({count})",
 
   "importGroupUnbalancedInternalTransfers": "Mouvements internes ({count})",

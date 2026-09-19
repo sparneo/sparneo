@@ -2840,6 +2840,21 @@
   "@importValuationSourceManual": {
     "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'manual' (B16 lot 2 — EUR amount entered by the user in the 'exchanges to value' group)"
   },
+  "importValuationSourceMarketHistory": "Valued at the {date} market price",
+  "@importValuationSourceMarketHistory": {
+    "description": "Discreet subtitle on a movement tile whose meta['valuationSource'] == 'marketHistory' (B16 lot 4, stage 2 'in-app price' — daily close of the paid leg, or the received leg as a fallback, fetched from the market data provider for the exact UTC day of the operation, doc 20 §5.1.7d). {date} is the already-localized quote day (same formatter as other movement tiles).",
+    "placeholders": {
+      "date": { "type": "String" }
+    }
+  },
+  "importValuationApproximateBadge": "Approximate",
+  "@importValuationApproximateBadge": {
+    "description": "Short badge/chip label next to a stage-2 'marketHistory' valuation subtitle — reuses the 'approximate' wording already used by the real-evolution chart's approximated-values flag (B7, doc 18), single word, same register as importValuationSourceManual etc."
+  },
+  "importValuationRevertToManualButton": "Switch to manual entry",
+  "@importValuationRevertToManualButton": {
+    "description": "Sober action (button/menu item) on a stage-2 'marketHistory' valued tile, letting the user send it back to manual arbitration (stage 3) instead of trusting the in-app market price — B16 lot 4, doc 20 §5.5 point 4, 'no flow overhaul'."
+  },
   "importGroupValuedExchanges": "Valued exchanges ({count})",
   "@importGroupValuedExchanges": {
     "description": "Section title for the collapsed, read-only group listing crypto exchanges that WERE valued (stage 1 statement or manual entry) and are part of toCreate — a filtered view for readability, same pattern as importGroupAggregatedRewards/importGroupReplacements, doc 20 §5.5 point 3. {count} counts distinct exchanges (sell+buy legs of the same exchange count once), not raw movements.",
