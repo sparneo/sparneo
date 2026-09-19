@@ -158,6 +158,25 @@ class WalletController extends ChangeNotifier {
   /// compter sur la vue pour les repasser à l'arrêt de l'app.
   final Map<String, Account> _hiddenAccounts = {};
 
+  /// Ids de comptes dont [commitDeleteAccount] est ACTUELLEMENT en train de
+  /// s'exécuter — entre l'entrée dans la garde et le retrait de
+  /// [_hiddenAccountIds]/[_hiddenAccounts] (dans un `finally`).
+  ///
+  /// R1 (contre-revue architecte, suivi de D8) : la garde d'idempotence de
+  /// [commitDeleteAccount] teste puis purge [_hiddenAccountIds] de PART ET
+  /// D'AUTRE d'un `await _storage.deleteAccount(...)` — elle n'était donc PAS
+  /// ré-entrante à travers cet `await`. Deux flushs concurrents (le flush
+  /// `detached` de [didChangeAppLifecycleState] et le filet de secours de
+  /// `dispose()`, cascade plausible au teardown) passaient alors TOUS LES
+  /// DEUX la garde avant que le premier n'ait eu le temps de la purger : le
+  /// second DELETE stockage était inoffensif (idempotent côté SQL), mais les
+  /// DEUX `loadAllData()` déclenchés en parallèle se disputaient sans aucun
+  /// ordre garanti `_cashBalances` (`.clear()` puis mutation EN PLACE,
+  /// cf. l.586) — risque de corruption. `Set.add` est la primitive ATOMIQUE
+  /// (synchrone, sans `await` entre le test et l'ajout) qui ferme cette
+  /// fenêtre : voir la garde de [commitDeleteAccount].
+  final Set<String> _deletionsInFlight = {};
+
   /// Wallets masqués de la liste affichée en attente de confirmation de
   /// suppression. MÊME motif que [_hiddenAccountIds] (cf. commentaire
   /// ci-dessus) : un id y figure tant que la suppression n'est ni validée ni
@@ -1035,6 +1054,18 @@ class WalletController extends ChangeNotifier {
 
   /// Supprime un compte et recharge les données.
   /// Retourne false si c'est le dernier compte (suppression impossible).
+  ///
+  /// R5 (contre-revue architecte) : AUCUN appelant de production — le flux
+  /// réel de suppression passe par [hideAccount]/[commitDeleteAccount]
+  /// (suppression DIFFÉRÉE + Annuler, cf. la garde « dernier compte » de
+  /// `confirmDeleteAccount` au niveau DIALOGUE, pas ici). Cette méthode
+  /// SUPPRIME IMMÉDIATEMENT, sans fenêtre d'undo, et son garde-fou
+  /// « dernier compte » ci-dessous est REDONDANT avec celui du dialogue —
+  /// [hideAccount] n'en a délibérément AUCUN équivalent. Conservée
+  /// `@visibleForTesting` pour deux tests de caractérisation existants
+  /// (`wallet_controller_test.dart`, groupe « actions données ») ; NE PAS
+  /// l'appeler depuis la production — utiliser hideAccount + commitDeleteAccount.
+  @visibleForTesting
   Future<bool> deleteAccount(String accountId) async {
     if (_accounts.length <= 1) return false;
     await _storage.deleteAccount(accountId);
@@ -1113,25 +1144,44 @@ class WalletController extends ChangeNotifier {
   /// restauré via « Annuler » avant l'expiration de la fenêtre) — jusqu'ici ce
   /// no-op était totalement muet (retour `void`), rendant un appel tardif
   /// (double timer, flush de fermeture) indiscernable d'une vraie suppression.
-  Future<bool> commitDeleteAccount(Account account) async {
-    // Garde-fou d'idempotence (calqué sur commitDeletePosition) : sans effet si
-    // le compte n'est plus masqué (déjà validé, ou restauré via « Annuler »).
-    // Protège d'une double suppression et d'une suppression après restauration.
-    if (!_hiddenAccountIds.contains(account.id)) {
+  ///
+  /// [reload] (R1) : `false` fait l'impasse sur le `loadAllData()` final —
+  /// réservé au flush de fermeture ([commitPendingDeletions]), où l'UI est en
+  /// train de disparaître et où N comptes flushés ne justifient pas N
+  /// rechargements stockage/réseau. Le chemin normal (undo snackbar) garde le
+  /// défaut `true`, comportement inchangé.
+  Future<bool> commitDeleteAccount(Account account, {bool reload = true}) async {
+    // Garde-fou D'IDEMPOTENCE **ET DE RÉ-ENTRANCE** (R1, cf. le
+    // commentaire de [_deletionsInFlight]) : ① le compte doit être encore
+    // masqué (comme avant — protège d'un commit après restauration ou déjà
+    // validé) ; ② AUCUN commit ne doit déjà être en vol pour LUI —
+    // `_deletionsInFlight.add` est ATOMIQUE (aucun `await` entre le test et
+    // l'ajout), donc deux appels concurrents (flush `detached` + flush
+    // `dispose`, p. ex.) ne peuvent plus tous les deux franchir la garde.
+    if (!_hiddenAccountIds.contains(account.id) ||
+        !_deletionsInFlight.add(account.id)) {
       AppLogger.warning(
-        'commitDeleteAccount(${account.id}) ignoré : compte déjà validé ou '
-        'restauré (no-op légitime de la garde d\'idempotence)',
+        'commitDeleteAccount(${account.id}) ignoré : compte déjà validé, '
+        'restauré, ou suppression déjà en cours pour ce compte (no-op '
+        'légitime de la garde d\'idempotence/ré-entrance)',
       );
       return false;
     }
-    await _storage.deleteAccount(account.id);
-    // Ne lève le masquage qu'APRÈS le succès du stockage : en cas d'échec, l'id
-    // reste dans le filtre (le compte reste masqué, cohérent avec « non encore
-    // supprimé du stockage ») et l'exception remonte à l'appelant.
-    _hiddenAccountIds.remove(account.id);
-    _hiddenAccounts.remove(account.id);
-    await loadAllData();
-    return true;
+    try {
+      await _storage.deleteAccount(account.id);
+      // Ne lève le masquage qu'APRÈS le succès du stockage : en cas d'échec,
+      // l'id reste dans le filtre (le compte reste masqué, cohérent avec
+      // « non encore supprimé du stockage ») et l'exception remonte à
+      // l'appelant (le `finally` ci-dessous purge quand même
+      // [_deletionsInFlight] : ce n'est PAS un verrou d'idempotence, juste
+      // une protection de fenêtre de concurrence).
+      _hiddenAccountIds.remove(account.id);
+      _hiddenAccounts.remove(account.id);
+      if (reload) await loadAllData();
+      return true;
+    } finally {
+      _deletionsInFlight.remove(account.id);
+    }
   }
 
   /// Résout un compte par [id] : d'abord dans la liste VISIBLE ([_accounts],
@@ -1166,7 +1216,11 @@ class WalletController extends ChangeNotifier {
     final pending = List<Account>.from(_hiddenAccounts.values);
     for (final account in pending) {
       try {
-        await commitDeleteAccount(account);
+        // R1 : reload:false — l'app est en train de se fermer, un
+        // loadAllData() par compte flushé (réseau/stockage) n'a plus de
+        // spectateur ; la garde de ré-entrance de [commitDeleteAccount]
+        // protège de toute façon [_cashBalances] d'un flush concurrent.
+        await commitDeleteAccount(account, reload: false);
       } catch (e) {
         AppLogger.error(
           'commitPendingDeletions: échec du flush pour ${account.id}: $e',

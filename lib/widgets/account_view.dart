@@ -82,7 +82,23 @@ class AccountView extends StatefulWidget {
   @visibleForTesting
   final AccountController? debugController;
 
-  const AccountView({super.key, this.initialAccountId, this.debugController});
+  /// Réservé aux tests widget (R4, contre-revue architecte) : quand
+  /// [debugController] est fourni mais N'est PAS déjà chargé (cas d'une
+  /// navigation bout-en-bout où l'id du compte — donc le contrôleur à
+  /// construire — n'est connu qu'au moment de l'ouverture, pendant le test
+  /// interactif lui-même), demande à [initState] d'appeler
+  /// `initAccounts()`/`loadExchangeRate()` sur ce contrôleur comme en
+  /// production, au lieu de supposer un état déjà résolu. Sans effet si
+  /// [debugController] est `null`. Toujours `false` en production.
+  @visibleForTesting
+  final bool debugAutoInit;
+
+  const AccountView({
+    super.key,
+    this.initialAccountId,
+    this.debugController,
+    this.debugAutoInit = false,
+  });
 
   @override
   State<AccountView> createState() => _AccountViewState();
@@ -225,8 +241,14 @@ class _AccountViewState extends State<AccountView> {
     super.initState();
     if (widget.debugController != null) {
       // Test widget : contrôleur déjà chargé, on l'utilise tel quel (cf.
-      // AccountView.debugController).
+      // AccountView.debugController) — SAUF si le test demande explicitement
+      // debugAutoInit (R4 : contrôleur fraîchement construit, pas encore
+      // initialisé, cas de la navigation bout-en-bout).
       _ctrl = widget.debugController!;
+      if (widget.debugAutoInit) {
+        _ctrl.initAccounts();
+        _ctrl.loadExchangeRate();
+      }
       return;
     }
     _ctrl = AccountController(initialAccountId: widget.initialAccountId);
@@ -1022,7 +1044,19 @@ class _AccountViewState extends State<AccountView> {
     // faire prendre une suppression de compte pour une suppression de
     // position. `isCurrent` s'assure que CETTE page est bien au sommet de la
     // pile avant de dépiler.
-    if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
+    if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) {
+      // R2 (contre-revue architecte, symétrie D6) : cette garde avalait
+      // AUPARAVANT une suppression pourtant CONFIRMÉE par l'utilisateur sans
+      // laisser de trace — indiscernable d'un renoncement silencieux du
+      // framework. Le compte reste bien en base (rien n'a été commis), mais
+      // le signaler évite qu'un futur diagnostic cherche ailleurs.
+      AppLogger.warning(
+        'Suppression du compte ${account.id} confirmée mais ABANDONNÉE : '
+        'cette page n\'est plus au sommet de la pile de navigation '
+        '(mounted=$mounted)',
+      );
+      return;
+    }
     Navigator.pop(context, AccountView.resultDeleted);
   }
 

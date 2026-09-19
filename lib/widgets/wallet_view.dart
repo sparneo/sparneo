@@ -45,7 +45,29 @@ List<FlSpot> _buildContributionsSpots(List<double> values) {
 }
 
 class WalletView extends StatefulWidget {
-  const WalletView({super.key});
+  /// Contrôleur PRÉ-CONSTRUIT (services injectés sur une base de test),
+  /// réservé aux tests widget (R4, contre-revue architecte) — la vue
+  /// l'utilise TEL QUEL et appelle `loadAllData()` dessus comme en
+  /// production. Contrairement à [AccountView.debugController], PAS besoin
+  /// d'un contrôleur déjà chargé en amont : voir [debugAccountViewBuilder]
+  /// pour la raison (chemin `databaseFactoryFfiNoIsolate`, sans le risque de
+  /// blocage documenté pour la factory isolée sous `testWidgets`). `null` en
+  /// production (comportement inchangé).
+  @visibleForTesting
+  final WalletController? debugController;
+
+  /// Réservé aux tests widget (R4) — remplace la construction normale de la
+  /// page ouverte par [_WalletViewState._openAccount]
+  /// (`AccountView(initialAccountId: account.id)`, qui ouvrirait le stockage
+  /// de PRODUCTION par défaut) par le widget que cette fabrique retourne pour
+  /// l'id demandé. Permet un test bout-en-bout création → ouverture →
+  /// suppression sur la MÊME base de test que [debugController], sans jamais
+  /// toucher au stockage réel. `null` en production (comportement inchangé :
+  /// [AccountView] construite normalement).
+  @visibleForTesting
+  final Widget Function(String accountId)? debugAccountViewBuilder;
+
+  const WalletView({super.key, this.debugController, this.debugAccountViewBuilder});
 
   @override
   State<WalletView> createState() => _WalletViewState();
@@ -96,7 +118,13 @@ class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
     super.initState();
     // Le nom par défaut du wallet sera mis à jour au premier build via
     // didChangeDependencies, mais on l'initialise avec une valeur de repli.
-    _controller = WalletController();
+    //
+    // R4 (contre-revue architecte, filet du bug D1) : seam de test sur le
+    // modèle exact d'[AccountView.debugController] — permet à un test
+    // bout-en-bout d'injecter un contrôleur déjà connecté à une base de test
+    // plutôt que de laisser WalletController() résoudre le singleton de
+    // production [AppDatabase.shared].
+    _controller = widget.debugController ?? WalletController();
     _controller.loadAllData();
     // D8 (décision auteur : « commit forcé à la fermeture ») — observe le
     // cycle de vie de l'app pour flusher les suppressions de comptes EN
@@ -114,10 +142,19 @@ class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
     // commentaire détaillé de [didChangeAppLifecycleState]) — si CETTE page
     // est démontée avant la fin du process (retour arrière, changement de
     // route), autant flusher ici aussi. `dispose()` est synchrone : on ne
-    // peut pas attendre la fin du flush, d'où le fire-and-forget — protégé
-    // par la même garde d'idempotence que tout commit normal (jamais de
-    // double suppression), donc sans risque même si le flush de
-    // didChangeAppLifecycleState s'exécute en parallèle ou juste après.
+    // peut pas attendre la fin du flush, d'où le fire-and-forget.
+    //
+    // CORRECTIF R1 (contre-revue architecte) : ce commentaire promettait
+    // AUPARAVANT une protection contre l'exécution parallèle que la garde
+    // d'idempotence n'offrait PAS réellement — elle lisait/écrivait
+    // `_hiddenAccountIds` de part et d'autre d'un `await` stockage, donc pas
+    // ré-entrante à travers cet `await` : un flush `detached` en vol et ce
+    // flush `dispose` pouvaient tous les deux la franchir avant que le
+    // premier n'ait eu le temps de la purger. `WalletController` porte
+    // désormais une garde de RÉ-ENTRANCE dédiée ([_deletionsInFlight], ajout
+    // atomique `Set.add`, cf. son commentaire) : c'est CETTE garde — pas
+    // l'idempotence seule — qui rend sans risque l'exécution en parallèle ou
+    // juste après du flush de didChangeAppLifecycleState.
     unawaited(_controller.commitPendingDeletions());
     _controller.dispose();
     super.dispose();
@@ -254,32 +291,22 @@ class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
     );
 
     if (confirmed == true && nameController.text.trim().isNotEmpty) {
+      // R7 (contre-revue architecte) : SEULE la création (I/O stockage) est
+      // couverte par ce try/catch — la navigation qui suit en est
+      // délibérément SORTIE (cf. plus bas). Avant ce correctif, une
+      // exception de NAVIGATION (poussée par [_openAccount], ex. une erreur
+      // dans AccountView) aurait été rapportée à l'utilisateur comme un
+      // ÉCHEC DE CRÉATION alors que le compte était déjà créé avec succès en
+      // base — message trompeur, et surtout aucune indication que le compte
+      // existe malgré tout (il faudrait rafraîchir pour le voir apparaître).
+      final Account newAccount;
       try {
-        final newAccount = await _controller.createAccount(
+        newAccount = await _controller.createAccount(
           name: nameController.text.trim(),
           kind: selectedKind,
           cashBalance: cashBalance,
           openingBalanceDate: openingBalanceDate,
         );
-
-        if (mounted) {
-          // ⭐ CORRECTION : Navigation conditionnelle
-          // D1 (correctif suppression de compte) : ce push vers AccountView
-          // ouvrait le compte fraîchement créé SANS jamais regarder son
-          // résultat — une suppression demandée depuis cette page (corbeille
-          // de la barre d'AccountView) était donc silencieusement ignorée au
-          // retour (bug vécu par l'auteur). On route désormais par
-          // [_openAccount], qui gère resultDeleted ET recharge — FACTORISÉ,
-          // pas dupliqué, avec le chemin normal (tuile de la liste).
-          if (selectedKind.valuationType != AccountType.cash) {
-            // Comptes investissement et métaux précieux : on navigue vers les
-            // détails, par le même chemin que la tuile de la liste.
-            await _openAccount(newAccount);
-          } else if (mounted) {
-            // Pour cash : on reste sur WalletView, simple rechargement.
-            await _controller.loadAllData();
-          }
-        }
       } catch (e) {
         AppLogger.error('Erreur création compte', e);
         if (mounted) {
@@ -288,6 +315,26 @@ class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
             AppLocalizations.of(context)!.accountCreationError,
             type: SnackType.error,
           );
+        }
+        return;
+      }
+
+      if (mounted) {
+        // ⭐ CORRECTION : Navigation conditionnelle
+        // D1 (correctif suppression de compte) : ce push vers AccountView
+        // ouvrait le compte fraîchement créé SANS jamais regarder son
+        // résultat — une suppression demandée depuis cette page (corbeille
+        // de la barre d'AccountView) était donc silencieusement ignorée au
+        // retour (bug vécu par l'auteur). On route désormais par
+        // [_openAccount], qui gère resultDeleted ET recharge — FACTORISÉ,
+        // pas dupliqué, avec le chemin normal (tuile de la liste).
+        if (selectedKind.valuationType != AccountType.cash) {
+          // Comptes investissement et métaux précieux : on navigue vers les
+          // détails, par le même chemin que la tuile de la liste.
+          await _openAccount(newAccount);
+        } else if (mounted) {
+          // Pour cash : on reste sur WalletView, simple rechargement.
+          await _controller.loadAllData();
         }
       }
     }
@@ -407,7 +454,9 @@ class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
     final result = await Navigator.push<String>(
       context,
       MaterialPageRoute(
-        builder: (context) => AccountView(initialAccountId: account.id),
+        builder: (context) =>
+            widget.debugAccountViewBuilder?.call(account.id) ??
+            AccountView(initialAccountId: account.id),
       ),
     );
     if (!mounted) return;

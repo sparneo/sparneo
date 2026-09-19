@@ -1121,6 +1121,25 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       symbol: _currentPosition.symbol,
     );
     if (!confirmed || !mounted) return;
+    // R6 (contre-revue architecte, symétrie du motif D4/R2 d'AccountView) :
+    // garde avant le pop — pendant l'attente du dialogue de confirmation,
+    // une navigation a pu empiler une AUTRE route au-dessus de cette page. Un
+    // pop mal ciblé ferait alors remonter [PositionDetailPage.resultDeleted]
+    // au PARENT de cette route-ci, avec le même risque de confusion que celui
+    // corrigé côté suppression de compte (D4) — les deux sentinelles restent
+    // distinctes, mais un pop hors cible reste un pop hors cible.
+    if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) {
+      // Symétrie D6/R2 : ne pas avaler silencieusement une suppression
+      // pourtant CONFIRMÉE — rien n'a été commis (le compte/la position
+      // reste en base), mais le signaler évite qu'un futur diagnostic
+      // cherche ailleurs.
+      AppLogger.warning(
+        'Suppression de la position ${_currentPosition.symbol} confirmée '
+        'mais ABANDONNÉE : cette page n\'est plus au sommet de la pile de '
+        'navigation (mounted=$mounted)',
+      );
+      return;
+    }
     Navigator.pop(context, PositionDetailPage.resultDeleted);
   }
 
