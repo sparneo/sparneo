@@ -113,6 +113,8 @@
   "cashBalanceWithAmount": "Solde cash · {amount} {currency}",
   "cannotDeleteLastAccount": "Impossible de supprimer le dernier compte",
   "accountDeletionError": "Erreur lors de la suppression du compte « {name} »",
+  "accountNotFoundTitle": "Ce compte n'existe plus",
+  "accountNotFoundBody": "Il a peut-être été supprimé depuis un autre écran, ou sa suppression a déjà été validée.",
   "deleteAccountTitle": "Supprimer le compte",
   "deleteAccountConfirm": "Êtes-vous sûr de vouloir supprimer « {name} » ?\n\nToutes les positions associées seront perdues.",
   "accountDeleted": "Compte « {name} » supprimé",

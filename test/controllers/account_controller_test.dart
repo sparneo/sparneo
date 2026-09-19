@@ -250,6 +250,77 @@ void main() {
       expect(ctrl.isLoadingAccounts, isFalse);
       expect(ctrl.positionsData, isEmpty);
     });
+
+    // =========================================================================
+    // D5 (correctif suppression de compte) — initialAccountId INTROUVABLE :
+    // JAMAIS de repli silencieux sur un autre compte (ancien
+    // `firstWhere(orElse: () => allAccounts.first)`). État explicite
+    // [accountNotFound], activeAccount reste null.
+    // =========================================================================
+
+    test(
+        'initialAccountId introuvable : accountNotFound=true, activeAccount '
+        'reste null (JAMAIS un autre compte affiché à sa place)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      // Seed un compte BIEN réel — pour prouver qu'il n'est PAS choisi comme
+      // repli silencieux à la place de l'id demandé.
+      final otherPosition = makeEurPosition(symbol: 'SYM1');
+      await seedStorage(db, positions: [otherPosition]);
+
+      final ctrl = makeCtrl(db, accountId: 'id-qui-n-existe-pas');
+      await ctrl.initAccounts();
+
+      expect(ctrl.isLoadingAccounts, isFalse);
+      expect(ctrl.accountNotFound, isTrue);
+      expect(ctrl.activeAccount, isNull);
+      expect(ctrl.globalError, isNull);
+    });
+
+    test(
+        'initialAccountId trouvé : accountNotFound reste false (non-régression)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final pos = makeEurPosition(symbol: 'SYM1');
+      await seedStorage(db, positions: [pos]);
+
+      final ctrl = makeCtrl(db);
+      await ctrl.initAccounts();
+
+      expect(ctrl.accountNotFound, isFalse);
+      expect(ctrl.activeAccount?.id, equals(_accountId));
+    });
+
+    test(
+        'un SECOND initAccounts() (ré-entrée depuis le journal / la fiche '
+        'position) sur un compte entre-temps supprimé ailleurs bascule '
+        'correctement sur accountNotFound', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final pos = makeEurPosition(symbol: 'SYM1');
+      await seedStorage(db, positions: [pos]);
+
+      final ctrl = makeCtrl(db, quotes: {'SYM1': quote('SYM1', 100.0)});
+      await ctrl.initAccounts();
+      expect(ctrl.accountNotFound, isFalse);
+      expect(ctrl.activeAccount, isNotNull);
+
+      // Suppression RÉELLE côté stockage, comme si un autre chemin (WalletView)
+      // avait validé la suppression pendant que cette page était ouverte
+      // ailleurs dans la pile.
+      await AccountStorage(database: db).deleteAccount(_accountId);
+
+      // Ré-entrée (même motif que _openJournal / _navigateToDetail : rappel
+      // d'initAccounts au retour de navigation).
+      await ctrl.initAccounts();
+
+      expect(ctrl.accountNotFound, isTrue);
+      expect(ctrl.activeAccount, isNull);
+    });
   });
 
   // -------------------------------------------------------------------------

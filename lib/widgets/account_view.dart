@@ -62,8 +62,15 @@ class AccountView extends StatefulWidget {
   /// Valeur renvoyée par [Navigator.pop] quand l'utilisateur a confirmé la
   /// suppression du compte depuis la barre. Le parent (WalletView) la détecte
   /// au retour de navigation pour lancer sa propre suppression différée +
-  /// Annuler (miroir de [PositionDetailPage.resultDeleted]).
-  static const String resultDeleted = 'deleted';
+  /// Annuler.
+  ///
+  /// D4 : DISTINCTE de [PositionDetailPage.resultDeleted] — les deux valaient
+  /// AUPARAVANT le même littéral `'deleted'` ; un pop mal ciblé (route
+  /// erronée, cf. la garde `isCurrent` de [_confirmAndDeleteAccount]) pouvait
+  /// alors faire prendre une suppression de POSITION pour une suppression de
+  /// COMPTE, ou réciproquement — les deux constantes portent maintenant une
+  /// valeur qui ne peut pas se confondre.
+  static const String resultDeleted = 'account-deleted';
 
   /// Contrôleur pré-construit et déjà chargé (`initAccounts()` déjà résolu),
   /// réservé aux tests widget : la vue l'utilise TEL QUEL, sans appeler
@@ -1005,6 +1012,17 @@ class _AccountViewState extends State<AccountView> {
       totalAccountCount: _ctrl.accounts.length,
     );
     if (!confirmed || !mounted) return;
+    // D4 : garde avant le pop — pendant l'attente du dialogue de confirmation,
+    // une navigation a pu empiler une AUTRE route au-dessus de cette page
+    // (ex. le dialogue lui-même mal fermé, ou une double confirmation). Un
+    // pop mal ciblé ferait alors remonter [AccountView.resultDeleted] au
+    // PARENT de cette route-ci — potentiellement [PositionDetailPage], dont la
+    // sentinelle de suppression portait AUPARAVANT la même valeur `'deleted'`
+    // (cf. les deux constantes désormais distinctes ci-dessous), risquant de
+    // faire prendre une suppression de compte pour une suppression de
+    // position. `isCurrent` s'assure que CETTE page est bien au sommet de la
+    // pile avant de dépiler.
+    if (!mounted || !(ModalRoute.of(context)?.isCurrent ?? false)) return;
     Navigator.pop(context, AccountView.resultDeleted);
   }
 
@@ -1029,6 +1047,33 @@ class _AccountViewState extends State<AccountView> {
     // discret de l'AppBar, sans vider l'écran.
     if (_ctrl.isLoadingAccounts && _ctrl.positionsData.isEmpty) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    }
+
+    // D5 : le compte demandé ([AccountView.initialAccountId]) n'existe plus
+    // (supprimé depuis un autre écran, ou sa suppression différée vient d'être
+    // validée pendant que cette page était ouverte ailleurs dans la pile —
+    // cf. les deux points de ré-entrée qui relancent [initAccounts],
+    // [_openJournal] et [_navigateToDetail]). AVANT le contenu normal : celui-
+    // ci suppose `_ctrl.activeAccount` non-null (titre de l'AppBar, actions).
+    // JAMAIS un autre compte affiché à la place — état dédié, explicite.
+    if (_ctrl.accountNotFound) {
+      return Scaffold(
+        appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            tooltip: l10n.backTooltip,
+            onPressed: () => Navigator.pop(context),
+          ),
+          backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        ),
+        body: Center(
+          child: EmptyState(
+            icon: Icons.link_off,
+            title: l10n.accountNotFoundTitle,
+            message: l10n.accountNotFoundBody,
+          ),
+        ),
+      );
     }
 
     if (_ctrl.globalError != null &&

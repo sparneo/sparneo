@@ -692,6 +692,15 @@
     "description": "Shown when trying to delete the last account"
   },
 
+  "accountNotFoundTitle": "This account no longer exists",
+  "@accountNotFoundTitle": {
+    "description": "Empty-state title shown when the account requested by id (initialAccountId) cannot be found (deleted elsewhere, or deletion already confirmed)"
+  },
+  "accountNotFoundBody": "It may have been deleted from another screen, or its deletion was already confirmed.",
+  "@accountNotFoundBody": {
+    "description": "Empty-state body accompanying accountNotFoundTitle"
+  },
+
   "deleteAccountTitle": "Delete account",
   "@deleteAccountTitle": {
     "description": "Title of the delete account dialog"

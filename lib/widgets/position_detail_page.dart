@@ -41,7 +41,13 @@ class PositionDetailPage extends StatefulWidget {
   /// détecte au retour de navigation pour déclencher son propre chemin de
   /// suppression différée + Annuler (la logique d'undo vit dans son
   /// contrôleur, pas ici — on se contente de signaler l'intention).
-  static const String resultDeleted = 'deleted';
+  ///
+  /// D4 (correctif suppression de compte) : DISTINCTE de
+  /// [AccountView.resultDeleted] — les deux constantes portaient AUPARAVANT
+  /// le même littéral `'deleted'`, ce qui aurait pu faire confondre une
+  /// suppression de position avec une suppression de compte en cas de pop mal
+  /// ciblé sur la pile de navigation.
+  static const String resultDeleted = 'position-deleted';
 
   const PositionDetailPage({
     super.key,

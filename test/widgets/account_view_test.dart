@@ -46,6 +46,7 @@ import 'package:portfolio_tracker/services/transaction_storage.dart';
 import 'package:portfolio_tracker/utils/formatters.dart';
 import 'package:portfolio_tracker/widgets/account_view.dart';
 import 'package:portfolio_tracker/widgets/charts/period_selector.dart';
+import 'package:portfolio_tracker/widgets/position_detail_page.dart';
 import 'package:portfolio_tracker/widgets/total_value_card.dart';
 
 import '../helpers/test_database.dart';
@@ -1349,6 +1350,69 @@ void main() {
           find.byType(SegmentedButton<bool>),
         );
         expect(selector.selected, {true});
+      },
+    );
+  });
+
+  // ===========================================================================
+  // Correctifs suppression de compte (diagnostic architecte) — D4/D5
+  // ===========================================================================
+
+  group('AccountView — sentinelles de suppression distinctes (D4)', () {
+    test(
+        'AccountView.resultDeleted et PositionDetailPage.resultDeleted ne '
+        'partagent plus la même valeur — un pop mal ciblé sur la pile de '
+        'navigation ne peut plus faire prendre une suppression de position '
+        'pour une suppression de compte (ou réciproquement)', () {
+      expect(
+        AccountView.resultDeleted,
+        isNot(equals(PositionDetailPage.resultDeleted)),
+      );
+      // Non-régression du contrat de valeur (WalletView/AccountView lisent
+      // ces littéraux au retour de Navigator.push<String>).
+      expect(AccountView.resultDeleted, 'account-deleted');
+      expect(PositionDetailPage.resultDeleted, 'position-deleted');
+    });
+  });
+
+  group('AccountView — compte introuvable (D5)', () {
+    testWidgets(
+      'initialAccountId introuvable : écran « ce compte n\'existe plus », '
+      'jamais le contenu normal (qui suppose activeAccount non-null)',
+      (tester) async {
+        late AppDatabase db;
+        late AccountController ctrl;
+        await tester.runAsync(() async {
+          db = await openTestDatabase();
+          // Un AUTRE compte, bien réel, existe dans le même wallet — preuve
+          // qu'il n'est PAS choisi comme repli silencieux à la place de l'id
+          // demandé (c'était exactement le bug : bascule muette sur un
+          // compte quelconque, voire cash, section positions masquée).
+          await _seedAccount(db, kind: AccountKind.cash, cashBalance: 42);
+          ctrl = AccountController(
+            initialAccountId: 'id-qui-n-existe-pas',
+            initialUsdToEurRate: 0.92,
+            storage: AccountStorage(database: db),
+            ledgerService: LedgerService(database: db),
+            transactionStorage: TransactionStorage(database: db),
+            marketService: _FakeMarketDataService(),
+          );
+          await ctrl.initAccounts();
+        });
+        addTearDown(() => tester.runAsync(db.close));
+
+        expect(ctrl.accountNotFound, isTrue);
+        expect(ctrl.activeAccount, isNull);
+
+        await tester.pumpWidget(_host(ctrl));
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        expect(find.text(l10n.accountNotFoundTitle), findsOneWidget);
+        // Le nom du compte « Compte test » (l'AUTRE compte réel du wallet)
+        // ne doit JAMAIS apparaître : ce serait la preuve d'un repli
+        // silencieux sur lui.
+        expect(find.text('Compte test'), findsNothing);
       },
     );
   });

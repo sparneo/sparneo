@@ -140,11 +140,23 @@ class WalletController extends ChangeNotifier {
   /// Comptes masqués de la liste affichée en attente de confirmation de
   /// suppression (motif « suppression différée + Annuler »). Tant qu'un id y
   /// figure, le compte est retiré de [_accounts] ET filtré à la source de chaque
-  /// [loadAllData] — mais NON supprimé du stockage. Analogue de [_hiddenPositions]
-  /// dans account_controller : un Set d'ids suffit ici car la vue conserve
-  /// l'objet [Account] complet et le repasse à [restoreAccount] /
-  /// [commitDeleteAccount]. `restoreAccount` et `commitDeleteAccount` le purgent.
+  /// [loadAllData] — mais NON supprimé du stockage. `restoreAccount` et
+  /// `commitDeleteAccount` le purgent.
+  ///
+  /// AMENDÉ (D8) : l'invariant « un Set d'ids suffit ici car la vue conserve
+  /// l'objet [Account] complet » ne tenait QUE si la vue restait vivante
+  /// jusqu'à la validation de la suppression — faux à la fermeture de l'app en
+  /// plein milieu de la fenêtre d'Annuler. [_hiddenAccounts] ci-dessous tient
+  /// donc désormais l'objet complet, indépendamment de la vue.
   final Set<String> _hiddenAccountIds = {};
+
+  /// Objets [Account] masqués complets, id → compte — miroir de
+  /// [_hiddenAccountIds] (mêmes entrées, mêmes dates de purge dans
+  /// [restoreAccount]/[commitDeleteAccount]). Introduit pour D8 (« commit
+  /// forcé à la fermeture ») : [commitPendingDeletions] a besoin des objets
+  /// [Account] pour flusher les suppressions en attente, et ne peut plus
+  /// compter sur la vue pour les repasser à l'arrêt de l'app.
+  final Map<String, Account> _hiddenAccounts = {};
 
   /// Wallets masqués de la liste affichée en attente de confirmation de
   /// suppression. MÊME motif que [_hiddenAccountIds] (cf. commentaire
@@ -547,8 +559,22 @@ class WalletController extends ChangeNotifier {
       // TOUS les agrégats en aval (valeurs par compte, total, camembert,
       // historique, cibles d'allocation) les excluent de façon
       // cohérente, et un reload pendant la fenêtre d'annulation ne les ressuscite
-      // pas (défauts 1 & 2). L'invariant devient :
-      //   _accounts == (comptes du stockage du wallet actif) − _hiddenAccountIds
+      // pas (défauts 1 & 2).
+      //
+      // AMENDÉ (D3) : l'invariant ci-dessous NE tenait PAS tel quel — `accounts`
+      // est une COPIE locale, figée ICI, avant la grosse dizaine d'`await` qui
+      // suit (taux de change, cash dérivé, journaux, cotations…). Un
+      // [hideAccount] survenant PENDANT cette fenêtre mute [_hiddenAccountIds]
+      // mais pas cette copie : l'assignation finale à [_accounts] (plus bas)
+      // écrasait alors le masquage, faisant RÉAPPARAÎTRE le compte qu'on
+      // venait de supprimer. Le filtre est donc réappliqué UNE SECONDE FOIS à
+      // l'assignation, sur l'état de [_hiddenAccountIds] à CET instant (le
+      // plus frais possible) — l'invariant réel est :
+      //   _accounts == (comptes du stockage du wallet actif à l'instant T0)
+      //                − _hiddenAccountIds (à l'instant T0)
+      //                − _hiddenAccountIds (à l'instant de l'assignation, T1 ≥ T0)
+      // Patron de référence : account_controller.dart, filtre de
+      // [_hiddenPositions] réappliqué après le dernier await (_loadAllPrices).
       final allAccounts = await _storage.getAccountsByWallet(_activeWallet!.id);
       final accounts = _hiddenAccountIds.isEmpty
           ? allAccounts
@@ -754,8 +780,22 @@ class WalletController extends ChangeNotifier {
       }
 
       _usdToEurRate = rate;
-      _wallets = wallets;
-      _accounts = accounts;
+      // D3 : re-filtrage RÉAPPLIQUÉ ICI, sur l'état le plus frais de
+      // [_hiddenAccountIds]/[_hiddenWalletIds] — [wallets]/[accounts] sont des
+      // copies locales figées avant la dizaine d'`await` ci-dessus (cf.
+      // commentaire détaillé au point de capture). Sans cette seconde passe,
+      // un hideAccount/hideWallet survenu pendant ces `await` était écrasé par
+      // l'assignation, faisant réapparaître un compte/wallet tout juste
+      // masqué. Repli sur la liste non filtrée si TOUT ce qu'elle contient est
+      // désormais masqué (même garde défensive qu'au point de capture) : ne
+      // jamais présenter un patrimoine sans aucun wallet actif valide.
+      final freshlyFilteredWallets = _hiddenWalletIds.isEmpty
+          ? wallets
+          : wallets.where((w) => !_hiddenWalletIds.contains(w.id)).toList();
+      _wallets = freshlyFilteredWallets.isEmpty ? wallets : freshlyFilteredWallets;
+      _accounts = _hiddenAccountIds.isEmpty
+          ? accounts
+          : accounts.where((a) => !_hiddenAccountIds.contains(a.id)).toList();
       _accountValues = accountValues;
       _allPositionsData = allPositions;
       _isLoading = false;
@@ -1038,6 +1078,13 @@ class WalletController extends ChangeNotifier {
     // contribution du total ([totalPatrimoine]) et du camembert (tous deux
     // dérivés de _accounts) dès maintenant, sans attendre un reload.
     _hiddenAccountIds.add(accountId);
+    // D8 : mémorise l'objet COMPLET dans le contrôleur (plus seulement son
+    // id) — c'est ce qui permet à [commitPendingDeletions] de flusher les
+    // suppressions en attente à la fermeture de l'app SANS dépendre de la
+    // vue pour retrouver l'objet [Account] (cf. commentaire ci-dessus sur
+    // [_hiddenAccountIds] : un Set d'ids ne suffisait qu'aussi longtemps que
+    // la vue restait vivante pour repasser l'objet).
+    _hiddenAccounts[accountId] = account;
     _accounts = List<Account>.from(_accounts)..removeAt(index);
     _safeNotify();
     return account;
@@ -1050,6 +1097,7 @@ class WalletController extends ChangeNotifier {
     // _accounts (idempotence), il faut lever le masquage pour qu'un reload
     // ultérieur ne le refiltre pas.
     _hiddenAccountIds.remove(account.id);
+    _hiddenAccounts.remove(account.id);
     if (_accounts.any((a) => a.id == account.id)) return;
     _accounts = List<Account>.from(_accounts)..add(account);
     _safeNotify();
@@ -1059,17 +1107,72 @@ class WalletController extends ChangeNotifier {
   /// Réutilise la suppression stockage existante ; le compte visé est passé
   /// explicitement (capturé par la vue) pour rester correct même si plusieurs
   /// suppressions se chevauchent.
-  Future<void> commitDeleteAccount(Account account) async {
+  ///
+  /// D6 : retourne `true` si la suppression a RÉELLEMENT été commise, `false`
+  /// pour le no-op légitime de la garde d'idempotence (compte déjà validé, ou
+  /// restauré via « Annuler » avant l'expiration de la fenêtre) — jusqu'ici ce
+  /// no-op était totalement muet (retour `void`), rendant un appel tardif
+  /// (double timer, flush de fermeture) indiscernable d'une vraie suppression.
+  Future<bool> commitDeleteAccount(Account account) async {
     // Garde-fou d'idempotence (calqué sur commitDeletePosition) : sans effet si
     // le compte n'est plus masqué (déjà validé, ou restauré via « Annuler »).
     // Protège d'une double suppression et d'une suppression après restauration.
-    if (!_hiddenAccountIds.contains(account.id)) return;
+    if (!_hiddenAccountIds.contains(account.id)) {
+      AppLogger.warning(
+        'commitDeleteAccount(${account.id}) ignoré : compte déjà validé ou '
+        'restauré (no-op légitime de la garde d\'idempotence)',
+      );
+      return false;
+    }
     await _storage.deleteAccount(account.id);
     // Ne lève le masquage qu'APRÈS le succès du stockage : en cas d'échec, l'id
     // reste dans le filtre (le compte reste masqué, cohérent avec « non encore
     // supprimé du stockage ») et l'exception remonte à l'appelant.
     _hiddenAccountIds.remove(account.id);
+    _hiddenAccounts.remove(account.id);
     await loadAllData();
+    return true;
+  }
+
+  /// Résout un compte par [id] : d'abord dans la liste VISIBLE ([_accounts],
+  /// à jour de tout renommage récent), puis retombe sur le stockage si absent
+  /// (compte masqué en attente de suppression, ou récemment modifié ailleurs).
+  /// `null` si le compte n'existe plus nulle part.
+  ///
+  /// D7 : sert à re-résoudre un [Account] capturé par la vue AVANT d'ouvrir
+  /// [AccountView] — un renommage dans cette page laisserait sinon l'appelant
+  /// avec un objet PÉRIMÉ (ancien nom affiché au snackbar, ancien nom
+  /// réinjecté par [restoreAccount] si l'utilisateur annule).
+  Future<Account?> resolveAccountById(String id) async {
+    final index = _accounts.indexWhere((a) => a.id == id);
+    if (index >= 0) return _accounts[index];
+    return _storage.getAccount(id);
+  }
+
+  /// D8 (décision auteur : « commit forcé à la fermeture ») — commet TOUTES
+  /// les suppressions de comptes actuellement EN ATTENTE (fenêtre « Annuler »
+  /// pas encore expirée), pour ne jamais perdre une suppression demandée juste
+  /// avant que l'app ne se ferme. Réutilise [commitDeleteAccount] TEL QUEL
+  /// (même garde d'idempotence, même chemin stockage) — jamais de suppression
+  /// en double avec un commit normal qui aurait déjà eu lieu entre-temps.
+  ///
+  /// Meilleur effort, séquentiel : une erreur sur un compte ne bloque pas les
+  /// suivants (best-effort, la fenêtre de temps disponible à la fermeture est
+  /// incertaine). Sans effet si rien n'est en attente (cas immensément
+  /// majoritaire).
+  Future<void> commitPendingDeletions() async {
+    if (_hiddenAccounts.isEmpty) return;
+    // Copie AVANT la boucle : commitDeleteAccount mute _hiddenAccounts.
+    final pending = List<Account>.from(_hiddenAccounts.values);
+    for (final account in pending) {
+      try {
+        await commitDeleteAccount(account);
+      } catch (e) {
+        AppLogger.error(
+          'commitPendingDeletions: échec du flush pour ${account.id}: $e',
+        );
+      }
+    }
   }
 
   /// Crée un nouveau compte et recharge les données.

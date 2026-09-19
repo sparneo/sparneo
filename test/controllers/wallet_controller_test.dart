@@ -114,14 +114,24 @@ class _ControllableMarketDataService extends MarketDataService {
   /// ne porte jamais que sur un seul symbole en pratique.
   Completer<AssetHistoricalData?>? pendingHistory;
 
+  /// Non-null : TOUT appel à [getQuoteForAsset] reste en attente sur ce
+  /// Completer (D3, wallet_controller_test.dart) — sert à figer
+  /// [loadAllData] AVANT l'assignation finale de `_accounts` (Étape B/C se
+  /// situent avant, la cotation étant l'Étape B), pour reproduire la fenêtre
+  /// où un [hideAccount] concurrent devait survivre au rechargement.
+  Completer<AssetQuoteData?>? pendingQuote;
+
   _ControllableMarketDataService({
     this.quotesBySymbol = const {},
     this.historicalBySymbol = const {},
   }) : super.forTesting(_FakeExchangeRateService());
 
   @override
-  Future<AssetQuoteData?> getQuoteForAsset(Asset asset) async =>
-      quotesBySymbol[asset.symbol];
+  Future<AssetQuoteData?> getQuoteForAsset(Asset asset) {
+    final pending = pendingQuote;
+    if (pending != null) return pending.future;
+    return Future.value(quotesBySymbol[asset.symbol]);
+  }
 
   @override
   Future<AssetHistoricalData?> getHistoricalDataForAsset(
@@ -949,6 +959,252 @@ void main() {
         controller.wallets.firstWhere((w) => w.id == 'w-ren-b').name,
         'Wallet B renommé',
       );
+    });
+  });
+
+  // ===========================================================================
+  // Correctifs suppression de compte (diagnostic architecte) — D2/D3/D6/D7/D8
+  // ===========================================================================
+
+  group('WalletController – hideAccount/commitDeleteAccount (D2/D6/D7/D8)', () {
+    test(
+        'hideAccount(id introuvable) retourne null — fondement du garde-fou '
+        'D2 côté vue (jamais de snackbar "supprimé" mensonger ni de commit '
+        'no-op silencieux)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await setupSingleWalletWithCash(
+        db: db,
+        walletId: 'w-d2',
+        accountId: 'acc-d2',
+        cashBalance: 10.0,
+      );
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      expect(controller.hideAccount('id-inexistant'), isNull);
+      // Premier masquage réel : non-null.
+      expect(controller.hideAccount('acc-d2'), isNotNull);
+      // Second masquage du MÊME compte, déjà masqué : reste null, jamais un
+      // second masquage silencieux qui rouvrirait une fenêtre d'undo fantôme.
+      expect(controller.hideAccount('acc-d2'), isNull);
+    });
+
+    test(
+        'commitDeleteAccount retourne true au succès, false pour un no-op '
+        'idempotent (D6) — jusqu\'ici ce no-op était muet (retour void)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-d6', name: 'Test D6'));
+      await storage.saveAccount(Account(
+        id: 'acc-d6-a',
+        walletId: 'w-d6',
+        name: 'A',
+        kind: AccountKind.cash,
+        cashBalance: 1.0,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-d6-b',
+        walletId: 'w-d6',
+        name: 'B',
+        kind: AccountKind.cash,
+        cashBalance: 2.0,
+      ));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+      final hidden = controller.hideAccount('acc-d6-a')!;
+
+      final firstCommit = await controller.commitDeleteAccount(hidden);
+      expect(firstCommit, isTrue);
+
+      // Second commit sur le MÊME objet (double appel, ou flush de fermeture
+      // après un commit normal déjà survenu) : garde d'idempotence, no-op
+      // EXPLICITE désormais (avant : void indiscernable d'un succès).
+      final secondCommit = await controller.commitDeleteAccount(hidden);
+      expect(secondCommit, isFalse);
+    });
+
+    test(
+        'resolveAccountById : visible → objet du contrôleur ; masqué → repli '
+        'storage (nom À JOUR) ; supprimé → null (D7)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-d7', name: 'Test D7'));
+      final acc = Account(
+        id: 'acc-d7',
+        walletId: 'w-d7',
+        name: 'Ancien nom',
+        kind: AccountKind.cash,
+        cashBalance: 5.0,
+      );
+      await storage.saveAccount(acc);
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      // Visible : trouvé dans la liste affichée du contrôleur.
+      final visible = await controller.resolveAccountById('acc-d7');
+      expect(visible?.name, 'Ancien nom');
+
+      // Renommage CÔTÉ STOCKAGE — simule un renommage effectué dans
+      // AccountView pendant que WalletView tient encore un objet [Account]
+      // capturé avant l'ouverture (le cas visé par D7). Masquer le compte le
+      // retire de `_accounts` : resolveAccountById doit alors retomber sur le
+      // stockage, qui porte déjà le nom À JOUR — jamais l'ancien.
+      await storage.saveAccount(acc.copyWith(name: 'Nouveau nom'));
+      controller.hideAccount('acc-d7');
+      final hiddenResolved = await controller.resolveAccountById('acc-d7');
+      expect(hiddenResolved?.name, 'Nouveau nom');
+
+      // Supprimé pour de bon : plus nulle part.
+      await controller.commitDeleteAccount(hiddenResolved!);
+      final goneResolved = await controller.resolveAccountById('acc-d7');
+      expect(goneResolved, isNull);
+    });
+
+    test(
+        'commitPendingDeletions flush TOUTES les suppressions de comptes en '
+        'attente vers le stockage — garantit qu\'une suppression demandée '
+        'juste avant la fermeture de l\'app n\'est jamais perdue (D8)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-d8', name: 'Test D8'));
+      await storage.saveAccount(Account(
+        id: 'acc-d8-a',
+        walletId: 'w-d8',
+        name: 'A',
+        kind: AccountKind.cash,
+        cashBalance: 10.0,
+      ));
+      await storage.saveAccount(Account(
+        id: 'acc-d8-b',
+        walletId: 'w-d8',
+        name: 'B',
+        kind: AccountKind.cash,
+        cashBalance: 20.0,
+      ));
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+      expect(controller.accounts.length, 2);
+
+      // Deux suppressions différées EN ATTENTE (fenêtre d'Annuler), comme si
+      // l'app se fermait juste après deux balayages successifs.
+      controller.hideAccount('acc-d8-a');
+      controller.hideAccount('acc-d8-b');
+      expect(controller.accounts, isEmpty);
+
+      await controller.commitPendingDeletions();
+
+      // Les deux comptes ont bien été supprimés du STOCKAGE, pas seulement
+      // masqués en mémoire : c'est la garantie centrale de D8.
+      final remaining = await storage.getAccountsByWallet('w-d8');
+      expect(remaining, isEmpty);
+
+      // Idempotent : un second flush (double appel du filet de secours,
+      // dispose() ET didChangeAppLifecycleState en cascade) ne lève rien et
+      // reste sans effet.
+      await controller.commitPendingDeletions();
+    });
+
+    test(
+        'commitPendingDeletions ne touche PAS un compte restauré via Annuler '
+        'avant le flush (D8, pas de double suppression avec restoreAccount)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      final storage = AccountStorage(database: db);
+      await storage.saveWallet(Wallet(id: 'w-d8b', name: 'Test D8 bis'));
+      final acc = Account(
+        id: 'acc-d8b',
+        walletId: 'w-d8b',
+        name: 'Compte restauré',
+        kind: AccountKind.cash,
+        cashBalance: 15.0,
+      );
+      await storage.saveAccount(acc);
+
+      final controller = _makeController(db: db);
+      await controller.loadAllData();
+
+      final hidden = controller.hideAccount('acc-d8b')!;
+      controller.restoreAccount(hidden);
+      expect(controller.accounts.map((a) => a.id), contains('acc-d8b'));
+
+      await controller.commitPendingDeletions();
+
+      final remaining = await storage.getAccountsByWallet('w-d8b');
+      expect(remaining.map((a) => a.id), contains('acc-d8b'));
+      expect(controller.accounts.map((a) => a.id), contains('acc-d8b'));
+    });
+  });
+
+  group('WalletController – hideAccount pendant loadAllData en vol (D3)', () {
+    test(
+        'un hideAccount survenu PENDANT un loadAllData() en cours reste '
+        'masqué à l\'assignation finale — ne réapparaît PAS (défaut D3 : les '
+        'copies locales `accounts`/`wallets`, figées AVANT la dizaine d\'await '
+        'de loadAllData, écrasaient sinon le masquage concurrent)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+
+      await setupSingleWalletWithInvestment(
+        db: db,
+        walletId: 'w-d3',
+        walletName: 'Test D3',
+        accountId: 'acc-d3',
+        accountName: 'CTO',
+        symbol: 'D3SYM',
+        quantity: '2',
+      );
+
+      final fakeMarket = _ControllableMarketDataService(
+        quotesBySymbol: {
+          'D3SYM': AssetQuoteData(symbol: 'D3SYM', price: 50.0, currency: 'EUR'),
+        },
+      );
+      final controller = _makeController(db: db, marketService: fakeMarket);
+
+      // Premier chargement : nominal, non bloqué.
+      await controller.loadAllData();
+      expect(controller.accounts.map((a) => a.id), contains('acc-d3'));
+
+      // Second chargement : bloqué sur la COTATION (Étape B de loadAllData),
+      // qui se situe APRÈS la capture locale de `accounts`/`wallets` mais
+      // BIEN AVANT l'assignation finale à `_accounts`/`_wallets` — exactement
+      // la fenêtre incriminée par D3.
+      fakeMarket.pendingQuote = Completer<AssetQuoteData?>();
+      final secondLoad = controller.loadAllData();
+
+      // `loadAllData()` (async) s'exécute de façon SYNCHRONE jusqu'à son
+      // premier `await` non résolu — à cet instant, l'appel ci-dessus a déjà
+      // rendu la main SANS avoir touché `_accounts` : le masquage suivant
+      // s'applique donc bien à l'état issu du PREMIER chargement.
+      final hiddenDuringLoad = controller.hideAccount('acc-d3');
+      expect(hiddenDuringLoad, isNotNull);
+      expect(controller.accounts.map((a) => a.id), isNot(contains('acc-d3')));
+
+      // Débloque la cotation → loadAllData() peut atteindre son assignation
+      // finale et se terminer.
+      fakeMarket.pendingQuote!.complete(
+        AssetQuoteData(symbol: 'D3SYM', price: 55.0, currency: 'EUR'),
+      );
+      await secondLoad;
+
+      // Sans le correctif D3, l'assignation finale (`_accounts = accounts`,
+      // copie figée AVANT le masquage) aurait fait RÉAPPARAÎTRE le compte ici.
+      expect(controller.accounts.map((a) => a.id), isNot(contains('acc-d3')));
     });
   });
 

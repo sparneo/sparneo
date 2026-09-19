@@ -1,4 +1,6 @@
 // lib/widgets/wallet_view.dart
+import 'dart:async';
+
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/controllers/chart_mode_controller.dart';
@@ -49,7 +51,7 @@ class WalletView extends StatefulWidget {
   State<WalletView> createState() => _WalletViewState();
 }
 
-class _WalletViewState extends State<WalletView> {
+class _WalletViewState extends State<WalletView> with WidgetsBindingObserver {
   late final WalletController _controller;
 
   /// Hauteur totale du bloc graphe, chrome compris (bandeau de légende + axe
@@ -96,12 +98,48 @@ class _WalletViewState extends State<WalletView> {
     // didChangeDependencies, mais on l'initialise avec une valeur de repli.
     _controller = WalletController();
     _controller.loadAllData();
+    // D8 (décision auteur : « commit forcé à la fermeture ») — observe le
+    // cycle de vie de l'app pour flusher les suppressions de comptes EN
+    // ATTENTE (fenêtre « Annuler » pas encore expirée) à la fermeture, cf.
+    // [didChangeAppLifecycleState].
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    // D8, filet de secours EN PLUS de didChangeAppLifecycleState(detached) :
+    // sur desktop Linux, rien ne garantit que `detached` soit émis avant la
+    // terminaison du process à la fermeture de la fenêtre (cf. le
+    // commentaire détaillé de [didChangeAppLifecycleState]) — si CETTE page
+    // est démontée avant la fin du process (retour arrière, changement de
+    // route), autant flusher ici aussi. `dispose()` est synchrone : on ne
+    // peut pas attendre la fin du flush, d'où le fire-and-forget — protégé
+    // par la même garde d'idempotence que tout commit normal (jamais de
+    // double suppression), donc sans risque même si le flush de
+    // didChangeAppLifecycleState s'exécute en parallèle ou juste après.
+    unawaited(_controller.commitPendingDeletions());
     _controller.dispose();
     super.dispose();
+  }
+
+  /// D8 — flush best-effort des suppressions de comptes différées non
+  /// commises à la fermeture de l'app (décision auteur, cf. le
+  /// commentaire de [initState]).
+  ///
+  /// `detached` est le signal le plus proche d'une fermeture réelle que
+  /// [WidgetsBindingObserver] expose. LIMITE CONNUE, documentée plutôt que
+  /// masquée : sur desktop Linux, la fermeture d'une fenêtre ne garantit PAS
+  /// l'émission de `detached` avant que le process ne se termine (dépend du
+  /// gestionnaire de fenêtres et de la façon dont le process reçoit son
+  /// signal d'arrêt) — c'est pourquoi [dispose] porte un flush de secours
+  /// séparé, lui aussi best-effort. Sur mobile (Android/iOS), `detached` est
+  /// nettement plus fiable (cycle de vie applicatif standard de l'OS).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.detached) {
+      unawaited(_controller.commitPendingDeletions());
+    }
   }
 
   Future<void> _createNewAccount() async {
@@ -226,21 +264,20 @@ class _WalletViewState extends State<WalletView> {
 
         if (mounted) {
           // ⭐ CORRECTION : Navigation conditionnelle
+          // D1 (correctif suppression de compte) : ce push vers AccountView
+          // ouvrait le compte fraîchement créé SANS jamais regarder son
+          // résultat — une suppression demandée depuis cette page (corbeille
+          // de la barre d'AccountView) était donc silencieusement ignorée au
+          // retour (bug vécu par l'auteur). On route désormais par
+          // [_openAccount], qui gère resultDeleted ET recharge — FACTORISÉ,
+          // pas dupliqué, avec le chemin normal (tuile de la liste).
           if (selectedKind.valuationType != AccountType.cash) {
-            // Comptes investissement et métaux précieux : on navigue vers les détails
-            await Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (context) =>
-                    AccountView(initialAccountId: newAccount.id),
-              ),
-            );
-          }
-          // Pour cash : on reste sur WalletView
-
-          // Rafraîchir la liste dans les deux cas
-          if (mounted) {
-            _controller.loadAllData();
+            // Comptes investissement et métaux précieux : on navigue vers les
+            // détails, par le même chemin que la tuile de la liste.
+            await _openAccount(newAccount);
+          } else if (mounted) {
+            // Pour cash : on reste sur WalletView, simple rechargement.
+            await _controller.loadAllData();
           }
         }
       } catch (e) {
@@ -375,7 +412,15 @@ class _WalletViewState extends State<WalletView> {
     );
     if (!mounted) return;
     if (result == AccountView.resultDeleted) {
-      _onAccountDismissed(account);
+      // D7 : l'objet [account] capturé à l'ouverture peut être PÉRIMÉ (un
+      // renommage a pu avoir lieu dans AccountView pendant qu'elle était
+      // ouverte) — on re-résout par id (liste visible du contrôleur, puis
+      // stockage) avant de lancer la suppression différée, pour ne jamais
+      // afficher/réinjecter l'ancien nom. Repli sur l'objet capturé si
+      // vraiment introuvable (garde défensive, ne devrait pas arriver ici).
+      final fresh = await _controller.resolveAccountById(account.id);
+      if (!mounted) return;
+      _onAccountDismissed(fresh ?? account);
       return;
     }
     await _controller.loadAllData();
@@ -386,17 +431,39 @@ class _WalletViewState extends State<WalletView> {
     final l10n = AppLocalizations.of(context)!;
     // Retire immédiatement de la liste affichée : satisfait aussi le contrat du
     // Dismissible (l'item doit quitter le modèle après onDismissed).
-    _controller.hideAccount(account.id);
+    //
+    // D2 : hideAccount rend `null` si le compte n'est PLUS dans la liste
+    // affichée (déjà masqué par un autre chemin, ou disparu entre-temps) —
+    // sans cette garde, un snackbar « supprimé » mensonger s'affichait quand
+    // même, suivi d'un commit no-op silencieux à la fermeture. On échoue
+    // alors franchement : pas de snackbar de succès, pas de fenêtre d'undo,
+    // pas de commit.
+    final hidden = _controller.hideAccount(account.id);
+    if (hidden == null) {
+      AppLogger.error(
+        'hideAccount(${account.id}) : compte introuvable dans la liste '
+        'affichée (déjà masqué ou supprimé)',
+      );
+      showAppSnackBar(
+        context,
+        l10n.accountDeletionError(account.name),
+        type: SnackType.error,
+      );
+      return;
+    }
+    // [hidden] est l'objet réellement retiré de la liste (celui que le
+    // contrôleur connaît) : c'est lui qui nomme le snackbar et qu'on repasse
+    // à restore/commit, pas [account] (potentiellement périmé, cf. D7).
     final ctl = showAppSnackBar(
       context,
-      l10n.accountDeleted(account.name),
+      l10n.accountDeleted(hidden.name),
       type: SnackType.info,
       undoWindow: true,
       action: SnackBarAction(
         label: l10n.undoAction,
         onPressed: () {
           if (!mounted) return;
-          _controller.restoreAccount(account);
+          _controller.restoreAccount(hidden);
         },
       ),
     );
@@ -406,7 +473,7 @@ class _WalletViewState extends State<WalletView> {
     // suppression.
     ctl.closed.then((reason) {
       if (reason != SnackBarClosedReason.action) {
-        _commitAccountDeletion(account);
+        _commitAccountDeletion(hidden);
       }
     });
   }

@@ -129,6 +129,17 @@ class AccountController extends ChangeNotifier {
   Wallet? _activeWallet;
   bool _isLoadingAccounts = true;
 
+  /// D5 : vrai quand [initAccounts] a été appelé avec un [initialAccountId]
+  /// introuvable (ni dans le stockage, ni — garde défensive — dans le wallet
+  /// résolu). AUCUN repli silencieux sur un autre compte ne doit alors avoir
+  /// lieu : [_activeAccount] reste `null` et la vue traduit cet état en écran
+  /// « ce compte n'existe plus » plutôt que d'afficher, sans le dire, un
+  /// compte QUELCONQUE à la place de celui demandé (bug constaté : bascule
+  /// muette sur un compte cash, dont la section positions est masquée — « je
+  /// reste sur une page de compte vide »). Remis à `false` en tête de chaque
+  /// [initAccounts].
+  bool _accountNotFound = false;
+
   /// Rafraîchissement non destructif en cours (distinct de [_isLoadingAccounts],
   /// qui n'est vrai qu'au tout premier chargement, données absentes). Pendant un
   /// [refresh] le contenu reste affiché ; la vue n'affiche qu'un indicateur
@@ -327,6 +338,11 @@ class AccountController extends ChangeNotifier {
   List<Account> get accounts => _accounts;
   Account? get activeAccount => _activeAccount;
   Wallet? get activeWallet => _activeWallet;
+
+  /// D5 : vrai si le compte demandé ([initialAccountId]) n'existe plus — la
+  /// vue doit alors afficher l'état « ce compte n'existe plus » plutôt que le
+  /// contenu normal (qui suppose [activeAccount] non-null).
+  bool get accountNotFound => _accountNotFound;
   bool get isLoadingAccounts => _isLoadingAccounts;
   bool get isRefreshing => _isRefreshing;
   ChartPeriod get selectedPeriod => _selectedPeriod;
@@ -512,8 +528,17 @@ class AccountController extends ChangeNotifier {
   // ---------------------------------------------------------------------------
 
   /// Point d'entrée : charge wallets, comptes et positions.
+  ///
+  /// D5 : quand [initialAccountId] est fourni mais introuvable, AUCUN repli
+  /// silencieux sur un autre compte — l'ancien `firstWhere(orElse: () =>
+  /// allAccounts.first)`/`accounts.first` basculait la page sur un compte
+  /// QUELCONQUE sans le dire (et sans lever l'exception `StateError` qu'une
+  /// liste vide aurait produite, elle, avalée par le `catch` générique
+  /// ci-dessous en un message d'erreur peu parlant). On pose à la place un
+  /// état explicite ([accountNotFound]) que la vue traduit en écran dédié.
   Future<void> initAccounts() async {
     _isLoadingAccounts = true;
+    _accountNotFound = false;
     _safeNotify();
 
     try {
@@ -533,18 +558,34 @@ class AccountController extends ChangeNotifier {
       // 2. Charger tous les comptes pour trouver celui avec initialAccountId
       final allAccounts = await _storage.getAllAccounts();
 
-      // Déterminer le wallet actif et le compte actif
+      // Déterminer le wallet actif et le compte actif.
+      Account? targetAccount;
       if (initialAccountId != null) {
-        // Chercher le compte correspondant
-        final targetAccount = allAccounts.firstWhere(
+        final targetIndex = allAccounts.indexWhere(
           (a) => a.id == initialAccountId,
-          orElse: () => allAccounts.first,
         );
-        // Utiliser le wallet du compte trouvé
-        _activeWallet = wallets.firstWhere(
-          (w) => w.id == targetAccount.walletId,
-          orElse: () => wallets.first,
+        if (targetIndex < 0) {
+          // Compte introuvable NULLE PART : état explicite, retour immédiat
+          // (pas de _initService, qui suppose _activeAccount non-null).
+          _accountNotFound = true;
+          _activeAccount = null;
+          _accounts = const [];
+          _activeWallet = wallets.first;
+          _isLoadingAccounts = false;
+          _safeNotify();
+          return;
+        }
+        targetAccount = allAccounts[targetIndex];
+        // Utiliser le wallet du compte trouvé.
+        final walletIndex = wallets.indexWhere(
+          (w) => w.id == targetAccount!.walletId,
         );
+        // Défensif : le wallet du compte trouvé devrait toujours figurer dans
+        // `wallets` (même stockage, même lecture) — repli sur le premier
+        // wallet plutôt qu'un `firstWhere` qui lèverait si l'invariant venait
+        // à se rompre (pas de compte pour autant introuvable : c'est le
+        // WALLET qui manquerait, cas distinct de D5).
+        _activeWallet = walletIndex >= 0 ? wallets[walletIndex] : wallets.first;
       } else {
         _activeWallet = wallets.first;
       }
@@ -556,12 +597,24 @@ class AccountController extends ChangeNotifier {
 
       // 4. Sélectionner le compte actif
       _accounts = accounts;
-      if (initialAccountId != null) {
-        final found = accounts.firstWhere(
-          (a) => a.id == initialAccountId,
-          orElse: () => accounts.first,
+      if (targetAccount != null) {
+        final foundIndex = accounts.indexWhere(
+          (a) => a.id == targetAccount!.id,
         );
-        _activeAccount = found;
+        // `targetAccount` a été retenu ci-dessus PRÉCISÉMENT pour le wallet
+        // qu'il désigne (`_activeWallet = wallets[walletIndex]` via son
+        // propre `walletId`) : il figure donc TOUJOURS dans `accounts`, sauf
+        // rupture de l'invariant défensif ci-dessus (wallet introuvable) — on
+        // traite alors ce cas comme un compte introuvable plutôt que de
+        // planter sur un `firstWhere` sans repli.
+        if (foundIndex < 0) {
+          _accountNotFound = true;
+          _activeAccount = null;
+          _isLoadingAccounts = false;
+          _safeNotify();
+          return;
+        }
+        _activeAccount = accounts[foundIndex];
       } else {
         _activeAccount = accounts.isNotEmpty ? accounts.first : null;
       }
