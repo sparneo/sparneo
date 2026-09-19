@@ -345,6 +345,7 @@
   "journalSystemLineBody": "Cette ligne a été générée automatiquement (un ajustement ou une jambe d'une opération sur titre) et sert de repère à d'autres calculs — solde d'espèces, prix de revient. Elle n'est pas modifiable ici pour ne pas fausser ces calculs. Pour la corriger, passez par la fiche de la position concernée, ou ajoutez un nouvel ajustement.",
   "openJournalTooltip": "Journal des transactions",
   "filterAllKinds": "Tous",
+  "filterRewards": "Récompenses",
   "periodAll": "Tout",
   "period30Days": "30 jours",
   "period90Days": "90 jours",

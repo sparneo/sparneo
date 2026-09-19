@@ -94,17 +94,18 @@ class _FakeLedgerService extends LedgerService {
 // Helpers de construction
 // ---------------------------------------------------------------------------
 
-Account _account() => Account(
+Account _account({AccountKind kind = AccountKind.cto}) => Account(
       id: _accountId,
       walletId: 'wallet-1',
       name: 'Compte test',
-      kind: AccountKind.cto,
+      kind: kind,
       currency: 'EUR',
     );
 
 Widget _host({
   required List<AssetTransaction> txs,
   required _FakeLedgerService ledger,
+  AccountKind accountKind = AccountKind.cto,
 }) {
   return MaterialApp(
     localizationsDelegates: AppLocalizations.localizationsDelegates,
@@ -114,7 +115,7 @@ Widget _host({
       accountId: _accountId,
       accountName: 'Compte test',
       debugTransactionStorage: _FakeTransactionStorage(txs),
-      debugAccountStorage: _FakeAccountStorage(_account()),
+      debugAccountStorage: _FakeAccountStorage(_account(kind: accountKind)),
       debugLedgerService: ledger,
     ),
   );
@@ -534,6 +535,133 @@ void main() {
             reason: '« $label » dépasse le bord gauche',
           );
         }
+      },
+    );
+
+    testWidgets(
+      'sur un compte crypto, la rangée à NEUF puces (dont « Récompenses ») '
+      'tient aussi à l\'écran sur 360 dp',
+      (tester) async {
+        tester.view.physicalSize = const Size(360, 800);
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+
+        final ledger = _FakeLedgerService([]);
+        await tester.pumpWidget(
+          _host(txs: [], ledger: ledger, accountKind: AccountKind.crypto),
+        );
+        await tester.pumpAndSettle();
+
+        final l10n = await AppLocalizations.delegate.load(const Locale('fr'));
+        final labels = <String>[
+          l10n.filterAllKinds,
+          l10n.transactionKindBuy,
+          l10n.transactionKindSell,
+          l10n.transactionKindDividend,
+          l10n.transactionKindDeposit,
+          l10n.transactionKindWithdrawal,
+          l10n.transactionKindInterest,
+          l10n.transactionKindCharge,
+          l10n.filterRewards,
+        ];
+
+        for (final label in labels) {
+          final finder = find.text(label);
+          expect(finder, findsOneWidget, reason: 'filtre « $label » absent');
+          final rect = tester.getRect(finder);
+          expect(
+            rect.right,
+            lessThanOrEqualTo(360.0),
+            reason: '« $label » dépasse le bord droit (tronqué)',
+          );
+          expect(
+            rect.left,
+            greaterThanOrEqualTo(0.0),
+            reason: '« $label » dépasse le bord gauche',
+          );
+        }
+        // Aucune exception de rendu (débordement Flutter) déclenchée par la
+        // neuvième puce.
+        expect(tester.takeException(), isNull);
+      },
+    );
+
+    // Deux `testWidgets` distincts (et NON deux `pumpWidget` successifs sur le
+    // même tester) : `AccountJournalPage` n'a pas de `key` et occupe la même
+    // position dans l'arbre → un second `pumpWidget` réutiliserait le MÊME
+    // State (initState non ré-exécuté, donc `_accountKind` jamais rechargé),
+    // masquant tout changement de nature de compte.
+    testWidgets(
+      'la puce « Récompenses » est visible sur un compte crypto',
+      (tester) async {
+        final ledger = _FakeLedgerService([]);
+        await tester.pumpWidget(
+          _host(txs: [], ledger: ledger, accountKind: AccountKind.crypto),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Récompenses'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
+      'la puce « Récompenses » est absente sur un compte titres (CTO)',
+      (tester) async {
+        final ledger = _FakeLedgerService([]);
+        await tester.pumpWidget(
+          _host(txs: [], ledger: ledger, accountKind: AccountKind.cto),
+        );
+        await tester.pumpAndSettle();
+        expect(find.text('Récompenses'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'sélectionner « Récompenses » ne montre que les adjustments '
+      'stakingReward — ni un adjustment nu, ni un openingBalance',
+      (tester) async {
+        final reward = AssetTransaction(
+          id: 'tx-reward',
+          accountId: _accountId,
+          kind: TransactionKind.adjustment,
+          quantity: '3.1',
+          currency: 'EUR',
+          date: DateTime(2024, 7, 1),
+          meta: const {'corporateAction': 'stakingReward'},
+        );
+        // Adjustment NU (sans corporateAction) : ne doit PAS apparaître sous
+        // « Récompenses » (cf. filterJournal, cas spécial rewardsOnly).
+        final plainAdjustment = _cashTx(
+          id: 'tx-plain-adjustment',
+          kind: TransactionKind.adjustment,
+          date: DateTime(2024, 7, 2),
+          amount: '20',
+        );
+        // openingBalance : autre kind système, ne doit pas non plus fuiter.
+        final opening = _cashTx(
+          id: 'tx-opening',
+          kind: TransactionKind.openingBalance,
+          date: DateTime(2024, 7, 3),
+          amount: '1000',
+        );
+        final txs = [reward, plainAdjustment, opening];
+        final ledger = _FakeLedgerService(txs);
+
+        await tester.pumpWidget(
+          _host(txs: txs, ledger: ledger, accountKind: AccountKind.crypto),
+        );
+        await tester.pumpAndSettle();
+
+        // Les trois lignes sont visibles sous « Tous ».
+        expect(find.text(_fmtDate(reward.date)), findsOneWidget);
+        expect(find.text(_fmtDate(plainAdjustment.date)), findsOneWidget);
+        expect(find.text(_fmtDate(opening.date)), findsOneWidget);
+
+        await tester.tap(find.text('Récompenses'));
+        await tester.pumpAndSettle();
+
+        expect(find.text(_fmtDate(reward.date)), findsOneWidget);
+        expect(find.text(_fmtDate(plainAdjustment.date)), findsNothing);
+        expect(find.text(_fmtDate(opening.date)), findsNothing);
       },
     );
   });

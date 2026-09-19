@@ -1866,6 +1866,11 @@
     "description": "Filter chip label: show all transaction kinds"
   },
 
+  "filterRewards": "Rewards",
+  "@filterRewards": {
+    "description": "Filter chip label, crypto accounts only: show only staking reward adjustments (meta['corporateAction'] == 'stakingReward'), the dominant line type of a crypto import journal"
+  },
+
   "periodAll": "All time",
   "@periodAll": {
     "description": "Period filter preset: no date restriction"

@@ -113,6 +113,11 @@ void main() {
   // clé existe) — cas défensif, ne doit pas non plus fuiter.
   final plainAdjustment1 =
       _tx(id: 'padj1', kind: TransactionKind.adjustment, date: d60ago);
+  // Position initiale déclarative — kind SYSTÈME différent d'adjustment, sert
+  // à vérifier que le filtre « Récompenses » n'élargit pas au-delà
+  // d'adjustment/stakingReward (décision auteur.
+  final openingBalance1 =
+      _tx(id: 'ob1', kind: TransactionKind.openingBalance, date: d60ago);
 
   final allTxs = [buy1, sell1, dividend1, deposit1, withdrawal1];
   final allTxsWithTransferOut = [
@@ -268,6 +273,53 @@ void main() {
         kind: TransactionKind.withdrawal,
       );
       expect(result, [withdrawal1]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Décision auteur (« Récompenses », puce dédiée réservée aux comptes crypto) :
+  // rewardsOnly matche UNIQUEMENT un adjustment portant meta['corporateAction'] ==
+  // 'stakingReward' — jamais un adjustment nu, ni un dépôt en nature
+  // (inKindDeposit), ni un openingBalance.
+  group('filterJournal — cas spécial rewardsOnly (puce Récompenses)', () {
+    final corpus = [
+      ...allTxsWithInKindDeposit,
+      openingBalance1,
+    ];
+
+    test('remonte uniquement l\'agrégat de récompenses stakingReward', () {
+      final result = filterJournal(corpus, rewardsOnly: true);
+      expect(result, [rewardAggregate1]);
+    });
+
+    test(
+      'exclut un adjustment nu (sans meta), un dépôt en nature '
+      '(inKindDeposit), un résidu de transfert interne et un openingBalance',
+      () {
+        final result = filterJournal(corpus, rewardsOnly: true);
+        expect(result, isNot(contains(plainAdjustment1)));
+        expect(result, isNot(contains(inKindDeposit1)));
+        expect(result, isNot(contains(internalResidual1)));
+        expect(result, isNot(contains(openingBalance1)));
+      },
+    );
+
+    test('rewardsOnly ignore kind s\'il est fourni en même temps', () {
+      // rewardsOnly est un filtre à part entière (cf. doc filterJournal) :
+      // un `kind` fourni en parallèle n'a aucun effet.
+      final result = filterJournal(
+        corpus,
+        kind: TransactionKind.buy,
+        rewardsOnly: true,
+      );
+      expect(result, [rewardAggregate1]);
+    });
+
+    test('sans rewardsOnly (comportement par défaut), aucun changement — '
+        'l\'agrégat de récompenses reste hors du filtre deposit '
+        '(non-régression)', () {
+      final result = filterJournal(corpus, kind: TransactionKind.deposit);
+      expect(result, isNot(contains(rewardAggregate1)));
     });
   });
 

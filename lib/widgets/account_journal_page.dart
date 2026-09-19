@@ -1,6 +1,7 @@
 // lib/widgets/account_journal_page.dart
 import 'package:flutter/material.dart';
 import 'package:portfolio_tracker/l10n/app_localizations.dart';
+import 'package:portfolio_tracker/model/account.dart' show AccountKind;
 import 'package:portfolio_tracker/model/asset_transaction.dart';
 import 'package:portfolio_tracker/model/position.dart';
 import 'package:portfolio_tracker/services/account_storage.dart';
@@ -27,6 +28,9 @@ import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 /// - Si [notBefore] est null, aucune borne basse sur la date.
 /// - Les transactions exactement à la date [notBefore] sont incluses.
 /// - L'ordre d'entrée est préservé.
+/// - Si [rewardsOnly] est vrai, [kind] est IGNORÉ : voir le cas spécial
+///   « Récompenses » ci-dessous, filtre à part entière et non une variante
+///   d'un [TransactionKind].
 ///
 /// CAS SPÉCIAL — [kind] == [TransactionKind.withdrawal] matche AUSSI certains
 /// [TransactionKind.transferOut] (décision auteur, drive B16, RESTREINTE, non
@@ -58,24 +62,92 @@ import 'package:portfolio_tracker/widgets/transaction_edit_dialog.dart';
 /// `deposit` (réservé au cash). La clé dédiée `inKindDeposit` est INDISPENSABLE
 /// ici : un `adjustment` recouvre AUSSI un agrégat mensuel de récompenses ou un
 /// résidu de transfert interne, qui ne doivent JAMAIS fuiter sous « Dépôt ».
+///
+/// CAS SPÉCIAL — [rewardsOnly] matche les [TransactionKind.adjustment] portant
+/// `meta['corporateAction'] == 'stakingReward'` (décision auteur, non
+/// rediscutable) : les récompenses de staking, agrégats mensuels posés par
+/// l'import crypto (cf. `CryptoLedgerNormalizer`), sont la catégorie DOMINANTE
+/// d'un journal crypto (la catégorie dominante observée sur un import Coinbase
+/// type) et devaient devenir filtrables — jusqu'ici invisibles hors « Tous »
+/// puisque `adjustment` est un kind SYSTÈME (cf.
+/// `TransactionKind.isSystemGenerated`), donc sans puce dédiée. Ce n'est PAS un
+/// élargissement de la puce « Intérêts » (`TransactionKind.interest`, cash pur,
+/// sémantique bancaire distincte) : un filtre à part entière, seul à même de
+/// représenter ce troisième cas (ni « un kind », ni « tous »), délibérément hors
+/// de l'axe [kind] plutôt qu'un pseudo-kind inventé.
 List<AssetTransaction> filterJournal(
   List<AssetTransaction> txs, {
   TransactionKind? kind,
+  bool rewardsOnly = false,
   DateTime? notBefore,
 }) {
   return txs.where((tx) {
-    final kindOk = kind == null ||
-        tx.kind == kind ||
-        (kind == TransactionKind.withdrawal &&
-            tx.kind == TransactionKind.transferOut &&
-            (tx.meta?['inKindWithdrawal'] == true ||
-                tx.meta?['importKey'] == null)) ||
-        (kind == TransactionKind.deposit &&
-            tx.kind == TransactionKind.adjustment &&
-            tx.meta?['inKindDeposit'] == true);
+    final kindOk = rewardsOnly
+        ? (tx.kind == TransactionKind.adjustment &&
+            tx.meta?['corporateAction'] == 'stakingReward')
+        : (kind == null ||
+            tx.kind == kind ||
+            (kind == TransactionKind.withdrawal &&
+                tx.kind == TransactionKind.transferOut &&
+                (tx.meta?['inKindWithdrawal'] == true ||
+                    tx.meta?['importKey'] == null)) ||
+            (kind == TransactionKind.deposit &&
+                tx.kind == TransactionKind.adjustment &&
+                tx.meta?['inKindDeposit'] == true));
     final dateOk = notBefore == null || !tx.date.isBefore(notBefore);
     return kindOk && dateOk;
   }).toList();
+}
+
+// ---------------------------------------------------------------------------
+// Sélection de la puce « type » — sentinelle de filtre
+// ---------------------------------------------------------------------------
+
+/// Sélection courante de la puce « type » du journal.
+///
+/// Remplace un simple `TransactionKind?` (`null` = « Tous »), incapable de
+/// représenter le filtre dédié « Récompenses » (aucun [TransactionKind] direct
+/// ne le porte, cf. [filterJournal]) : plutôt qu'un booléen parallèle bricolé
+/// (`bool _rewardsOnly` à côté de `TransactionKind? _kindFilter`, deux états
+/// pouvant diverger — ex. les deux à la fois), UN SEUL champ d'état porte la
+/// sélection, sous l'une de ses trois variantes.
+sealed class _JournalKindFilter {
+  const _JournalKindFilter();
+}
+
+/// Puce « Tous » — aucun filtre sur le type.
+final class _AllKindsFilter extends _JournalKindFilter {
+  const _AllKindsFilter();
+
+  @override
+  bool operator ==(Object other) => other is _AllKindsFilter;
+
+  @override
+  int get hashCode => (_AllKindsFilter).hashCode;
+}
+
+/// Puce d'un [TransactionKind] classique (buy/sell/dividend/deposit/…).
+final class _OneKindFilter extends _JournalKindFilter {
+  final TransactionKind kind;
+  const _OneKindFilter(this.kind);
+
+  @override
+  bool operator ==(Object other) =>
+      other is _OneKindFilter && other.kind == kind;
+
+  @override
+  int get hashCode => Object.hash(_OneKindFilter, kind);
+}
+
+/// Puce dédiée « Récompenses » (staking) — cf. cas spécial [filterJournal].
+final class _RewardsKindFilter extends _JournalKindFilter {
+  const _RewardsKindFilter();
+
+  @override
+  bool operator ==(Object other) => other is _RewardsKindFilter;
+
+  @override
+  int get hashCode => (_RewardsKindFilter).hashCode;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +202,7 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   bool _isLoading = true;
   String? _error;
 
-  TransactionKind? _kindFilter;
+  _JournalKindFilter _kindFilter = const _AllKindsFilter();
   _PeriodPreset _periodFilter = _PeriodPreset.all;
 
   /// Devise DU COMPTE, requise pour créer un mouvement d'espèces (mono-devise
@@ -139,17 +211,31 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   /// d'échec), le bouton d'ajout reste désactivé (cf. build()).
   String? _accountCurrency;
 
+  /// Nature DU COMPTE ([AccountKind]), pilote la visibilité de la puce dédiée
+  /// « Récompenses » (n'a de sens que sur un compte crypto — cf.
+  /// _buildFilters). Chargée avec la devise, même stratégie best-effort : tant
+  /// que non chargée (ou en cas d'échec), la puce reste simplement absente,
+  /// comme le bouton d'ajout reste désactivé tant que _accountCurrency est
+  /// null.
+  AccountKind? _accountKind;
+
   @override
   void initState() {
     super.initState();
     _load();
-    _loadAccountCurrency();
+    _loadAccount();
   }
 
-  /// Charge la devise du compte pour la création de mouvements d'espèces.
-  Future<void> _loadAccountCurrency() async {
+  /// Charge la devise ET la nature du compte (création de mouvements
+  /// d'espèces, visibilité de la puce « Récompenses »).
+  Future<void> _loadAccount() async {
     final account = await _accountStorage.getAccount(widget.accountId);
-    if (mounted) setState(() => _accountCurrency = account?.currency);
+    if (mounted) {
+      setState(() {
+        _accountCurrency = account?.currency;
+        _accountKind = account?.kind;
+      });
+    }
   }
 
   Future<void> _load() async {
@@ -192,8 +278,16 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     }
   }
 
-  List<AssetTransaction> get _filtered =>
-      filterJournal(_all, kind: _kindFilter, notBefore: _cutoff());
+  List<AssetTransaction> get _filtered {
+    final notBefore = _cutoff();
+    return switch (_kindFilter) {
+      _AllKindsFilter() => filterJournal(_all, notBefore: notBefore),
+      _OneKindFilter(kind: final k) =>
+        filterJournal(_all, kind: k, notBefore: notBefore),
+      _RewardsKindFilter() =>
+        filterJournal(_all, rewardsOnly: true, notBefore: notBefore),
+    };
+  }
 
   // ---------------------------------------------------------------------------
   // Helpers d'affichage (calqués sur position_detail_page.dart)
@@ -644,17 +738,28 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
           // visible après « Dépôt » sur 360 dp) sans aucune affordance de
           // balayage — des filtres existants restaient donc introuvables.
           // Un passage à la ligne coûte quelques dp de hauteur et rend les
-          // huit choix visibles d'un coup, à un tap.
+          // huit (neuf sur un compte crypto) choix visibles d'un coup, à un
+          // tap.
           Wrap(
             spacing: 6,
             runSpacing: 6,
             children: [
-              _kindChip(l10n, null, l10n.filterAllKinds),
+              _kindChip(l10n, const _AllKindsFilter(), l10n.filterAllKinds),
               // Les mouvements système (openingBalance/adjustment) ne sont
               // pas proposés au filtre : ils restent visibles via « tous ».
               ...TransactionKind.values
                   .where((k) => !k.isSystemGenerated)
-                  .map((k) => _kindChip(l10n, k, _kindLabel(l10n, k))),
+                  .map((k) =>
+                      _kindChip(l10n, _OneKindFilter(k), _kindLabel(l10n, k))),
+              // Puce dédiée « Récompenses » (staking), RÉSERVÉE aux comptes crypto (décision
+              // auteur : sur un compte titres, les récompenses n'existent pas, et exposer la
+              // puce y serait du bruit permanent pour un filtre qui ne matchera jamais rien.
+              if (_accountKind == AccountKind.crypto)
+                _kindChip(
+                  l10n,
+                  const _RewardsKindFilter(),
+                  l10n.filterRewards,
+                ),
             ],
           ),
           const SizedBox(height: 6),
@@ -677,11 +782,15 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     );
   }
 
-  Widget _kindChip(AppLocalizations l10n, TransactionKind? k, String label) =>
+  Widget _kindChip(
+    AppLocalizations l10n,
+    _JournalKindFilter filter,
+    String label,
+  ) =>
       _filterChip(
         label: label,
-        selected: _kindFilter == k,
-        onSelected: () => setState(() => _kindFilter = k),
+        selected: _kindFilter == filter,
+        onSelected: () => setState(() => _kindFilter = filter),
       );
 
   /// Chip de filtre, unique style des deux rangées (type et période).
