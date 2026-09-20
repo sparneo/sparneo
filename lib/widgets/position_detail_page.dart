@@ -59,6 +59,147 @@ class PositionDetailPage extends StatefulWidget {
   State<PositionDetailPage> createState() => _PositionDetailPageState();
 }
 
+// ---------------------------------------------------------------------------
+// Fonctions PURES de rendu de la liste « Mouvements » — extraites du corps de
+// `_PositionDetailPageState._buildTransactionTile` (aucune dépendance à
+// l'état du widget ni au réseau) pour rester testables sans pomper la page
+// entière : `_PositionDetailPageState` pose `MarketDataService.shared`,
+// `ExchangeRateService()` et `AccountStorage()` en DUR dans ses champs
+// d'état (pas de paramètre de constructeur injectable, à la différence
+// d'`AccountJournalPage`/`AccountView`), donc un pompage réel entraînerait
+// de vrais appels réseau/SQLite — proscrit en test.
+// ---------------------------------------------------------------------------
+
+/// Libellé du [TransactionKind] — un kind par défaut, sans tenir compte du
+/// contexte de la ligne (cf. [positionTransactionSubtitle] pour les cas
+/// affinés par `meta`, comme la récompense de staking).
+String positionKindLabel(AppLocalizations l10n, TransactionKind k) {
+  switch (k) {
+    case TransactionKind.buy:
+      return l10n.transactionKindBuy;
+    case TransactionKind.sell:
+      return l10n.transactionKindSell;
+    case TransactionKind.dividend:
+      return l10n.transactionKindDividend;
+    case TransactionKind.deposit:
+      return l10n.transactionKindDeposit;
+    case TransactionKind.withdrawal:
+      return l10n.transactionKindWithdrawal;
+    case TransactionKind.openingBalance:
+      return l10n.transactionKindOpeningBalance;
+    case TransactionKind.adjustment:
+      return l10n.transactionKindAdjustment;
+    case TransactionKind.interest:
+      return l10n.transactionKindInterest;
+    case TransactionKind.charge:
+      return l10n.transactionKindCharge;
+    case TransactionKind.transferOut:
+      return l10n.transactionKindTransferOut;
+  }
+}
+
+/// « (≈ X €) », ou « (< 0,01 €) » pour une poussière (valeur strictement
+/// positive dont l'arrondi afficherait 0,00 — résidus de délisting et de
+/// migration, retour auteur drive B16. Répliqué de `account_journal_page.dart`
+/// (même motif, même seuil) : la fiche position et le journal doivent lire
+/// pareil.
+String positionFormatEurApprox(AppLocalizations l10n, double value) {
+  if (value > 0 && value < 0.005) {
+    return l10n.cryptoAmountBelowOneCent;
+  }
+  return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
+}
+
+/// Équivalent EUR d'un dépôt crypto EN NATURE (`adjustment`,
+/// `meta['inKindDeposit'] == true`) — réplique exacte (motifs et replis
+/// compris) de `account_journal_page.dart`, voir la doc là-bas : chemin
+/// PRIORITAIRE `meta['valueEur']` (Problème 2, drive B16 — TOUJOURS un
+/// montant EUR exact, fichier OU manuel, posé par
+/// `CryptoLedgerNormalizer.finalizeCryptoExchanges`), sinon repli `quantity
+/// × unitPrice` (coût déjà EUR, ou USD converti via `meta['fxRate']`) ;
+/// `null` = repli sur `qty × prix devise`, jamais de conversion inventée
+/// (B4).
+String? positionInKindDepositEurApprox(
+  AppLocalizations l10n,
+  AssetTransaction tx,
+) {
+  final rawValueEur = tx.meta?['valueEur'];
+  final directValueEur =
+      rawValueEur is String ? double.tryParse(rawValueEur) : null;
+  if (directValueEur != null) {
+    return positionFormatEurApprox(l10n, directValueEur);
+  }
+
+  final qty = double.tryParse(tx.quantity ?? '');
+  final price = double.tryParse(tx.unitPrice ?? '');
+  if (qty == null || price == null) return null;
+
+  final double valueEur;
+  if (tx.currency == 'EUR') {
+    valueEur = qty * price;
+  } else if (tx.currency == 'USD') {
+    final rawFxRate = tx.meta?['fxRate'];
+    final fxRate = rawFxRate is String ? double.tryParse(rawFxRate) : null;
+    if (fxRate == null) return null;
+    valueEur = qty * price * fxRate;
+  } else {
+    return null;
+  }
+  return positionFormatEurApprox(l10n, valueEur);
+}
+
+/// Sous-titre affiché sous la date d'un mouvement, dans la liste
+/// « Mouvements » d'une position. Première branche qui matche gagne :
+///
+///  1. Dépôt en nature (`adjustment`, `meta['inKindDeposit'] == true`) :
+///     quantité + équivalent EUR informatif (cf.
+///     [positionInKindDepositEurApprox]) — même rendu que le journal de compte
+///     (demande auteur, drive B16.
+///  2. RÉCOMPENSE de staking (`adjustment`,
+///     `meta['corporateAction'] == 'stakingReward'`) : libellé dédié
+///     (`transactionKindReward`, « Récompense ») + LA QUANTITÉ DE CRYPTO
+///     REÇUE SEULE — jamais d'équivalent EUR ici (décision auteur explicite :
+///     ni cours du jour ni cours actuel, le coût comptable de la ligne est 0
+///     par construction). Avant ce correctif, ces mouvements retombaient
+///     silencieusement dans la branche 5 (repli générique) : le libellé
+///     « Ajustement » et la quantité disparaissaient tous les deux, alors que
+///     `CryptoLedgerNormalizer` ne pose JAMAIS d'`unitPrice` sur ces lignes
+///     (`_emitRewardIndividual` / agrégat mensuel) — elles échouaient donc
+///     TOUJOURS la branche 3 (`quantity && unitPrice`). Testée avant cette
+///     branche 3 par prudence (documente l'invariant plutôt que d'en
+///     dépendre implicitement).
+///  3. `quantity` ET `unitPrice` renseignés : « qty × prix devise » brut.
+///  4. Retrait crypto EN NATURE (`transferOut`) : quantité + équivalent EUR
+///     si `meta['valueEur']` est connue (demande auteur, drive B16.
+///  5. Repli : libellé du kind seul ([positionKindLabel]) — c'est ici,
+///     inchangée, que retombe un VRAI ajustement (sans marqueur `meta`).
+String positionTransactionSubtitle(AppLocalizations l10n, AssetTransaction tx) {
+  final inKindEurApprox = tx.kind == TransactionKind.adjustment &&
+          tx.meta?['inKindDeposit'] == true &&
+          tx.quantity != null
+      ? positionInKindDepositEurApprox(l10n, tx)
+      : null;
+  if (inKindEurApprox != null) {
+    return '${tx.quantity} $inKindEurApprox';
+  }
+  if (tx.kind == TransactionKind.adjustment &&
+      tx.meta?['corporateAction'] == 'stakingReward' &&
+      tx.quantity != null) {
+    return '${l10n.transactionKindReward} · ${tx.quantity}';
+  }
+  if (tx.quantity != null && tx.unitPrice != null) {
+    return '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
+  }
+  if (tx.kind == TransactionKind.transferOut && tx.quantity != null) {
+    final raw = tx.meta?['valueEur'];
+    final eurValue = raw is String ? double.tryParse(raw) : null;
+    return eurValue == null
+        ? tx.quantity!
+        : '${tx.quantity} ${positionFormatEurApprox(l10n, eurValue)}';
+  }
+  return positionKindLabel(l10n, tx.kind);
+}
+
 class _PositionDetailPageState extends State<PositionDetailPage> {
   final MarketDataService _marketService = MarketDataService.shared;
   final ExchangeRateService _exchangeService = ExchangeRateService();
@@ -1310,31 +1451,6 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     }
   }
 
-  String _kindLabel(AppLocalizations l10n, TransactionKind k) {
-    switch (k) {
-      case TransactionKind.buy:
-        return l10n.transactionKindBuy;
-      case TransactionKind.sell:
-        return l10n.transactionKindSell;
-      case TransactionKind.dividend:
-        return l10n.transactionKindDividend;
-      case TransactionKind.deposit:
-        return l10n.transactionKindDeposit;
-      case TransactionKind.withdrawal:
-        return l10n.transactionKindWithdrawal;
-      case TransactionKind.openingBalance:
-        return l10n.transactionKindOpeningBalance;
-      case TransactionKind.adjustment:
-        return l10n.transactionKindAdjustment;
-      case TransactionKind.interest:
-        return l10n.transactionKindInterest;
-      case TransactionKind.charge:
-        return l10n.transactionKindCharge;
-      case TransactionKind.transferOut:
-        return l10n.transactionKindTransferOut;
-    }
-  }
-
   String _formatTxDate(DateTime dt) =>
       '${dt.day.toString().padLeft(2, '0')}/${dt.month.toString().padLeft(2, '0')}/${dt.year}';
 
@@ -1391,51 +1507,6 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
     );
   }
 
-  /// « (≈ X €) », ou « (< 0,01 €) » pour une poussière (valeur strictement positive
-  /// dont l'arrondi afficherait 0,00 — résidus de délisting et de migration, retour
-  /// auteur drive B16. Répliqué de `account_journal_page.dart` (même motif, même
-  /// seuil) : la fiche position et le journal doivent lire pareil.
-  String _formatEurApprox(AppLocalizations l10n, double value) {
-    if (value > 0 && value < 0.005) {
-      return l10n.cryptoAmountBelowOneCent;
-    }
-    return l10n.cryptoTransferOutApproxEur(Formatters.formatEur(value));
-  }
-
-  /// Équivalent EUR d'un dépôt crypto EN NATURE (`adjustment`,
-  /// `meta['inKindDeposit'] == true`) — réplique exacte (motifs et replis
-  /// compris) de `account_journal_page.dart`, voir la doc là-bas : chemin
-  /// PRIORITAIRE `meta['valueEur']` (Problème 2, drive B16 — TOUJOURS un montant
-  /// EUR exact, fichier OU manuel, posé par
-  /// `CryptoLedgerNormalizer.finalizeCryptoExchanges`), sinon repli `quantity ×
-  /// unitPrice` (coût déjà EUR, ou USD converti via `meta['fxRate']`) ; `null` =
-  /// repli sur `qty × prix devise`, jamais de conversion inventée (B4).
-  String? _inKindDepositEurApprox(AppLocalizations l10n, AssetTransaction tx) {
-    final rawValueEur = tx.meta?['valueEur'];
-    final directValueEur =
-        rawValueEur is String ? double.tryParse(rawValueEur) : null;
-    if (directValueEur != null) {
-      return _formatEurApprox(l10n, directValueEur);
-    }
-
-    final qty = double.tryParse(tx.quantity ?? '');
-    final price = double.tryParse(tx.unitPrice ?? '');
-    if (qty == null || price == null) return null;
-
-    final double valueEur;
-    if (tx.currency == 'EUR') {
-      valueEur = qty * price;
-    } else if (tx.currency == 'USD') {
-      final rawFxRate = tx.meta?['fxRate'];
-      final fxRate = rawFxRate is String ? double.tryParse(rawFxRate) : null;
-      if (fxRate == null) return null;
-      valueEur = qty * price * fxRate;
-    } else {
-      return null;
-    }
-    return _formatEurApprox(l10n, valueEur);
-  }
-
   Widget _buildTransactionTile(
     AssetTransaction tx,
     AppLocalizations l10n,
@@ -1457,36 +1528,10 @@ class _PositionDetailPageState extends State<PositionDetailPage> {
       amountLabel = l10n.notAvailable;
     }
 
-    String subtitle;
-    // Dépôt en nature : « qty (≈ X €) » prioritaire sur le « qty × prix » brut —
-    // même rendu que le journal de compte (demande auteur, drive B16, repli sur la
-    // branche générique si l'équivalent est incalculable.
-    final inKindEurApprox = tx.kind == TransactionKind.adjustment &&
-            tx.meta?['inKindDeposit'] == true &&
-            tx.quantity != null
-        ? _inKindDepositEurApprox(l10n, tx)
-        : null;
-    if (inKindEurApprox != null) {
-      subtitle = '${tx.quantity} $inKindEurApprox';
-    } else if (tx.quantity != null && tx.unitPrice != null) {
-      subtitle = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
-    } else if (tx.kind == TransactionKind.transferOut && tx.quantity != null) {
-      // Retrait crypto EN NATURE (import B16) : aucun `unitPrice`, donc la
-      // condition ci-dessus est toujours fausse ici — sans cette branche dédiée, la
-      // quantité retirée ne s'affichait JAMAIS sur la fiche position (seul le
-      // libellé du kind apparaissait). Demande auteur, drive B16 (« voir la
-      // quantité de crypto retirée et l'équivalent en cash ») : équivalent EUR
-      // (`meta['valueEur']`, best-effort — cf. `AccountController.
-      // _enrichCryptoWithdrawalsWithEurValuation`) quand disponible, même motif que
-      // account_journal_page.dart.
-      final raw = tx.meta?['valueEur'];
-      final eurValue = raw is String ? double.tryParse(raw) : null;
-      subtitle = eurValue == null
-          ? tx.quantity!
-          : '${tx.quantity} ${_formatEurApprox(l10n, eurValue)}';
-    } else {
-      subtitle = _kindLabel(l10n, tx.kind);
-    }
+    // Logique déplacée dans `positionTransactionSubtitle` (fonction PURE,
+    // testée hors pompage complet — cf. son doc-commentaire pour le détail
+    // des branches, dont la RÉCOMPENSE de staking, nouveau cas).
+    final subtitle = positionTransactionSubtitle(l10n, tx);
 
     return InkWell(
       onTap: () => _openEditTransaction(tx),

@@ -1677,6 +1677,11 @@
     "description": "Transaction kind: inventory adjustment movement emitted on position edit"
   },
 
+  "transactionKindReward": "Reward",
+  "@transactionKindReward": {
+    "description": "Position detail page, per-movement label for an adjustment carrying meta['corporateAction'] == 'stakingReward' (crypto staking reward, cost-zero). Shown INSTEAD of the generic 'Adjustment' label, alongside the quantity of crypto received — never a EUR equivalent (author explicitly ruled that out, neither day-of valuation nor current price)."
+  },
+
   "corporateActionFreeAttribution": "Free share attribution",
   "@corporateActionFreeAttribution": {
     "description": "Journal line label for an imported free-share attribution. Shown INSTEAD of the generic kind name: 'adjustment' covers three unrelated operations (free attribution, listing-venue change, cash regularisation) and reads like a dubious manual correction, which alarmed the author on a perfectly clean import."

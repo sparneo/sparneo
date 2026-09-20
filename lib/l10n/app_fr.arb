@@ -288,6 +288,7 @@
   "transactionKindWithdrawal": "Retrait",
   "transactionKindOpeningBalance": "Solde d'ouverture",
   "transactionKindAdjustment": "Ajustement",
+  "transactionKindReward": "Récompense",
   "corporateActionFreeAttribution": "Attribution gratuite",
   "corporateActionPlaceChange": "Changement de place de cotation",
   "corporateActionCashRegularization": "Régularisation en espèces",
