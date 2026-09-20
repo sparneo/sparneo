@@ -643,6 +643,156 @@ class BrokerProfile {
     );
   }
 
+  /// Profil « Binance » (export « Transaction History » CSV, lot 4 du chantier
+  /// B16 — conception interne). Grand livre de JAMBES comme Kraken, mais SANS
+  /// AUCUNE référence d'opération ni oracle de solde : une opération composite
+  /// (trade, conversion) ne se reconnaît qu'à ce que plusieurs lignes partagent
+  /// la MÊME seconde — d'où [LegGroupingStrategy.sameTimestamp], implémentée par
+  /// `CryptoLedgerNormalizer._groupBySameTimestamp` (réduction par `(Operation,
+  /// Coin)`, garde d'ambiguïté si le groupe ne réduit pas à exactement une jambe
+  /// payée + une jambe reçue [+ d'éventuelles jambes de frais, réduites et
+  /// traitées indépendamment les unes des autres]).
+  ///
+  /// C'EST LE PROFIL LE PLUS DÉGRADÉ DES TROIS, ET C'EST STRUCTUREL (§5.4.4) :
+  /// fichier MUET côté valorisation ([valuationAmountColumn] `null`) — les
+  /// ~370 opérations d'échange passent SYSTÉMATIQUEMENT par l'étage 2 (cours
+  /// historiques en-app, lot 4 phase A) ; pas de `refid` → déduplication par
+  /// hachage de contenu + ordinal d'occurrence, jamais une clé fournie par le
+  /// courtier ; horodatages à la seconde → ambiguïtés possibles sur un fichier
+  /// dense (garde ci-dessus).
+  ///
+  /// FRAIS EN JAMBE SÉPARÉE (§5.4.4-bis, N17) : contrairement à Kraken/
+  /// Coinbase (colonne `fee` sur la jambe elle-même), Binance porte parfois le
+  /// frais sur une ligne `Transaction Fee` à part — [feeLegKindLabels] la
+  /// retire du bucketing normal ; si son actif est TIERS aux deux jambes du
+  /// trade (cas MAJORITAIRE mesuré, BNB — 103 groupes sur 156), elle devient
+  /// une consommation séparée valorisée `sell`+`charge` liée par
+  /// `meta.feeForGroup` (`CryptoLedgerNormalizer.finalizeCryptoExchanges`,
+  /// `case 'feeInKind'`) — jamais un `transferOut` silencieux.
+  ///
+  /// SMALL ASSETS EXCHANGE BNB (poussières, §5.4.1) : bien que `grouping` vaille
+  /// [LegGroupingStrategy.sameTimestamp] pour TOUT le profil, ce `kindLabel`
+  /// précis s'apparie par TEXTE LIBRE (`Remark`, ex. `"<COIN> to BNB"`) —
+  /// [remarkPairedKindLabels] le soustrait du bucketing par horodatage brut, seul
+  /// moyen de répartir un lot de N poussières vers UNE seule jambe BNB reçue
+  /// (aucune colonne de poids pour une prorata, écart au « repli prorata » de la
+  /// conception interne, consigné dans le rapport de lot, jamais une répartition
+  /// devinée).
+  ///
+  /// BILAN EARN : les souscriptions/rachats Earn/Staking/ETH 2.0 sont des
+  /// mouvements INTERNES à la plateforme ([CryptoLedgerAction.internalTransfer]) —
+  /// écartés du journal sous convention net-zéro, le résidu non nul par actif (26
+  /// actifs mesurés sur le spécimen) apparaît dans le groupe d'aperçu « Transferts
+  /// internes non équilibrés », réutilisant TEL QUEL le mécanisme déjà générique
+  /// (`UnbalancedInternalTransfer`, exercé côté Kraken FLR) — aucun code nouveau
+  /// requis dans le moteur/contrôleur pour cette brique.
+  ///
+  /// LIBELLÉS `Operation` DE SOUSCRIPTION/RACHAT EARN (I-1, revue adversariale,
+  /// CORRECTIF) : graphies relevées sur un export réel (contre-revue architecte
+  /// contre le spécimen, cf. porte de contre-mesure du lot 4 phase B) — les
+  /// libellés Simple Earn Locked/ Flexible, Staking, ETH 2.0 ET
+  /// Launchpool/Launchpad sont TOUS littéralement présents dans le fichier
+  /// réel, mappés ci-dessous.
+  factory BrokerProfile.binance() {
+    return BrokerProfile(
+      id: 'binance-transaction-history',
+      label: 'Binance',
+      delimiter: ',',
+      encoding: utf8,
+      hasHeaderRow: true,
+      dateFormat: const DateFormatSpec(separator: '-', yearFirst: true),
+      decimalSeparator: DecimalSeparator.dot,
+      columns: const ColumnMapping(byName: {
+        MovementField.date: 'Time',
+        MovementField.kindLabel: 'Operation',
+        MovementField.symbol: 'Coin',
+        MovementField.quantity: 'Change',
+        // Aucune `operationReference` (pas de `refid` sur ce format), aucune
+        // `amount`/`currency` (fichier muet côté valorisation, §5.4.4).
+      }),
+      kindLexicon: const {},
+      crypto: CryptoLedgerSpec(
+        grouping: LegGroupingStrategy.sameTimestamp,
+        groupingWindow: Duration.zero,
+        notesColumn: 'Remark',
+        feeLegKindLabels: const {'Transaction Fee'},
+        remarkPairedKindLabels: const {'Small Assets Exchange BNB'},
+        // Fichier MUET : pas de colonne de valorisation, repli systématique
+        // sur l'étage 2 (cours historiques en-app, lot 4 phase A).
+        valuationAmountColumn: null,
+        valuationCurrency: 'USD',
+        rewards: RewardAggregation.monthly,
+        fiatAssets: const {'EUR'},
+        // Alias d'IDENTITÉ (Token Swap, §5.4.1) : les deux seules migrations
+        // mesurées sur le spécimen (LUNA/LUNC, UST/USTC) — mêmes séquelles
+        // Terra que côté Kraken, PAS de MATIC→POL ici (aucun Token Swap
+        // MATIC mesuré sur ce fichier).
+        identityAliases: const {
+          'UST': 'USTC',
+          'LUNA': 'LUNC',
+        },
+        // Aucun alias de COTATION figé pour ce lot : contrairement à Kraken
+        // (piège homonyme vérifié à la main le 18/09), aucune identité
+        // Binance nouvelle n'a été vérifiée contre Yahoo — un futur alias
+        // nécessaire doit être ajouté APRÈS vérification, jamais deviné.
+        signFixedKinds: const {'Deposit': true, 'Withdraw': false},
+        externalDepositKinds: const {'Deposit'},
+        externalWithdrawalKinds: const {'Withdraw'},
+        actions: const {
+          // Récompenses (93 % du fichier, agrégées mensuellement, coût 0).
+          'Simple Earn Locked Rewards': CryptoLedgerAction.reward,
+          'Simple Earn Flexible Interest': CryptoLedgerAction.reward,
+          'Staking Rewards': CryptoLedgerAction.reward,
+          'ETH 2.0 Staking Rewards': CryptoLedgerAction.reward,
+          'Simple Earn Flexible Airdrop': CryptoLedgerAction.reward,
+          'BNB Vault Rewards': CryptoLedgerAction.reward,
+          'Airdrop Assets': CryptoLedgerAction.reward,
+          'Distribution': CryptoLedgerAction.reward,
+          // Jambes d'échange (groupage par horodatage, §5.4.1/§5.4.4-bis).
+          'Transaction Spend': CryptoLedgerAction.exchangeLeg,
+          'Transaction Buy': CryptoLedgerAction.exchangeLeg,
+          'Transaction Fee': CryptoLedgerAction.exchangeLeg,
+          'Transaction Sold': CryptoLedgerAction.exchangeLeg,
+          'Transaction Revenue': CryptoLedgerAction.exchangeLeg,
+          'Binance Convert': CryptoLedgerAction.exchangeLeg,
+          'Small Assets Exchange BNB': CryptoLedgerAction.exchangeLeg,
+          // Mouvements internes Earn (bilan §5.4.3) — libellés VÉRIFIÉS
+          // littéralement sur un export réel (I-1, revue
+          // adversariale, CORRECTIF ; cf. doc de méthode ci-dessus).
+          'Simple Earn Locked Subscription': CryptoLedgerAction.internalTransfer,
+          'Simple Earn Locked Redemption': CryptoLedgerAction.internalTransfer,
+          'Simple Earn Flexible Subscription': CryptoLedgerAction.internalTransfer,
+          'Simple Earn Flexible Redemption': CryptoLedgerAction.internalTransfer,
+          'Staking Purchase': CryptoLedgerAction.internalTransfer,
+          'Staking Redemption': CryptoLedgerAction.internalTransfer,
+          'ETH 2.0 Staking': CryptoLedgerAction.internalTransfer,
+          'ETH 2.0 Staking Withdrawal': CryptoLedgerAction.internalTransfer,
+          // `Launchpool Subscription/Redemption` : UNE SEULE graphie
+          // combinée sur le fichier réel (souscription ET rachat), PAS deux
+          // libellés distincts « Subscription »/« Redemption » séparés
+          // (contre-mesure post-revue, CORRECTIF : les deux entrées
+          // scindées d'origine ne matchaient RIEN, 2 rejets
+          // `unknownCryptoAction` persistants avant ce correctif).
+          'Launchpool Subscription/Redemption': CryptoLedgerAction.internalTransfer,
+          'Launchpad Subscribe': CryptoLedgerAction.internalTransfer,
+          // Distributions Launchpool/Launchpad et Token Swap (§5.4.2 ligne
+          // « distributions Launchpad/pool », compteurs 34/6/3 concordants)
+          // — récompenses, agrégées mensuellement comme les autres.
+          'Launchpool Airdrop - User Claim Distribution': CryptoLedgerAction.reward,
+          'Launchpad Token Distribution': CryptoLedgerAction.reward,
+          'Token Swap - Distribution': CryptoLedgerAction.reward,
+          // Migration d'actif (neutralisée par alias d'identité).
+          'Token Swap - Redenomination/Rebranding': CryptoLedgerAction.assetMigration,
+          // Fonds externes.
+          'Deposit': CryptoLedgerAction.depositIn,
+          'Withdraw': CryptoLedgerAction.withdrawalOut,
+          // Ambigu, ligne unique sur le spécimen — rejet motivé.
+          'Asset Recovery': CryptoLedgerAction.manualReview,
+        },
+      ),
+    );
+  }
+
   BrokerProfile copyWith({
     String? delimiter,
     Encoding? encoding,

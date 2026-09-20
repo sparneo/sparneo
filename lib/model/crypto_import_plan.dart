@@ -23,7 +23,14 @@ import 'package:portfolio_tracker/model/imported_movement.dart';
 ///    [quantityPaid] `null` (aucune jambe payée, l'actif « vient d'ailleurs » —
 ///    conception interne, `depositIn`/entrée en nature).
 class UnvaluedExchange {
-  final String kind; // 'exchange' | 'depositInKind'
+  /// `'exchange'` | `'depositInKind'` | `'feeInKind'` (Binance, chantier B16 lot 4,
+  /// conception interne — frais réglé dans un actif TIERS, forme dégénérée à UNE
+  /// seule jambe comme `'depositInKind'` : [codePaid]/ [quantityPaid] `null`,
+  /// [codeReceived]/[quantityReceived] portent l'actif et la quantité de frais
+  /// CONSOMMÉE — mais `finalizeCryptoExchanges` émet, pour cette forme, un `sell` +
+  /// un `charge` liés par [feeForGroup], PAS un `adjustment` : voir la doc de ce
+  /// champ).
+  final String kind;
   final DateTime date;
   final String? codePaid;
   final String? quantityPaid;
@@ -128,6 +135,20 @@ class UnvaluedExchange {
   /// cash).
   final String? sourceKindLabel;
 
+  /// Clé de BASE (avant suffixe de rôle) de l'opération d'ÉCHANGE PRIMAIRE à
+  /// laquelle cette entrée `kind == 'feeInKind'` associe un frais réglé dans un
+  /// actif TIERS (Binance, chantier B16 lot 4, conception interne — ex. frais BNB
+  /// d'un trade BTC→USDT) — `null` pour toute autre forme
+  /// (`'exchange'`/`'depositInKind'`, sans frais séparé à relier). Posé par
+  /// `CryptoLedgerNormalizer._processBinanceExchangeGroup`, reporté tel quel en
+  /// `meta['feeForGroup']` par `finalizeCryptoExchanges` sur les DEUX mouvements
+  /// (`sell` + `charge`) qu'une entrée `feeInKind` produit — sert UNIQUEMENT à
+  /// l'affichage (« frais du trade du JJ/MM ») : aucun calcul ne le lit, la
+  /// résolution/valorisation de l'échange primaire et celle du frais restent deux
+  /// entrées INDÉPENDANTES de `unvaluedExchanges` (l'une peut résoudre pendant que
+  /// l'autre reste manuelle — B4, jamais d'entrave croisée).
+  final String? feeForGroup;
+
   const UnvaluedExchange({
     required this.kind,
     required this.date,
@@ -147,6 +168,7 @@ class UnvaluedExchange {
     this.codePaidIsFiat = false,
     this.codeReceivedIsFiat = false,
     this.sourceKindLabel,
+    this.feeForGroup,
   });
 
   /// Reconstruction PARTIELLE (même motif que `ImportPreview.copyWith`, I-3 revue
@@ -183,6 +205,7 @@ class UnvaluedExchange {
         codePaidIsFiat: codePaidIsFiat,
         codeReceivedIsFiat: codeReceivedIsFiat,
         sourceKindLabel: sourceKindLabel,
+        feeForGroup: feeForGroup,
       );
 }
 

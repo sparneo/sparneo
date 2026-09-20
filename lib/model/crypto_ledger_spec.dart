@@ -29,9 +29,17 @@ enum LegGroupingStrategy {
   /// [CryptoLedgerSpec.groupKeyColumn].
   operationReference,
 
-  /// Horodatage EXACT (Binance : un trade = un triplet de lignes à la même
-  /// seconde). Fenêtre de tolérance : [CryptoLedgerSpec.groupingWindow]
-  /// (zéro pour ce format — l'égalité est stricte).
+  /// Horodatage EXACT (Binance, chantier B16 lot 4 — conception interne) : un
+  /// relevé SANS référence d'opération ni oracle de solde (un trade = un triplet
+  /// de lignes à la même seconde), où un mouvement composite (trade, conversion)
+  /// se reconnaît uniquement à ce que plusieurs jambes partagent la MÊME seconde.
+  /// Bucket = valeur exacte de `_Leg.preciseDate` —
+  /// [CryptoLedgerSpec.groupingWindow] reste [Duration.zero] pour cette stratégie
+  /// (élargir la fenêtre agrégerait des ordres distincts, conception interne). Les
+  /// jambes dont [CryptoLedgerSpec.remarkPairedKindLabels] contient le `kindLabel`
+  /// sont SOUSTRAITES de ce bucketing brut et appariées séparément par texte libre
+  /// (même mécanisme que [counterpartyNote] ci-dessous, Small Assets Exchange BNB)
+  /// — voir la doc de ce champ.
   sameTimestamp,
 
   /// Appariement par TEXTE LIBRE (Coinbase `Notes`, ex. « Converted X MLN to
@@ -364,6 +372,56 @@ class CryptoLedgerSpec {
   /// effet sur un profil qui n'en déclare pas).
   final List<ConditionalActionRedirect> conditionalActionRedirects;
 
+  /// `kindLabel` des jambes de FRAIS au sein d'un groupe
+  /// [LegGroupingStrategy.sameTimestamp] (Binance, chantier B16 lot 4, conception
+  /// interne — ex. `'Transaction Fee'`) — DISTINCT du rôle payé/reçu (déduit du
+  /// SIGNE net, jamais du libellé) : une jambe de frais n'est ni l'un ni l'autre,
+  /// elle est retirée des jambes « ordinaires » AVANT que `CryptoLedgerNormalizer`
+  /// cherche la paire payée/reçue d'un groupe.
+  ///
+  /// PLUSIEURS jambes de frais RÉDUITES par groupe sont LÉGITIMES (B-1, revue
+  /// adversariale, CORRECTIF — une jambe de frais n'est PAS un « rôle » au sens de
+  /// la garde d'ambiguïté du groupage, conception interne : « deux Coin distincts
+  /// dans un même RÔLE ») : `CryptoLedgerNormalizer. _processBinanceExchangeGroup`
+  /// boucle sur CHACUNE, indépendamment, appliquant les mêmes trois issues selon
+  /// l'actif de CETTE jambe (jamais une somme entre elles) : absorbée dans la
+  /// quantité de la jambe payée/ reçue qui partage son actif (comme Kraken, frais
+  /// en nature) ; ou, si son actif est TIERS aux deux jambes du groupe (cas
+  /// MAJORITAIRE mesuré, BNB — N17), consommation séparée valorisée en
+  /// `sell`+`charge` liés par `meta.feeForGroup` (voir
+  /// `UnvaluedExchange.feeForGroup`), la clé de cette entrée étant SUFFIXÉE par
+  /// l'actif de frais (`#fee:<actif>`) pour rester DISTINCTE d'une éventuelle autre
+  /// jambe de frais tierce du même groupe. LIMITE NOTÉE (documentée, pas codée —
+  /// inatteignable sur ce profil) : deux `kindLabel` de frais DISTINCTS portant le
+  /// MÊME actif tiers produiraient deux entrées à la clé `#fee:<actif>` IDENTIQUE —
+  /// Binance n'a qu'un seul libellé de frais (`'Transaction Fee'`), ce cas ne peut
+  /// pas se produire sur ce profil ; s'il se produisait malgré tout, la garde B-1
+  /// pré-existante de `CryptoValuationService.resolve` (clé de dédup partagée par ≥
+  /// 2 entrées → `ambiguousGroup`) neutralise la collision sans jamais fabriquer
+  /// une valorisation erronée. Vide par défaut (repli neutre, aucun effet sur
+  /// Kraken/Coinbase — dont les frais vivent dans une COLONNE `fee` de la jambe
+  /// elle-même, jamais une ligne à part).
+  final Set<String> feeLegKindLabels;
+
+  /// `kindLabel` des jambes dont la CONTREPARTIE se résout par appariement TEXTE
+  /// LIBRE (même mécanisme que [LegGroupingStrategy.counterpartyNote], réutilisant
+  /// [notesColumn]/[counterpartyPattern]/[groupingWindow]) MÊME SOUS UNE STRATÉGIE
+  /// DE GROUPAGE GLOBALE DIFFÉRENTE — Binance, chantier B16 lot 4, conception
+  /// interne : `grouping` vaut [LegGroupingStrategy.sameTimestamp] PARTOUT, SAUF
+  /// `Small Assets Exchange BNB` (micro-conversions de poussières vers BNB,
+  /// appariées par la colonne `Remark`, ex. `"<COIN> to BNB"`) qui s'apparie par
+  /// ce texte — le bucketing par horodatage exact fusionnerait à tort TOUTES les
+  /// micro-conversions d'un même lot (jusqu'à 44 lignes mesurées) en un seul
+  /// groupe N→1 sans pouvoir répartir la quantité BNB reçue entre les actifs cédés
+  /// (aucune colonne de valorisation Binance pour une prorata, N17/ §5.4.1). Une
+  /// jambe de ce `kindLabel` SANS texte exploitable (Remark absent/vide, ou
+  /// appariement non 1-1) est un REJET MOTIVÉ individuel
+  /// (`smallAssetsExchangeUnpaired`), jamais une prorata devinée — écart documenté
+  /// dans la conception interne (« repli prorata »), consigné SANS trancher
+  /// (aucune colonne de poids fiable n'existe côté Binance pour la reconstituer).
+  /// Vide par défaut (repli neutre, aucun effet sur Kraken/Coinbase).
+  final Set<String> remarkPairedKindLabels;
+
   CryptoLedgerSpec({
     required this.grouping,
     this.groupKeyColumn,
@@ -384,6 +442,8 @@ class CryptoLedgerSpec {
     this.rewards = RewardAggregation.none,
     this.valuationAmountColumn,
     this.valuationCurrency = 'USD',
+    this.feeLegKindLabels = const {},
+    this.remarkPairedKindLabels = const {},
     this.maxLegValuationSpread = 0.10,
     this.usdStableCodes = const {},
     this.signFixedKinds = const {},

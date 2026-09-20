@@ -486,6 +486,8 @@
   "importRejectConvertNoMatch": "Aucune contrepartie correspondante trouvée pour cette conversion — recherchez-la dans votre relevé et saisissez-la manuellement",
   "importRejectConvertAmbiguousMatch": "Plusieurs contreparties possibles pour cette conversion — impossible de trancher, saisissez-la manuellement",
   "importRejectCryptoFiatTradeUnreadableAmount": "Montant de règlement illisible pour cet achat/vente — saisissez-le manuellement",
+  "importRejectCryptoAmbiguousTimestampGroup": "Plusieurs opérations distinctes partagent exactement le même horodatage — impossible de les distinguer, recherchez-les dans votre relevé et saisissez-les manuellement",
+  "importRejectSmallAssetsExchangeUnpaired": "Impossible d'apparier cette conversion de poussière avec sa contrepartie via la colonne Remark du relevé — saisissez-la manuellement",
 
   "importStep4Heading": "Résoudre les nouveaux actifs",
   "importResolveHint": "Vérifiez ou complétez le symbole (Yahoo Finance) de chaque nouvel actif.",
@@ -527,6 +529,10 @@
   "importPickFileHintCoinbase": "Sélectionnez l'export CSV « Transactions » de votre compte Coinbase.",
   "importCoinbaseInfoCardBody": "Relevé « Transactions » de Coinbase, format CSV. Ce relevé n'a aucun contrôle de complétude (aucune colonne de solde/portefeuille). Les dates sont en UTC et sont conservées telles quelles. Vos récompenses seront regroupées par mois. Les montants sont convertis depuis la devise du relevé (« Price Currency ») via la série historique des taux de change. L'appariement des lignes « Convert » à leur contrepartie repose sur un export en ANGLAIS.",
 
+  "importProfileBinanceLabel": "Binance",
+  "importPickFileHintBinance": "Sélectionnez l'export CSV « Transaction History » de votre compte Binance.",
+  "importBinanceInfoCardBody": "Relevé « Transaction History » de Binance, format CSV. C'est le plus dégradé des trois relevés : il n'a aucune référence d'opération ni oracle de solde (la détection des doublons repose sur un hachage de contenu et un compteur d'occurrence), le fichier ne donne jamais de valeur en euros ou en dollars (chaque échange est valorisé d'après les cours historiques) et des opérations à la même seconde peuvent occasionnellement être ambiguës. Vos récompenses seront regroupées par mois.",
+
   "importCryptoAccountKindWarningTitle": "Nature du compte",
   "importCryptoAccountKindWarningMessage": "Ce relevé décrit un compte de crypto-monnaies ; le compte ouvert est un {kind}. Continuer ?",
 
@@ -543,6 +549,7 @@
   "importUnvaluedExchangesExplain": "Ces échanges entre crypto-monnaies n'ont pas pu être valorisés automatiquement. Saisissez un montant en euros pour chacun d'eux : ils seront importés dès que ce montant est renseigné.",
   "importUnvaluedExchangeLine": "Ligne(s) {lines} : {paidQuantity} {paidCode} → {receivedQuantity} {receivedCode}",
   "importUnvaluedDepositLine": "Ligne(s) {lines} : reçu {receivedQuantity} {receivedCode}",
+  "importUnvaluedFeeLine": "Ligne(s) {lines} : frais de {receivedQuantity} {receivedCode}",
   "importUnvaluedReasonUnreadable": "Valeur du relevé illisible.",
   "importUnvaluedReasonSpread": "Le relevé donne deux valeurs différentes pour cet échange (écart de {percent} %) — indiquez le montant correct.",
   "importUnvaluedReasonFxUnavailable": "Taux de change historique indisponible.",

@@ -180,6 +180,25 @@ class _ConvertTarget {
   const _ConvertTarget({required this.qty, required this.asset});
 }
 
+/// Accumulateur MUTABLE d'une réduction par (kindLabel, actif de base) au sein d'un
+/// groupe Binance `sameTimestamp` (chantier B16 lot 4, conception interne : « sommer
+/// Change par (Operation, Coin) ») — jamais exposé hors de ce fichier. Voir
+/// `CryptoLedgerNormalizer._processBinanceExchangeGroup`.
+class _ReducedLeg {
+  final String kindLabel;
+  final String baseAsset;
+  Decimal net = Decimal.zero;
+
+  /// Jambe SOURCE de plus petit `seq` parmi les constituantes (ordre du
+  /// fichier, déterministe) — porte `date`/`seq`/`source`/`sourceIndex` vers
+  /// la jambe synthétique reconstruite (`_syntheticLeg`) pour l'affichage
+  /// (reject/mouvement émis). `null` seulement avant la première
+  /// accumulation (jamais lu dans cet état par construction de l'appelant).
+  _Leg? representative;
+
+  _ReducedLeg({required this.kindLabel, required this.baseAsset});
+}
+
 /// Pipeline PUR de normalisation d'un grand livre crypto. Voir doc de fichier.
 class CryptoLedgerNormalizer {
   CryptoLedgerNormalizer._(); // classe statique, jamais instanciée
@@ -248,6 +267,18 @@ class CryptoLedgerNormalizer {
     // (SANS colonne Notes, chaque tentative d'extraction échoue de toute
     // façon, mais la cause n'est pas linguistique). Évalué EN PREMIER,
     // indépendamment de la présence de lignes `Convert` dans le fichier.
+    //
+    // M-7 (revue adversariale, lot 4 phase B) PROPOSÉ PUIS RÉVOQUÉ par le réviseur
+    // lui-même : une extension à [CryptoLedgerSpec. remarkPairedKindLabels] non
+    // vide (Binance, Small Assets Exchange BNB) avait été un temps ajoutée ici,
+    // mais elle est MAL CALIBRÉE — Binance groupe par
+    // [LegGroupingStrategy.sameTimestamp], PAS `counterpartyNote` : sans colonne
+    // `Remark`, elle aurait refusé le fichier EN BLOC avec un message qui nomme une
+    // colonne Coinbase (« Notes »/« lignes Convert ») inexistante sous ce profil —
+    // alors que SANS cette extension, seules les quelques dizaines de lignes de
+    // poussière (une fraction de pour-cent du fichier) partent en rejet motivé
+    // `smallAssetsExchangeUnpaired` (qui, lui, désigne la BONNE colonne), le reste
+    // du relevé s'important normalement. Condition RESTAURÉE à sa forme d'origine.
     if (crypto.grouping == LegGroupingStrategy.counterpartyNote &&
         crypto.notesColumn != null &&
         notesIdx == null) {
@@ -627,16 +658,37 @@ class CryptoLedgerNormalizer {
           break;
 
         case CryptoLedgerAction.exchangeLeg:
-          _processExchangeGroup(
-            activeLegs,
-            refid: refid,
-            accountId: accountId,
-            accountCurrency: accountCurrency,
-            crypto: crypto,
-            movements: movements,
-            unvaluedExchanges: unvaluedExchanges,
-            reject: reject,
-          );
+          // Binance (chantier B16 lot 4, conception interne) : un groupe `sameTimestamp`
+          // n'est PAS directement une paire payée/reçue comme chez Kraken/Coinbase — il
+          // peut porter une jambe de FRAIS séparée (`feeLegKindLabels`) et/ou plusieurs
+          // lignes de MÊME rôle (exécutions partielles, sommées AVANT toute
+          // classification payé/reçu). `_processBinanceExchangeGroup` fait cette
+          // réduction puis délègue à `_processExchangeGroup` pour l'émission (chemin
+          // fiat direct / valorisation, INCHANGÉ). Kraken/Coinbase
+          // (refid/counterpartyNote) restent le chemin direct existant, sans réduction.
+          if (crypto.grouping == LegGroupingStrategy.sameTimestamp) {
+            _processBinanceExchangeGroup(
+              activeLegs,
+              refid: refid,
+              accountId: accountId,
+              accountCurrency: accountCurrency,
+              crypto: crypto,
+              movements: movements,
+              unvaluedExchanges: unvaluedExchanges,
+              reject: reject,
+            );
+          } else {
+            _processExchangeGroup(
+              activeLegs,
+              refid: refid,
+              accountId: accountId,
+              accountCurrency: accountCurrency,
+              crypto: crypto,
+              movements: movements,
+              unvaluedExchanges: unvaluedExchanges,
+              reject: reject,
+            );
+          }
           break;
 
         case CryptoLedgerAction.fiatBuy:
@@ -1076,6 +1128,75 @@ class CryptoLedgerNormalizer {
             importKey: depositImportKey,
           ));
           break;
+
+        case 'feeInKind':
+          // Frais Binance réglé dans un actif TIERS (BNB, cas majoritaire —
+          // N17/§5.4.4-bis) : CONSOMMATION, pas une entrée. `sell` valorisé
+          // (la quantité de frais sort au marché, PV honnête sur cet actif)
+          // + `charge` espèces du MÊME montant (dépense VISIBLE au
+          // journal) — cash net ZÉRO (+V puis −V), liés par
+          // `meta.feeForGroup` (clé de BASE du trade primaire, doc de
+          // `UnvaluedExchange.feeForGroup`). `fee` reste `null` sur les deux
+          // (même politique que les autres branches de cette méthode).
+          final feeAsset = u.codeReceived;
+          final feeQuantity = Decimal.parse(u.quantityReceived);
+          final feeAmountEur = valuation.amountEur; // TOUJOURS positif.
+          final feeUnitPrice = (feeAmountEur / feeQuantity)
+              .toDecimal(scaleOnInfinitePrecision: 12);
+          final feeSellImportKey = '${u.importKey}#sell:$feeAsset';
+          out.add(ImportedMovement.candidate(
+            sourceRow: const [],
+            sourceRowIndex: sourceRowIndex,
+            transaction: AssetTransaction(
+              id: AssetTransaction.generateId(),
+              accountId: accountId,
+              symbol: null,
+              kind: TransactionKind.sell,
+              quantity: feeQuantity.toString(),
+              unitPrice: feeUnitPrice.toString(),
+              amount: feeAmountEur.toString(), // +V_eur, cash ENTRANT.
+              currency: accountCurrency,
+              settlementCurrency: accountCurrency,
+              date: u.date,
+              meta: {
+                ...meta,
+                if (u.feeForGroup != null) 'feeForGroup': u.feeForGroup,
+                'importKey': feeSellImportKey,
+              },
+            ),
+            ledgerCode: feeAsset,
+            needsAssetResolution: true,
+            importKey: feeSellImportKey,
+          ));
+
+          final feeChargeImportKey = '${u.importKey}#charge';
+          out.add(ImportedMovement.candidate(
+            sourceRow: const [],
+            sourceRowIndex: sourceRowIndex,
+            transaction: AssetTransaction(
+              id: AssetTransaction.generateId(),
+              accountId: accountId,
+              symbol: null,
+              kind: TransactionKind.charge,
+              // Négation LITTÉRALE de la même Decimal que la jambe `sell`
+              // ci-dessus (même règle N4 que le modèle échange) : cash
+              // net EXACTEMENT zéro — le frais ne touche jamais le solde
+              // espèces, seule la position BNB (ou autre actif tiers) en
+              // porte la consommation.
+              amount: (-feeAmountEur).toString(),
+              currency: accountCurrency,
+              date: u.date,
+              meta: {
+                ...meta,
+                if (u.feeForGroup != null) 'feeForGroup': u.feeForGroup,
+                'importKey': feeChargeImportKey,
+              },
+            ),
+            ledgerCode: null,
+            needsAssetResolution: false,
+            importKey: feeChargeImportKey,
+          ));
+          break;
       }
     }
 
@@ -1224,10 +1345,7 @@ class CryptoLedgerNormalizer {
         }
         return groups;
       case LegGroupingStrategy.sameTimestamp:
-        throw UnsupportedError(
-          'LegGroupingStrategy.sameTimestamp (groupage Binance par '
-          'horodatage exact) est réservé au lot 4 — non implémenté.',
-        );
+        return _groupBySameTimestamp(legs, crypto, decimalSeparator, reject);
       case LegGroupingStrategy.counterpartyNote:
         return _groupByCounterpartyNote(legs, crypto, decimalSeparator, reject);
     }
@@ -1407,6 +1525,118 @@ class CryptoLedgerNormalizer {
       s = s.replaceAll(',', '');
     }
     return Decimal.tryParse(s);
+  }
+
+  /// Groupage par horodatage EXACT (Binance, chantier B16 lot 4, conception
+  /// interne) : bucket = valeur exacte de `_Leg.preciseDate` (la SECONDE, fournie
+  /// sur CHAQUE ligne Binance — contrairement à Coinbase, jamais de repli minuit
+  /// UTC en pratique sur ce profil). Les jambes dont `kindLabel` figure dans
+  /// [CryptoLedgerSpec.remarkPairedKindLabels] (Small Assets Exchange BNB) sont
+  /// SOUSTRAITES de ce bucketing et appariées séparément par le texte de
+  /// [CryptoLedgerSpec.notesColumn] (`Remark`) — voir [_pairSmallAssetsByRemark].
+  ///
+  /// AUCUNE réduction/garde ici (contrairement à [_groupByCounterpartyNote],
+  /// qui rejette déjà les `Convert` non appariées) : la réduction par
+  /// (kindLabel, actif) et la garde structurelle vivent dans
+  /// `_processBinanceExchangeGroup`, seul consommateur de ces buckets pour
+  /// l'action `exchangeLeg` — un bucket peut porter une action NON-
+  /// `exchangeLeg` (reward/internalTransfer/depositIn/withdrawalOut/
+  /// assetMigration), traitée LIGNE À LIGNE par le switch principal quelle
+  /// que soit la taille du bucket (doc de [LegGroupingStrategy.sameTimestamp]).
+  ///
+  /// CLÉ SUFFIXÉE PAR L'ACTION pour toute nature NON-`exchangeLeg` (B-2,
+  /// revue adversariale, CORRECTIF) : deux opérations SÉPARABLES par la
+  /// seule colonne `Operation` (ex. `Simple Earn Flexible Redemption`,
+  /// internalTransfer, ET `Simple Earn Flexible Interest`, reward, à la
+  /// MÊME seconde — mesuré sur le spécimen réel) ne doivent JAMAIS être
+  /// fusionnées dans le même bucket : AVANT ce correctif, la garde
+  /// pré-existante `mixedCryptoActionsInGroup` (§C, boucle principale)
+  /// rejetait alors le bucket ENTIER — y compris les lignes de récompense,
+  /// amputant silencieusement l'agrégat mensuel de sa quantité réelle
+  /// (`aggregatedRows` restait cohérent avec les lignes RESTANTES, aucun
+  /// signal de la perte). `exchangeLeg` reste SANS suffixe : c'est la seule
+  /// action dont les jambes (trade + jambe(s) de frais) doivent au contraire
+  /// rester ENSEMBLE dans le même bucket pour que `_processBinanceExchangeGroup`
+  /// les réunisse — `leg.action` y est déjà résolu et homogène par
+  /// construction (`crypto.feeLegKindLabels` mappe aussi vers `exchangeLeg`).
+  static Map<String, List<_Leg>> _groupBySameTimestamp(
+    List<_Leg> legs,
+    CryptoLedgerSpec crypto,
+    DecimalSeparator decimalSeparator,
+    void Function(_Leg, String) reject,
+  ) {
+    final groups = <String, List<_Leg>>{};
+    final remarkLegs = <_Leg>[];
+    for (final leg in legs) {
+      if (crypto.remarkPairedKindLabels.contains(leg.kindLabel)) {
+        remarkLegs.add(leg);
+        continue;
+      }
+      final key = leg.action == CryptoLedgerAction.exchangeLeg
+          ? 'ts:${leg.preciseDate.toIso8601String()}'
+          : 'ts:${leg.preciseDate.toIso8601String()}|${leg.action?.name}';
+      (groups[key] ??= <_Leg>[]).add(leg);
+    }
+    if (remarkLegs.isNotEmpty) {
+      _pairSmallAssetsByRemark(remarkLegs, groups, reject);
+    }
+    return groups;
+  }
+
+  /// Appariement des micro-conversions « Small Assets Exchange BNB » (conception
+  /// interne) : la colonne `Remark` (ex. `"<COIN> to BNB"`) FOURNIT la paire —
+  /// contrairement à Coinbase (`_groupByCounterpartyNote`), aucune quantité cible
+  /// n'est encodée dans le texte : l'appariement se fait par ÉGALITÉ EXACTE du
+  /// texte de [CryptoLedgerSpec.notesColumn] entre UNE jambe négative (actif cédé)
+  /// et UNE jambe positive (BNB reçu), à l'INTÉRIEUR de la même seconde (les deux
+  /// jambes d'une micro-conversion partagent le même horodatage, comme un trade
+  /// ordinaire).
+  ///
+  /// Une valeur de `Remark` partagée par autre chose qu'EXACTEMENT une jambe
+  /// négative et une jambe positive (texte absent/vide, jambe solitaire,
+  /// pluralité) est un REJET MOTIVÉ `smallAssetsExchangeUnpaired` — repli
+  /// documenté dans la conception interne (« repli prorata sinon ») : AUCUNE
+  /// prorata n'est tentée ici (contrairement au dustsweeping Kraken, `amountusd`
+  /// n'existe pas côté Binance — une prorata par poids n'aurait rien pour se
+  /// fonder ; écart consigné au rapport de livraison, non tranché par ce lot).
+  static void _pairSmallAssetsByRemark(
+    List<_Leg> remarkLegs,
+    Map<String, List<_Leg>> groups,
+    void Function(_Leg, String) reject,
+  ) {
+    final byTimestampAndNote = <String, List<_Leg>>{};
+    for (final leg in remarkLegs) {
+      final note = leg.notes?.trim();
+      final key = (note == null || note.isEmpty)
+          ? 'unpaired:${leg.sourceIndex}'
+          : 'note:${leg.preciseDate.toIso8601String()}|$note';
+      (byTimestampAndNote[key] ??= <_Leg>[]).add(leg);
+    }
+    for (final entry in byTimestampAndNote.entries) {
+      final bucket = entry.value;
+      final negatives = bucket.where((l) => l.quantity.sign < 0).toList();
+      final positives = bucket.where((l) => l.quantity.sign >= 0).toList();
+      if (bucket.length == 2 && negatives.length == 1 && positives.length == 1) {
+        // I-2 (revue adversariale, CORRECTIF) : clé de DÉDUP dérivée du
+        // CONTENU (seconde exacte + texte `Remark`, DÉJÀ la clé de ce
+        // bucket) — le couple identifie uniquement chaque paire PAR
+        // CONSTRUCTION (aucune autre jambe ne peut partager la même seconde
+        // ET le même texte sans finir dans ce même bucket). Un numéro de
+        // ligne source (`sourceIndex`, AVANT correctif) est POSITIONNEL :
+        // un ré-export à fenêtre élargie/réduite décale tous les numéros de
+        // ligne en aval, ce qui aurait dupliqué ces échanges au journal à
+        // chaque ré-import plutôt que de les reconnaître comme déjà
+        // importés.
+        final key = 'remark:${entry.key}';
+        (groups[key] ??= <_Leg>[])
+          ..add(negatives.single)
+          ..add(positives.single);
+      } else {
+        for (final leg in bucket) {
+          reject(leg, 'smallAssetsExchangeUnpaired');
+        }
+      }
+    }
   }
 
   // ---------------------------------------------------------------------
@@ -1949,6 +2179,248 @@ class CryptoLedgerNormalizer {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // Binance : réduction d'un groupe `sameTimestamp` puis délégation (§5.4)
+  // ---------------------------------------------------------------------
+
+  /// Reconstruit une `_Leg` SYNTHÉTIQUE unique à partir d'un [_ReducedLeg]
+  /// déjà réduit (M-10, revue adversariale, CORRECTIF — ce commentaire
+  /// décrivait par erreur [_ReducedLeg] lui-même, qui porte sa propre doc) :
+  /// `date`/`seq`/`source`/`sourceIndex` proviennent du [_ReducedLeg.
+  /// representative] (la ligne de plus petit `seq` parmi les constituantes,
+  /// déterministe, ordre du fichier) ; `quantity` porte le NET déjà réduit
+  /// (`r.net`, frais éventuellement absorbés) ; toutes les colonnes propres
+  /// à Kraken/Coinbase (wallet/balance/assetClass/operationReference/
+  /// amount/amountCurrency/notes) restent `null` — cette jambe n'est JAMAIS
+  /// relue par un mécanisme qui en dépendrait, seule
+  /// `_processExchangeGroup` (chemin fiat direct / cascade de valorisation)
+  /// la consomme.
+  static _Leg _syntheticLeg(_ReducedLeg r) {
+    final rep = r.representative!;
+    final leg = _Leg(
+      sourceIndex: rep.sourceIndex,
+      source: rep.source,
+      date: rep.date,
+      preciseDate: rep.preciseDate,
+      kindLabel: r.kindLabel,
+      subKind: null,
+      rawAsset: r.baseAsset,
+      quantity: r.net,
+      fee: Decimal.zero,
+      wallet: null,
+      balance: null,
+      assetClass: null,
+      valuationUsd: null,
+      operationReference: null,
+      amount: null,
+      amountCurrency: null,
+      notes: null,
+      conditionalColumns: const {},
+      seq: rep.seq,
+    );
+    leg.baseAsset = r.baseAsset;
+    return leg;
+  }
+
+  /// Réduction + garde d'un groupe Binance `sameTimestamp` (action `exchangeLeg` —
+  /// trade/`Binance Convert`/paire Small Assets Exchange déjà appariée) AVANT
+  /// délégation à [_processExchangeGroup] (conception interne). Deux différences
+  /// structurelles avec Kraken/Coinbase :
+  ///  1. Binance n'a PAS de colonne `fee` par ligne : un frais est sa PROPRE
+  ///     ligne (`kindLabel` ∈ [CryptoLedgerSpec.feeLegKindLabels], ex.
+  ///     `'Transaction Fee'`) — à retirer AVANT de chercher la paire payée/
+  ///     reçue, jamais confondue avec elles.
+  ///  2. Un même `kindLabel` peut porter PLUSIEURS lignes du MÊME actif
+  ///     (exécutions partielles d'un ordre, jusqu'à une douzaine mesurées,
+  ///     conception interne) : sommées par (kindLabel, actif) — « sommer Change
+  ///     par (Operation, Coin) » — AVANT toute classification payé/reçu.
+  ///
+  /// Garde structurelle (couvre la « garde multi-coins » de la conception
+  /// interne) : après réduction, il DOIT rester EXACTEMENT deux jambes non-frais
+  /// (une payée, une reçue) — toute autre forme (deux rôles distincts partageant
+  /// le même actif faute de pouvoir sommer un rôle unidirectionnel avec un rôle
+  /// bidirectionnel, deux jambes de même signe, une jambe nette nulle…) est un
+  /// REJET MOTIVÉ `cryptoAmbiguousTimestampGroup` de la TOTALITÉ des lignes
+  /// SOURCES du groupe, jamais un groupage partiel deviné. Les jambes de frais
+  /// réduites, elles, PEUVENT être PLUSIEURS (B-1, revue adversariale, CORRECTIF
+  /// — une jambe de frais n'est pas un « rôle » au sens de cette garde) : chacune
+  /// est traitée INDÉPENDAMMENT dans la boucle ci-dessous, jamais sommée entre
+  /// elles.
+  ///
+  /// FRAIS EN ACTIF TIERS (§5.4.4-bis, cas MAJORITAIRE mesuré — groupes de trade,
+  /// N17) : le trade primaire (payé/reçu) est ÉMIS INCHANGÉ (délégation normale) ;
+  /// CHAQUE jambe de frais dont l'actif est tiers aux deux jambes du trade devient
+  /// sa PROPRE entrée [UnvaluedExchange] SÉPARÉE et INDÉPENDANTE
+  /// (`kind:'feeInKind'`, `feeForGroup` pointant la clé de base du trade, clé
+  /// SUFFIXÉE par l'actif de frais — `#fee:<actif>` — pour rester distincte d'une
+  /// éventuelle autre jambe de frais tierce du même groupe) — sa résolution suit
+  /// son propre sort (valorisée ou non), sans jamais bloquer ni dépendre de celle
+  /// du trade primaire NI des autres jambes de frais. Si le trade primaire
+  /// lui-même échoue (`_processExchangeGroup` rejette) ou si une AUTRE jambe de
+  /// frais du même groupe déclenche un rejet global, TOUTE entrée de frais déjà
+  /// ajoutée pour ce groupe EST retirée (`rejectAll`, correctif M-1) : jamais
+  /// d'entrée orpheline visible séparément pour un groupe par ailleurs entièrement
+  /// rejeté.
+  static void _processBinanceExchangeGroup(
+    List<_Leg> originalLegs, {
+    required String refid,
+    required String accountId,
+    required String accountCurrency,
+    required CryptoLedgerSpec crypto,
+    required List<ImportedMovement> movements,
+    required List<UnvaluedExchange> unvaluedExchanges,
+    required void Function(_Leg, String) reject,
+  }) {
+    // M-1 (revue adversariale, CORRECTIF) : capturé AVANT toute émission de
+    // ce groupe (frais tiers compris) — `rejectAll` purge toute entrée
+    // `feeInKind` déjà ajoutée par CE MÊME groupe avant de rejeter : un
+    // trade primaire finalement rejeté (ambiguïté, garde zéro net) ne doit
+    // jamais laisser un frais orphelin visible séparément au journal.
+    final unvaluedBeforeGroup = unvaluedExchanges.length;
+
+    void rejectAll(String reason) {
+      if (unvaluedExchanges.length > unvaluedBeforeGroup) {
+        unvaluedExchanges.removeRange(unvaluedBeforeGroup, unvaluedExchanges.length);
+      }
+      for (final leg in originalLegs) {
+        reject(leg, reason);
+      }
+    }
+
+    // ---- Réduction : somme par (kindLabel, actif de base) ----
+    final reduced = <String, _ReducedLeg>{};
+    for (final leg in originalLegs) {
+      final key = '${leg.kindLabel}|${leg.baseAsset}';
+      final r = reduced.putIfAbsent(
+        key,
+        () => _ReducedLeg(kindLabel: leg.kindLabel, baseAsset: leg.baseAsset),
+      );
+      r.net += leg.net;
+      if (r.representative == null || leg.seq < r.representative!.seq) {
+        r.representative = leg;
+      }
+    }
+
+    if (reduced.values.any((r) => r.net == Decimal.zero)) {
+      rejectAll('cryptoZeroNetMovement');
+      return;
+    }
+
+    final feeLegs = <_ReducedLeg>[];
+    final nonFeeLegs = <_ReducedLeg>[];
+    for (final r in reduced.values) {
+      if (crypto.feeLegKindLabels.contains(r.kindLabel)) {
+        feeLegs.add(r);
+      } else {
+        nonFeeLegs.add(r);
+      }
+    }
+
+    // GARDE (B-1, revue adversariale, CORRECTIF) : SEULES les jambes NON-FRAIS
+    // définissent l'ambiguïté d'un groupe (conception interne : « deux Coin
+    // distincts dans un même RÔLE ») — une jambe de frais n'est PAS un rôle.
+    // Plusieurs jambes de frais réduites (une par actif de frais, ex. une part
+    // absorbée dans l'actif payé + une part tierce en BNB) sont PARFAITEMENT
+    // légitimes et traitées CHACUNE dans la boucle ci-dessous, jamais une cause de
+    // rejet en bloc. AVANT ce correctif : `feeLegs.length > 1` rejetait à tort 3
+    // groupes réels du spécimen (écart mesuré face à N17 — 101 `feeInKind`
+    // produits contre 103 attendus, 47 absorptions contre 48).
+    if (nonFeeLegs.length != 2) {
+      rejectAll('cryptoAmbiguousTimestampGroup');
+      return;
+    }
+
+    final paidCandidates = nonFeeLegs.where((r) => r.net.sign < 0).toList();
+    final receivedCandidates = nonFeeLegs.where((r) => r.net.sign > 0).toList();
+    if (paidCandidates.length != 1 || receivedCandidates.length != 1) {
+      rejectAll('cryptoAmbiguousTimestampGroup');
+      return;
+    }
+    final paid = paidCandidates.single;
+    final received = receivedCandidates.single;
+
+    // Boucle sur TOUTES les jambes de frais réduites (B-1) — chacune
+    // applique indépendamment les deux branches du §5.4.4-bis (absorption
+    // même-actif, ou consommation séparée si l'actif est tiers aux deux
+    // jambes du trade).
+    final groupBaseKey = 'ref:$accountId:$refid';
+    for (final fee in feeLegs) {
+      if (fee.net.sign >= 0) {
+        // Une jambe de frais est TOUJOURS une sortie — un frais positif est
+        // une anomalie du relevé, jamais réinterprétée silencieusement.
+        rejectAll('cryptoAmbiguousTimestampGroup');
+        return;
+      }
+      if (fee.baseAsset == paid.baseAsset) {
+        paid.net += fee.net;
+      } else if (fee.baseAsset == received.baseAsset) {
+        received.net += fee.net;
+      } else {
+        // Frais en actif TIERS (cas majoritaire, N17/§5.4.4-bis) — voir la
+        // doc de tête de cette méthode. Clé SUFFIXÉE PAR L'ACTIF de frais
+        // (B-1, CORRECTIF, OBLIGATOIRE dès que plusieurs frais tiers
+        // peuvent coexister dans le même groupe) : un `#fee` nu partagé par
+        // deux entrées serait avalé par la garde B-1 pré-existante de
+        // `CryptoValuationService.resolve` (clé de dédup partagée par ≥ 2
+        // entrées → `ambiguousGroup` pour les deux). `_hasExistingJournalEntry`
+        // dérive de `u.importKey` directement, aucun changement requis
+        // côté contrôleur.
+        final feeRep = fee.representative!;
+        unvaluedExchanges.add(UnvaluedExchange(
+          kind: 'feeInKind',
+          date: feeRep.date,
+          codeReceived: fee.baseAsset,
+          quantityReceived: fee.net.abs().toString(),
+          usdReceived: feeRep.valuationUsd?.toString(),
+          sourceLines: [feeRep.sourceIndex],
+          importKey: '$groupBaseKey#fee:${fee.baseAsset}',
+          seq: feeRep.seq,
+          codeReceivedIsFiat: false,
+          feeForGroup: groupBaseKey,
+        ));
+      }
+    }
+    if (paid.net == Decimal.zero || received.net == Decimal.zero) {
+      // Frais absorbé annulant EXACTEMENT la jambe qu'il touchait (cas
+      // dégénéré, jamais mesuré sur le spécimen réel) : un net nul en
+      // sortie de cette étape n'est plus détectable par la garde amont
+      // (elle s'exécute AVANT l'absorption) — couvert ici, jamais un
+      // mouvement à quantité nulle émis.
+      rejectAll('cryptoZeroNetMovement');
+      return;
+    }
+
+    final paidLeg = _syntheticLeg(paid);
+    final receivedLeg = _syntheticLeg(received);
+
+    // Délégation à `_processExchangeGroup` (chemin fiat direct / cascade de
+    // valorisation, INCHANGÉ — gère nativement un trade EUR-jambé Binance
+    // via `_isAccountFiat`). Le rejet éventuel doit retomber sur la
+    // TOTALITÉ des lignes sources du groupe, jamais seulement les deux
+    // jambes synthétiques : snapshot avant/après plutôt qu'un relais direct
+    // du callback (qui dupliquerait le rejet, `_processExchangeGroup`
+    // appelant `reject` une fois PAR jambe passée — deux fois pour le même
+    // motif ici).
+    final movementsBefore = movements.length;
+    final unvaluedBeforeDelegate = unvaluedExchanges.length;
+    String? capturedReason;
+    _processExchangeGroup(
+      [paidLeg, receivedLeg],
+      refid: refid,
+      accountId: accountId,
+      accountCurrency: accountCurrency,
+      crypto: crypto,
+      movements: movements,
+      unvaluedExchanges: unvaluedExchanges,
+      reject: (_, reason) => capturedReason ??= reason,
+    );
+    final emitted = movements.length > movementsBefore ||
+        unvaluedExchanges.length > unvaluedBeforeDelegate;
+    if (!emitted && capturedReason != null) {
+      rejectAll(capturedReason!);
+    }
+  }
+
   static ImportedMovement _emitRewardIndividual(
     _Leg leg, {
     required String accountId,
@@ -2049,8 +2521,17 @@ class CryptoLedgerNormalizer {
       if (!fiatRawAssets.contains(u.codeReceived)) {
         final q = Decimal.tryParse(u.quantityReceived);
         if (q != null) {
+          // M-2 (revue adversariale, CORRECTIF) : un `feeInKind` (Binance,
+          // §5.4.4-bis) est une CONSOMMATION de l'actif de frais — il sortira
+          // en `sell` à la finalisation, jamais un crédit. Toute autre forme
+          // (`exchange`, `depositInKind`) reste un crédit comme avant (la
+          // quantité ENTRE dans le compte). Dormant en pratique : Binance
+          // n'a pas de [CryptoLedgerSpec.balanceColumn], donc aucun écart
+          // n'est jamais calculé pour ce profil — corrigé par exhaustivité,
+          // avant qu'un futur profil à oracle de solde ne l'active.
+          final signed = u.kind == 'feeInKind' ? -q : q;
           projectedByBase[u.codeReceived] =
-              (projectedByBase[u.codeReceived] ?? Decimal.zero) + q;
+              (projectedByBase[u.codeReceived] ?? Decimal.zero) + signed;
         }
       }
     }

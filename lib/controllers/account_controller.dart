@@ -2681,6 +2681,15 @@ class AccountController extends ChangeNotifier {
       return existingImportKeys
           .contains('${u.importKey}#buy:${u.codeReceived}');
     }
+    // Binance (chantier B16 lot 4, conception interne) : un frais réglé dans un
+    // actif TIERS émet un `sell`+`charge` liés (jamais un `adjustment` seul) — clé
+    // dérivée EXACTEMENT comme `CryptoLedgerNormalizer.finalizeCryptoExchanges`
+    // (`#sell:<code>`, suffisant à détecter une collision : le `charge` associé
+    // partage toujours le même sort).
+    if (u.kind == 'feeInKind') {
+      return existingImportKeys
+          .contains('${u.importKey}#sell:${u.codeReceived}');
+    }
     return existingImportKeys
         .contains('${u.importKey}#deposit:${u.codeReceived}');
   }

@@ -2516,6 +2516,14 @@
   "@importRejectCryptoFiatTradeUnreadableAmount": {
     "description": "Reject reason label (crypto ledger import, B16 lot 3): a Buy/Sell line is missing a readable settlement amount/currency on its own row"
   },
+  "importRejectCryptoAmbiguousTimestampGroup": "Several distinct operations share the exact same timestamp — could not tell them apart, look for them in your statement and enter them manually",
+  "@importRejectCryptoAmbiguousTimestampGroup": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 4): a same-timestamp group (Binance) did not reduce to exactly one paid leg, one received leg and at most one fee leg — abandoned rather than guessed"
+  },
+  "importRejectSmallAssetsExchangeUnpaired": "Could not pair this dust conversion with its counterpart via the statement's Remark column — enter it manually",
+  "@importRejectSmallAssetsExchangeUnpaired": {
+    "description": "Reject reason label (crypto ledger import, B16 lot 4): a Small Assets Exchange BNB leg had no usable 1-1 Remark match within its timestamp bucket"
+  },
 
   "importStep4Heading": "Resolve new assets",
   "@importStep4Heading": {
@@ -2680,6 +2688,19 @@
     "description": "Info card shown before the preview when the Coinbase profile is selected (B16 lot 3, doc 20 §5.3) — sets expectations about the missing completeness oracle, date handling, reward aggregation, currency conversion and the English-only Convert matching before the user picks a file"
   },
 
+  "importProfileBinanceLabel": "Binance",
+  "@importProfileBinanceLabel": {
+    "description": "Segmented button label for the Binance broker profile (B16 lot 4) — skips the manual column-mapping step, like Bourse Direct, Kraken and Coinbase"
+  },
+  "importPickFileHintBinance": "Select the CSV \"Transaction History\" export from your Binance account.",
+  "@importPickFileHintBinance": {
+    "description": "Hint text on the file-pick step when the Binance profile is selected"
+  },
+  "importBinanceInfoCardBody": "Binance's \"Transaction History\" statement, CSV format. This is the most degraded of the three statements: it has no operation reference and no balance oracle (duplicate detection relies on a content hash and an occurrence count), the file never gives a value in euros or dollars (every exchange is priced from historical market data), and same-second operations can occasionally be ambiguous. Your rewards will be grouped by month.",
+  "@importBinanceInfoCardBody": {
+    "description": "Info card shown before the preview when the Binance profile is selected (B16 lot 4, doc 20 §5.4.4) — must set expectations that this is structurally the most degraded profile (no operation reference, no balance oracle, hash-based dedup, timestamp ambiguities) before the user picks a file"
+  },
+
   "importCryptoAccountKindWarningTitle": "Account type",
   "@importCryptoAccountKindWarningTitle": {
     "description": "Dialog title for the crypto-account-kind guard (B16 lot 1)"
@@ -2744,6 +2765,15 @@
   "importUnvaluedDepositLine": "Row(s) {lines}: received {receivedQuantity} {receivedCode}",
   "@importUnvaluedDepositLine": {
     "description": "One line per unvalued in-kind deposit (no sold side, the asset comes from outside the platform) awaiting valuation",
+    "placeholders": {
+      "lines": { "type": "String" },
+      "receivedQuantity": { "type": "String" },
+      "receivedCode": { "type": "String" }
+    }
+  },
+  "importUnvaluedFeeLine": "Row(s) {lines}: fee of {receivedQuantity} {receivedCode}",
+  "@importUnvaluedFeeLine": {
+    "description": "One line per unvalued third-asset fee (B16 lot 4, Binance §5.4.4-bis) awaiting valuation — a CONSUMPTION of the fee asset, never worded as 'received' (which would reverse the economic direction)",
     "placeholders": {
       "lines": { "type": "String" },
       "receivedQuantity": { "type": "String" },

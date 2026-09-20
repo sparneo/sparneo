@@ -68,15 +68,16 @@ import 'package:portfolio_tracker/widgets/common/responsive_body.dart';
 enum _ImportStep { pickFile, configureProfile, preview, resolveAssets, done }
 
 /// Choix de profil courtier proposé à l'étape 1 (segment, pas une étape à part
-/// entière) : « Bourse Direct », « Kraken » et « Coinbase » sautent l'étape 2
-/// (mapping manuel — le profil est déjà entièrement pré-rempli, cf.
+/// entière) : « Bourse Direct », « Kraken », « Coinbase » et « Binance » sautent
+/// l'étape 2 (mapping manuel — le profil est déjà entièrement pré-rempli, cf.
 /// [BrokerProfile.bourseDirect]/[BrokerProfile.kraken]/
-/// [BrokerProfile.coinbase]) et vont directement à la prévisualisation ; «
-/// Générique / manuel » conserve le parcours historique. Kraken (chantier B16,
-/// lot 1) et Coinbase (lot 3) sont des profils CRYPTO (`profile.crypto !=
-/// null`) : grand livre de jambes/journal d'opérations crypto, pas le parcours
-/// titres générique — cf. la conception interne
-enum _ImportProfileChoice { genericManual, bourseDirect, kraken, coinbase }
+/// [BrokerProfile.coinbase]/[BrokerProfile.binance]) et vont directement à la
+/// prévisualisation ; « Générique / manuel » conserve le parcours historique.
+/// Kraken (chantier B16, lot 1), Coinbase (lot 3) et Binance (lot 4) sont des
+/// profils CRYPTO (`profile.crypto != null`) : grand livre de jambes/journal
+/// d'opérations crypto, pas le parcours titres générique — cf. la conception
+/// interne
+enum _ImportProfileChoice { genericManual, bourseDirect, kraken, coinbase, binance }
 
 class StatementImportPage extends StatefulWidget {
   /// Contrôleur DÉJÀ initialisé du compte ouvrant l'assistant (celui
@@ -388,15 +389,15 @@ class _StatementImportPageState extends State<StatementImportPage> {
   }
 
   /// `true` pour tout profil CRYPTO (chantier B16 : Kraken lot 1, Coinbase
-  /// lot 3 — Binance, lot 4, s'y ajoutera) : factorisé plutôt qu'une
-  /// comparaison ponctuelle à [_ImportProfileChoice.kraken] (revue
-  /// adversariale du lot 3), pour qu'un futur profil crypto n'ait pas à
-  /// redécouvrir un par un chaque site qui en dépend (la garde de nature de
-  /// compte ci-dessous, aujourd'hui la seule, mais pas nécessairement la
-  /// dernière).
+  /// lot 3, Binance lot 4) : factorisé plutôt qu'une comparaison ponctuelle
+  /// à [_ImportProfileChoice.kraken] (revue adversariale du lot 3), pour
+  /// qu'un futur profil crypto n'ait pas à redécouvrir un par un chaque site
+  /// qui en dépend (la garde de nature de compte ci-dessous, aujourd'hui la
+  /// seule, mais pas nécessairement la dernière).
   bool get _isCryptoProfileChoice =>
       _profileChoice == _ImportProfileChoice.kraken ||
-      _profileChoice == _ImportProfileChoice.coinbase;
+      _profileChoice == _ImportProfileChoice.coinbase ||
+      _profileChoice == _ImportProfileChoice.binance;
 
   /// Garde de nature de compte (chantier B16, conception interne) : un profil
   /// CRYPTO choisi sur un compte dont la nature n'est PAS [AccountKind.crypto]
@@ -512,6 +513,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
       // Idem Kraken : profil Coinbase entièrement déclaratif (chantier B16 lot 3,
       // conception interne), aucun mapping manuel de colonnes.
       await _runPreviewWithProfile(BrokerProfile.coinbase());
+      return;
+    }
+    if (_profileChoice == _ImportProfileChoice.binance) {
+      // Idem Kraken/Coinbase : profil Binance entièrement déclaratif (chantier B16
+      // lot 4, conception interne), aucun mapping manuel de colonnes.
+      await _runPreviewWithProfile(BrokerProfile.binance());
       return;
     }
 
@@ -1539,6 +1546,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
               value: _ImportProfileChoice.coinbase,
               label: Text(l10n.importProfileCoinbaseLabel),
             ),
+            ButtonSegment(
+              value: _ImportProfileChoice.binance,
+              label: Text(l10n.importProfileBinanceLabel),
+            ),
           ],
           selected: {_profileChoice},
           onSelectionChanged: _loadingPreview
@@ -1562,6 +1573,15 @@ class _StatementImportPageState extends State<StatementImportPage> {
         if (_profileChoice == _ImportProfileChoice.coinbase) ...[
           const SizedBox(height: 12),
           _buildCoinbaseInfoCard(l10n),
+        ],
+        // Carte d'information Binance (chantier B16 lot 4, conception interne) : même
+        // patron que Kraken/Coinbase ci-dessus, mais annonce que c'est le profil le
+        // PLUS DÉGRADÉ des trois — structurel, à dire AVANT le choix du fichier, pas
+        // après l'import (absence d'oracle, déduplication par hachage de contenu,
+        // ambiguïtés d'horodatage).
+        if (_profileChoice == _ImportProfileChoice.binance) ...[
+          const SizedBox(height: 12),
+          _buildBinanceInfoCard(l10n),
         ],
         const SizedBox(height: 24),
         if (_previewError != null) ...[
@@ -1590,6 +1610,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importPickFileHintKraken;
       case _ImportProfileChoice.coinbase:
         return l10n.importPickFileHintCoinbase;
+      case _ImportProfileChoice.binance:
+        return l10n.importPickFileHintBinance;
       case _ImportProfileChoice.genericManual:
         return l10n.importPickFileHint;
     }
@@ -1654,6 +1676,40 @@ class _StatementImportPageState extends State<StatementImportPage> {
             Expanded(
               child: Text(
                 l10n.importCoinbaseInfoCardBody,
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Carte d'information Binance (chantier B16 lot 4, conception interne) : même
+  /// patron que [_buildKrakenInfoCard]/[_buildCoinbaseInfoCard], mais avertit que
+  /// c'est le profil le PLUS DÉGRADÉ des trois — c'est STRUCTUREL (fichier muet
+  /// côté valorisation, aucune référence d'opération, aucun oracle de solde), à
+  /// dire dès le choix du profil, pas après l'import.
+  Widget _buildBinanceInfoCard(AppLocalizations l10n) {
+    final theme = Theme.of(context);
+    return Card(
+      margin: EdgeInsets.zero,
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.info_outline,
+              size: 18,
+              color: theme.colorScheme.onSecondaryContainer,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                l10n.importBinanceInfoCardBody,
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
               ),
@@ -2367,10 +2423,16 @@ class _StatementImportPageState extends State<StatementImportPage> {
     final lines = u.sourceLines.join(', ');
     final codePaid = u.codePaid;
     final quantityPaid = u.quantityPaid;
-    final line = (codePaid == null || quantityPaid == null)
-        ? l10n.importUnvaluedDepositLine(lines, u.quantityReceived, u.codeReceived)
-        : l10n.importUnvaluedExchangeLine(
-            lines, quantityPaid, codePaid, u.quantityReceived, u.codeReceived);
+    // Frais en actif TIERS (Binance, §5.4.4-bis) : forme dégénérée à une
+    // seule jambe comme un dépôt en nature, mais c'est une CONSOMMATION de
+    // l'actif — jamais le libellé « reçu » d'un dépôt, qui inverserait le
+    // sens économique (l'actif SORT au marché, il n'entre pas).
+    final line = u.kind == 'feeInKind'
+        ? l10n.importUnvaluedFeeLine(lines, u.quantityReceived, u.codeReceived)
+        : (codePaid == null || quantityPaid == null)
+            ? l10n.importUnvaluedDepositLine(lines, u.quantityReceived, u.codeReceived)
+            : l10n.importUnvaluedExchangeLine(
+                lines, quantityPaid, codePaid, u.quantityReceived, u.codeReceived);
     final reasonLabel = _unvaluedReasonLabel(l10n, u);
     final key = u.importKey;
     final controller = _manualValuationControllers.putIfAbsent(
@@ -4000,6 +4062,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
         return l10n.importRejectConvertAmbiguousMatch;
       case 'cryptoFiatTradeUnreadableAmount':
         return l10n.importRejectCryptoFiatTradeUnreadableAmount;
+      case 'cryptoAmbiguousTimestampGroup':
+        return l10n.importRejectCryptoAmbiguousTimestampGroup;
+      case 'smallAssetsExchangeUnpaired':
+        return l10n.importRejectSmallAssetsExchangeUnpaired;
       default:
         return l10n.importRejectGeneric;
     }
