@@ -531,7 +531,7 @@
 
   "importProfileBinanceLabel": "Binance",
   "importPickFileHintBinance": "Sélectionnez l'export CSV « Transaction History » de votre compte Binance.",
-  "importBinanceInfoCardBody": "Relevé « Transaction History » de Binance, format CSV. C'est le plus dégradé des trois relevés : il n'a aucune référence d'opération ni oracle de solde (la détection des doublons repose sur un hachage de contenu et un compteur d'occurrence), le fichier ne donne jamais de valeur en euros ou en dollars (chaque échange est valorisé d'après les cours historiques) et des opérations à la même seconde peuvent occasionnellement être ambiguës. Vos récompenses seront regroupées par mois.",
+  "importBinanceInfoCardBody": "Relevé « Transaction History » de Binance, format CSV. Ce relevé ne donne jamais de valeur en euros ou en dollars : chaque échange est valorisé d'après les cours historiques du jour, et reste modifiable à la main. Vos récompenses seront regroupées par mois. Des opérations enregistrées à la même seconde peuvent occasionnellement être ambiguës : elles seront alors écartées avec un motif, jamais devinées.",
 
   "importCryptoAccountKindWarningTitle": "Nature du compte",
   "importCryptoAccountKindWarningMessage": "Ce relevé décrit un compte de crypto-monnaies ; le compte ouvert est un {kind}. Continuer ?",

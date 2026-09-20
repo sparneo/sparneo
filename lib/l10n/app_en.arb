@@ -2696,7 +2696,7 @@
   "@importPickFileHintBinance": {
     "description": "Hint text on the file-pick step when the Binance profile is selected"
   },
-  "importBinanceInfoCardBody": "Binance's \"Transaction History\" statement, CSV format. This is the most degraded of the three statements: it has no operation reference and no balance oracle (duplicate detection relies on a content hash and an occurrence count), the file never gives a value in euros or dollars (every exchange is priced from historical market data), and same-second operations can occasionally be ambiguous. Your rewards will be grouped by month.",
+  "importBinanceInfoCardBody": "Binance \"Transaction History\" statement, CSV format. This statement never provides euro or dollar values: each exchange is valued from the historical prices of its day, and can still be edited by hand. Your rewards will be grouped by month. Operations recorded within the same second can occasionally be ambiguous: they will be set aside with a stated reason, never guessed.",
   "@importBinanceInfoCardBody": {
     "description": "Info card shown before the preview when the Binance profile is selected (B16 lot 4, doc 20 §5.4.4) — must set expectations that this is structurally the most degraded profile (no operation reference, no balance oracle, hash-based dedup, timestamp ambiguities) before the user picks a file"
   },
