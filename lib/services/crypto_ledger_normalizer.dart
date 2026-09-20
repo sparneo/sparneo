@@ -620,7 +620,8 @@ class CryptoLedgerNormalizer {
           break;
 
         case CryptoLedgerAction.assetMigration:
-          _processMigrationGroup(activeLegs, reject);
+          _processMigrationGroup(activeLegs, movements, unvaluedExchanges,
+              rewardBuckets, crypto, reject);
           break;
 
         case CryptoLedgerAction.depositIn:
@@ -1907,8 +1908,124 @@ class CryptoLedgerNormalizer {
     ));
   }
 
+  /// Traite un groupe `assetMigration` (Token Swap / redénomination). DEUX
+  /// issues, selon que la migration est neutralisée EN AMONT ou pas :
+  ///
+  ///  1. NEUTRALISÉE PAR ALIAS (`CryptoLedgerSpec.identityAliases`, ex.
+  ///     Kraken ETH2→ETH/MATIC→POL) : les deux jambes partagent alors DÉJÀ
+  ///     la même identité (alias appliqué en [2bis], AVANT le groupage) —
+  ///     leur somme nette à zéro. Rien au journal ; la base de coût reste
+  ///     attachée à la position SANS AUCUN mouvement émis ici (design
+  ///     d'origine, correct quand le relevé source ne distingue pas
+  ///     lui-même l'actif avant/après la migration).
+  ///
+  ///  2. MIGRATION HÉTÉROGÈNE SANS ALIAS, SOUS OPT-IN (fix drive auteur
+  ///     CORRECTIF — cf. `BrokerProfile.binance()` : Binance,
+  ///     contrairement à Kraken, DISTINGUE l'ancien et le nouveau code par
+  ///     ses propres lignes, un alias global y fusionnerait à tort un actif
+  ///     RÉ-ÉMIS plus tard sous le même code, ex. le nouveau LUNA Terra 2.0
+  ///     réapparu via `Airdrop Assets` APRÈS le swap LUNA→LUNC) : SI ET
+  ///     SEULEMENT SI le profil déclare
+  ///     [CryptoLedgerSpec.migrationRenamesInPlace] (voir sa doc pour le
+  ///     POURQUOI de cet opt-in — la seule forme structurelle ci-dessous est
+  ///     atteignable par un chemin qui n'a rien d'une redénomination), et si
+  ///     le groupe réduit à EXACTEMENT deux actifs de base distincts, l'un
+  ///     strictement sortant, l'autre strictement entrant, de magnitude
+  ///     EXACTEMENT ÉGALE (un swap 1:1 réel, jamais une quantité approchée
+  ///     ni une somme partielle devinée), la position CONTINUE sous la
+  ///     nouvelle identité : ce qui a été ÉMIS PLUS TÔT DANS LE MÊME IMPORT
+  ///     (donc chronologiquement ANTÉRIEUR à CE groupe — garanti par le tri
+  ///     chronologique global appliqué à `legs` en tête de pipeline, cf. doc
+  ///     de tête de fichier + réordonnancement ~ligne 425) portant l'ANCIEN
+  ///     code est RENOMMÉ sous le NOUVEAU, in-place — la base de coût suit
+  ///     tel quel (aucun recalcul, aucune valorisation au marché,
+  ///     contrairement à un `exchangeLeg` classique qui réaliserait une
+  ///     plus-value). Rien n'est ajouté au journal POUR la ligne de
+  ///     migration elle-même, exactement comme le cas 1. Le renommage
+  ///     touche TROIS structures, chacune accumulée AU FUR ET À MESURE de la
+  ///     même boucle chronologique (même garantie que ci-dessus) :
+  ///      - [movements] — les mouvements déjà émis (buy/sell/reward…) ;
+  ///      - [unvaluedExchanges] — les échanges EN ATTENTE de valorisation
+  ///        (§5.1.7, ex. une jambe fiat ÉTRANGÈRE en cascade) déjà ajoutés sous l'ancien
+  ///        code ; [codePaidIsFiat]/[codeReceivedIsFiat] EXCLUS du renommage (une jambe
+  ///        fiat n'est jamais l'actif migré). Contre-mesure : sur le spécimen, la
+  ///        quasi-totalité de l'ancien UST transitait par un `Binance Convert` BUSD→UST
+  ///        resté EN ATTENTE (jambe fiat étrangère à EUR) — sans ce renommage, cette
+  ///        entrée restait orpheline sous `UST` (un ticker qui ne cote même plus chez
+  ///        Yahoo) au lieu de `USTC` ;
+  ///      - `rewardBuckets` — les récompenses déjà accumulées mais pas
+  ///        encore flushées (agrégées mensuellement, cf. `addReward`) : sur
+  ///        le même spécimen, des `Staking Rewards` antérieures au swap
+  ///        laissaient sinon un résidu orphelin sous l'ancien code une fois
+  ///        flushées en fin de pipeline. Fusionné (sommé) dans le bucket
+  ///        cible du même mois s'il existe déjà (ne peut se produire qu'avec
+  ///        de la récompense sous les DEUX codes le même mois, jamais
+  ///        mesuré).
+  ///
+  ///     LIMITES ASSUMÉES (documentées, pas résolues) :
+  ///      - le bilan Earn (`internalTransferTally`, tally AGRÉGÉ sans
+  ///        horodatage par entrée) n'est PAS renommé — contrairement aux
+  ///        trois structures ci-dessus, rien ne garantit qu'une tally déjà
+  ///        accumulée sous l'ancien code ne reçoive PAS aussi une
+  ///        contribution POSTÉRIEURE à la migration (ex. un futur actif
+  ///        ré-émis sous le même code, comme le nouveau LUNA) : la renommer
+  ///        serait DEVINER une partition temporelle que l'agrégat ne porte
+  ///        pas. Le résidu Earn reste affiché sous son code D'ORIGINE,
+  ///        informatif, jamais journalisé — aucun effet sur la position
+  ///        réelle ;
+  ///      - IMPORT SCINDÉ EN DEUX FICHIERS (ex. un export par plage de
+  ///        dates) : le renommage ne porte que sur CE MÊME import (les trois
+  ///        structures ci-dessus sont RECONSTRUITES à chaque appel, rien ne
+  ///        persiste entre deux imports) — une position DÉJÀ CONFIRMÉE en
+  ///        base lors d'un import ANTÉRIEUR (avant le swap) n'est PAS
+  ///        renommée par un import ULTÉRIEUR qui contient le swap seul : le
+  ///        bug corrigé ici peut se RÉINTRODUIRE par cette voie si l'auteur
+  ///        importe en plusieurs morceaux plutôt qu'en un seul fichier
+  ///        continu ;
+  ///      - REDÉNOMINATION À RATIO (ex. un reverse split 10:1, jamais mesuré
+  ///        sur aucun spécimen) : la magnitude ne matche plus exactement →
+  ///        REJET visible (`cryptoMigrationNotBalanced`, cas 3 ci-dessous),
+  ///        jamais un renommage à tort — mais la position sous l'ancien code
+  ///        reste alors affichée SANS AUCUN signal de péremption au-delà du
+  ///        rejet lui-même (aucune alerte dédiée « cet actif a changé de
+  ///        ratio ») ;
+  ///      - SWAP EN TOUTE PREMIÈRE LIGNE du fichier (aucun mouvement
+  ///        antérieur sous l'ancien code dans CET import) : la boucle de
+  ///        renommage ne trouve rien à renommer, IDENTIQUE au comportement
+  ///        du cas 1 (neutralisé par alias) — aucune position n'est créée
+  ///        pour autant, comportement voulu (rien à faire suivre) ;
+  ///      - GEL VOLONTAIRE de [UnvaluedExchange.importKey] sur sa valeur
+  ///        D'ORIGINE (jamais recalculée après renommage, cf. la boucle
+  ///        ci-dessus qui ne touche QUE [codePaid]/[codeReceived]) : ce
+  ///        choix rend le mécanisme IMMUN à une CHAÎNE de swaps successifs
+  ///        du même actif (A→B puis B→C — chaque renommage ne cherche que
+  ///        les entrées au code ATTENDU, la clé stable évite toute collision
+  ///        entre deux renommages successifs de la MÊME entrée). Sans cette
+  ///        doc, un futur relecteur pourrait vouloir « aligner » l'importKey
+  ///        sur le nouveau code par cohérence apparente — ce serait CASSER
+  ///        cette stabilité, ne jamais le faire.
+  ///
+  ///     ASYMÉTRIE assumée entre [movements] et [unvaluedExchanges] : la clé
+  ///     de dédup d'une entrée [unvaluedExchanges] EST DÉRIVÉE (côté
+  ///     [_processExchangeGroup]/§5.1.7) APRÈS que le CODE de l'actif a été
+  ///     fixé — un renommage ultérieur change [codePaid]/[codeReceived] mais
+  ///     PAS la clé elle-même (cf. le gel volontaire ci-dessus, correct pour
+  ///     LA MÊME entrée). Une SECONDE redénomination du MÊME actif touchant
+  ///     une entrée [unvaluedExchanges] DÉJÀ renommée une première fois
+  ///     déplacerait donc son code SANS jamais recalculer sa clé — situation
+  ///     jamais mesurée, documentée ici plutôt que corrigée (une clé stable
+  ///     reste préférable à une clé recalculée qui casserait la
+  ///     déduplication d'un ré-import).
+  ///
+  ///  3. Sinon (opt-in absent, magnitudes différentes, plus de deux actifs,
+  ///     ambiguïté…) : REJET MOTIVÉ `cryptoMigrationNotBalanced` de la
+  ///     TOTALITÉ des lignes du groupe — jamais une conversion devinée.
   static void _processMigrationGroup(
     List<_Leg> legs,
+    List<ImportedMovement> movements,
+    List<UnvaluedExchange> unvaluedExchanges,
+    Map<String, _RewardBucket> rewardBuckets,
+    CryptoLedgerSpec crypto,
     void Function(_Leg, String) reject,
   ) {
     final byBase = <String, Decimal>{};
@@ -1917,6 +2034,119 @@ class CryptoLedgerNormalizer {
     }
     final balanced = byBase.values.every((v) => v == Decimal.zero);
     if (balanced) return; // rien au journal — neutralisée par l'alias.
+
+    // Opt-in DÉCLARATIF (revue adversariale, CORRECTIF) — voir la doc de
+    // [CryptoLedgerSpec.migrationRenamesInPlace] : SANS lui, la seule forme
+    // structurelle (deux codes, magnitudes égales) reste un rejet motivé,
+    // même pour un profil qui ne l'a jamais rencontrée en pratique (ex.
+    // Kraken `earn/delistingconversion` au pair) — jamais un renommage
+    // silencieux deviné sur la forme des données seule.
+    if (crypto.migrationRenamesInPlace && byBase.length == 2) {
+      final negatives = byBase.entries.where((e) => e.value.sign < 0).toList();
+      final positives = byBase.entries.where((e) => e.value.sign > 0).toList();
+      if (negatives.length == 1 &&
+          positives.length == 1 &&
+          negatives.single.value.abs() == positives.single.value.abs()) {
+        final oldAsset = negatives.single.key;
+        final newAsset = positives.single.key;
+        for (var i = 0; i < movements.length; i++) {
+          final m = movements[i];
+          if (!m.isRejected && m.ledgerCode == oldAsset) {
+            movements[i] = ImportedMovement.candidate(
+              sourceRow: m.sourceRow,
+              sourceRowIndex: m.sourceRowIndex,
+              transaction: m.transaction!,
+              isin: m.isin,
+              label: m.label,
+              ledgerCode: newAsset,
+              needsAssetResolution: m.needsAssetResolution,
+              resolvedSymbol: m.resolvedSymbol,
+              importKey: m.importKey!,
+            );
+          }
+        }
+        // Échanges EN ATTENTE de valorisation (`unvaluedExchanges`, ex. une
+        // conversion crypto↔crypto ou une jambe fiat ÉTRANGÈRE en cascade,
+        // §5.1.7) déjà ajoutés sous l'ancien code — même renommage. Contre-
+        // mesure : sur le spécimen, la quasi-totalité de l'ancien
+        // UST transitait par un `Binance Convert` BUSD→UST (jambe fiat
+        // ÉTRANGÈRE à EUR, cascade de valorisation — jamais le chemin cash
+        // direct) : SANS ce renommage, cette entrée restait orpheline sous
+        // `UST` (un ticker qui ne cote même plus chez Yahoo) au lieu de
+        // `USTC`. [codePaidIsFiat]/[codeReceivedIsFiat] EXCLUS du renommage
+        // (une jambe fiat ne peut jamais être l'actif migré).
+        for (var i = 0; i < unvaluedExchanges.length; i++) {
+          final u = unvaluedExchanges[i];
+          final renamePaid = !u.codePaidIsFiat && u.codePaid == oldAsset;
+          final renameReceived =
+              !u.codeReceivedIsFiat && u.codeReceived == oldAsset;
+          if (renamePaid || renameReceived) {
+            unvaluedExchanges[i] = UnvaluedExchange(
+              kind: u.kind,
+              date: u.date,
+              codePaid: renamePaid ? newAsset : u.codePaid,
+              quantityPaid: u.quantityPaid,
+              codeReceived: renameReceived ? newAsset : u.codeReceived,
+              quantityReceived: u.quantityReceived,
+              usdPaid: u.usdPaid,
+              usdReceived: u.usdReceived,
+              sourceLines: u.sourceLines,
+              importKey: u.importKey,
+              seq: u.seq,
+              manualReason: u.manualReason,
+              valuationSpreadPct: u.valuationSpreadPct,
+              suggestedPaidEur: u.suggestedPaidEur,
+              suggestedReceivedEur: u.suggestedReceivedEur,
+              codePaidIsFiat: u.codePaidIsFiat,
+              codeReceivedIsFiat: u.codeReceivedIsFiat,
+              sourceKindLabel: u.sourceKindLabel,
+              feeForGroup: u.feeForGroup,
+            );
+          }
+        }
+        // Récompenses déjà accumulées (pas encore flushées) sous l'ancien
+        // code — même renommage, même justification chronologique.
+        final oldPrefix = '$oldAsset|';
+        final staleKeys =
+            rewardBuckets.keys.where((k) => k.startsWith(oldPrefix)).toList();
+        for (final oldKey in staleKeys) {
+          final old = rewardBuckets.remove(oldKey)!;
+          final newKey = '$newAsset|${old.month}';
+          final existing = rewardBuckets[newKey];
+          if (existing == null) {
+            rewardBuckets[newKey] = _RewardBucket(newAsset, old.month)
+              ..netSum = old.netSum
+              ..feeInKind = old.feeInKind
+              ..rowCount = old.rowCount
+              ..firstDate = old.firstDate
+              ..lastDate = old.lastDate
+              ..firstSeq = old.firstSeq
+              ..lastSeq = old.lastSeq
+              ..valuationUsdSum = old.valuationUsdSum;
+          } else {
+            existing.netSum += old.netSum;
+            existing.feeInKind += old.feeInKind;
+            existing.rowCount += old.rowCount;
+            if (old.firstSeq != null &&
+                (existing.firstSeq == null || old.firstSeq! < existing.firstSeq!)) {
+              existing.firstSeq = old.firstSeq;
+              existing.firstDate = old.firstDate;
+            }
+            if (old.lastSeq != null &&
+                (existing.lastSeq == null || old.lastSeq! > existing.lastSeq!)) {
+              existing.lastSeq = old.lastSeq;
+              existing.lastDate = old.lastDate;
+            }
+            existing.valuationUsdSum =
+                (existing.valuationUsdSum == null || old.valuationUsdSum == null)
+                    ? null
+                    : existing.valuationUsdSum! + old.valuationUsdSum!;
+          }
+        }
+        return;
+      }
+    }
+
     for (final leg in legs) {
       reject(leg, 'cryptoMigrationNotBalanced');
     }

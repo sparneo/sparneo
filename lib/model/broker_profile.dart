@@ -723,18 +723,51 @@ class BrokerProfile {
         valuationCurrency: 'USD',
         rewards: RewardAggregation.monthly,
         fiatAssets: const {'EUR'},
-        // Alias d'IDENTITÉ (Token Swap, §5.4.1) : les deux seules migrations
-        // mesurées sur le spécimen (LUNA/LUNC, UST/USTC) — mêmes séquelles
-        // Terra que côté Kraken, PAS de MATIC→POL ici (aucun Token Swap
-        // MATIC mesuré sur ce fichier).
-        identityAliases: const {
-          'UST': 'USTC',
-          'LUNA': 'LUNC',
+        // PAS d'alias d'IDENTITÉ ici (fix drive auteur, CORRECTIF — un alias
+        // LUNA→LUNC/UST→USTC a été proposé puis RETIRÉ) : contrairement à Kraken (dont
+        // l'export NE DISTINGUE PAS l'actif avant/après une séquelle Terra — un alias
+        // global y est correct, NE PAS y toucher), le relevé Binance DISTINGUE déjà
+        // LUNA/LUNC et UST/USTC par ses propres lignes `Token Swap - Redenomination/
+        // Rebranding` (le fichier opère lui-même le renommage). Un alias GLOBAL ici
+        // aurait fusionné le NOUVEAU LUNA (Terra 2.0, ré-émis après le swap via
+        // `Airdrop Assets` — un actif RÉEL et DISTINCT, sans rapport avec l'ancienne
+        // chaîne) dans LUNC : identité fausse, cotation fausse (~0,00006 € au lieu de
+        // ~0,04 €), PRU pollué par les achats de l'ANCIEN LUNA. La paire de migration
+        // hétérogène (codes distincts, magnitudes égales) est désormais traitée par
+        // `CryptoLedgerNormalizer._processMigrationGroup` : voir sa doc pour le
+        // mécanisme (renommage RÉTROACTIF des mouvements déjà émis sous l'ancien code,
+        // jamais des mouvements futurs).
+        //
+        // Opt-in DÉCLARATIF (revue adversariale, CORRECTIF) : la branche de
+        // renommage n'est atteignable QUE si ce profil le déclare (voir la
+        // doc de [CryptoLedgerSpec.migrationRenamesInPlace]) — ce relevé
+        // distingue LUI-MÊME l'ancien/nouveau code par ses propres lignes de
+        // Token Swap, jamais un alias global qui masquerait une migration
+        // homonyme sans rapport (ex. Kraken `earn/delistingconversion` au
+        // pair, cf. la doc du champ).
+        migrationRenamesInPlace: true,
+        //
+        // Alias de COTATION (N12, même discipline que Kraken — PROUVÉ, pas
+        // deviné) : vérifié le 20/09/2026 via l'API chart Yahoo.
+        //  - `LUNA-USD`, `LUNA1-USD`, `LUNA2-USD` : AUCUN des trois ne
+        //    résout (`404 Not Found`) — la note de conception interne (`LUNA1-USD`) est
+        //    donc OBSOLÈTE/erronée, PAS reprise ici.
+        //  - `LUNA20314-USD` (id CoinMarketCap suffixé, même schéma que
+        //    `POL28321-USD`/`STRK22691-USD` côté Kraken) : `shortName`/
+        //    `longName` = « Terra USD », `firstTradeDate` = 2022-05-29 (jour
+        //    du relancement Terra 2.0 après le dépeg), prix ~0,047 USD
+        //    (~0,04 €, cohérent avec l'écran de l'auteur) — c'est le NOUVEAU
+        //    LUNA (post-swap, ré-émis par `Airdrop Assets`), seul actif
+        //    Binance encore ledgerCode `LUNA` après le renommage ci-dessus
+        //    (les jambes PRÉ-swap sont renommées `LUNC` avant résolution de
+        //    cotation, donc jamais concernées par cet alias).
+        //  - `LUNC-USD` et `USTC-USD` résolvent NATIVEMENT (bare, sans
+        //    alias) : « Terra Classic USD » (~0,00005 USD) et
+        //    « TerraClassicUSD USD » (~0,005 USD) respectivement — aucun
+        //    alias nécessaire pour ces deux identités.
+        quoteAliases: const {
+          'LUNA': 'LUNA20314-USD',
         },
-        // Aucun alias de COTATION figé pour ce lot : contrairement à Kraken
-        // (piège homonyme vérifié à la main le 18/09), aucune identité
-        // Binance nouvelle n'a été vérifiée contre Yahoo — un futur alias
-        // nécessaire doit être ajouté APRÈS vérification, jamais deviné.
         signFixedKinds: const {'Deposit': true, 'Withdraw': false},
         externalDepositKinds: const {'Deposit'},
         externalWithdrawalKinds: const {'Withdraw'},

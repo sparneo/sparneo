@@ -101,11 +101,22 @@ enum CryptoLedgerAction {
   /// signalé, jamais corrigé en silence.
   internalTransfer,
 
-  /// Migration d'actif (ex. `ETH2`→`ETH`, `MATIC`→`POL`) : neutralisée par
-  /// l'alias d'identité APPLIQUÉ AVANT le groupage
-  /// ([CryptoLedgerSpec.identityAliases]) — les deux jambes de la migration
-  /// se retrouvent alors sur la même identité et nettent exactement à 0.
-  /// Rien au journal ; la base de coût reste attachée à la position.
+  /// Migration d'actif (ex. `ETH2`→`ETH`, `MATIC`→`POL`). DEUX chemins,
+  /// traités par `CryptoLedgerNormalizer._processMigrationGroup` (voir sa
+  /// doc pour le détail, y compris les limites assumées) selon que le
+  /// relevé source distingue lui-même l'ancien/nouveau code :
+  ///  - alias d'identité APPLIQUÉ AVANT le groupage
+  ///    ([CryptoLedgerSpec.identityAliases], ex. Kraken) : les deux jambes
+  ///    se retrouvent alors sur la même identité et nettent exactement à 0
+  ///    — rien au journal, la base de coût reste attachée telle quelle ;
+  ///  - SANS alias, SI le profil déclare
+  ///    [CryptoLedgerSpec.migrationRenamesInPlace] (relevé qui distingue déjà les
+  ///    deux codes, ex. Binance — fix drive auteur : un swap 1:1 hétérogène propre
+  ///    (deux actifs distincts, magnitudes égales) renomme RÉTROACTIVEMENT ce qui a
+  ///    été émis PLUS TÔT DANS LE MÊME IMPORT sous l'ancien code — la base de coût
+  ///    suit sans jamais être recalculée. Toute autre forme (magnitudes différentes,
+  ///    plus de deux actifs, OU l'opt-in absent) reste un REJET MOTIVÉ
+  ///    `cryptoMigrationNotBalanced`.
   assetMigration,
 
   /// Achat fiat→crypto (chantier B16 lot 3, conception interne — Coinbase `Buy`) :
@@ -236,6 +247,31 @@ class CryptoLedgerSpec {
   /// d'identité sur le ticker de cotation peut CASSER la cotation (`MATIC-EUR`
   /// existe, `POL-EUR` non — conception interne).
   final Map<String, String> identityAliases;
+
+  /// Opt-in DÉCLARATIF (style [signFixedKinds]) : autorise `CryptoLedgerNormalizer.
+  /// _processMigrationGroup` à emprunter la branche « migration hétérogène
+  /// SANS alias » (renommage rétroactif — voir la doc de
+  /// [CryptoLedgerAction.assetMigration] et de `_processMigrationGroup`)
+  /// quand un groupe `assetMigration` réduit à deux codes distincts de
+  /// magnitude égale. `false` par défaut : SANS cet opt-in, la même forme
+  /// structurelle (deux codes, magnitudes égales) reste un REJET MOTIVÉ
+  /// `cryptoMigrationNotBalanced` — jamais un renommage silencieux.
+  ///
+  /// POURQUOI un opt-in et pas une détection automatique (revue
+  /// adversariale, CORRECTIF) : la seule forme structurelle est ATTEIGNABLE
+  /// par un chemin qui n'a RIEN d'une redénomination — ex. Kraken
+  /// `earn/delistingconversion` au pair (BUSD→USDT, un pattern réel du
+  /// format) satisferait la même garde (deux codes, magnitudes égales) et
+  /// deviendrait un renommage SILENCIEUX avec report de base de coût, là où
+  /// il partait avant en rejet `cryptoMigrationNotBalanced` VISIBLE — une
+  /// régression grave et silencieuse sur un profil existant. Seul
+  /// `BrokerProfile.binance()` pose `true` : l'intention « ce relevé
+  /// distingue LUI-MÊME l'ancien/nouveau code par ses propres lignes,
+  /// jamais un alias global » devient un fait déclaré au profil, jamais une
+  /// inférence sur la forme des données. Kraken reste à `false` (défaut) :
+  /// son export ne distingue pas les deux identités, la neutralisation par
+  /// [identityAliases] reste l'unique chemin.
+  final bool migrationRenamesInPlace;
 
   /// Alias de COTATION : associe une identité à un ticker de MARCHÉ
   /// (`Asset.symbol`, ex. `POL`→`POL28321-USD`). Table DISTINCTE de
@@ -432,6 +468,7 @@ class CryptoLedgerSpec {
     this.subKindColumn,
     this.stakedSuffixes = const {},
     this.identityAliases = const {},
+    this.migrationRenamesInPlace = false,
     this.quoteAliases = const {},
     this.assetClassColumn,
     this.fiatAssets = const {},

@@ -21,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:portfolio_tracker/model/broker_profile.dart';
 import 'package:portfolio_tracker/model/crypto_import_plan.dart';
+import 'package:portfolio_tracker/model/crypto_ledger_spec.dart';
 import 'package:portfolio_tracker/model/imported_movement.dart';
 import 'package:portfolio_tracker/services/statement_import_service.dart';
 
@@ -78,6 +79,45 @@ ImportedMovement _byLedgerCode(CryptoImportPlan plan, String code, {String? kind
         !m.isRejected &&
         m.ledgerCode == code &&
         (kind == null || m.transaction!.kind.name == kind));
+
+/// Clone COMPLET de [crypto] avec [CryptoLedgerSpec.migrationRenamesInPlace]
+/// forcé à `false` — sert UNIQUEMENT à prouver que la garde par opt-in de
+/// `_processMigrationGroup` reste active côté moteur PUR, indépendamment de ce
+/// que déclare `BrokerProfile.binance()` (revue adversariale, CORRECTIF : la
+/// même forme structurelle — deux codes, magnitudes égales — sans cet opt-in
+/// doit rester un rejet motivé, jamais un renommage silencieux).
+BrokerProfile _withoutMigrationOptIn(BrokerProfile profile) => profile.copyWith(
+      crypto: CryptoLedgerSpec(
+        grouping: profile.crypto!.grouping,
+        groupKeyColumn: profile.crypto!.groupKeyColumn,
+        groupingWindow: profile.crypto!.groupingWindow,
+        counterpartyPattern: profile.crypto!.counterpartyPattern,
+        notesColumn: profile.crypto!.notesColumn,
+        actions: profile.crypto!.actions,
+        subKindColumn: profile.crypto!.subKindColumn,
+        stakedSuffixes: profile.crypto!.stakedSuffixes,
+        identityAliases: profile.crypto!.identityAliases,
+        migrationRenamesInPlace: false,
+        quoteAliases: profile.crypto!.quoteAliases,
+        assetClassColumn: profile.crypto!.assetClassColumn,
+        fiatAssets: profile.crypto!.fiatAssets,
+        stableAssets: profile.crypto!.stableAssets,
+        walletColumn: profile.crypto!.walletColumn,
+        balanceColumn: profile.crypto!.balanceColumn,
+        requiredColumns: profile.crypto!.requiredColumns,
+        rewards: profile.crypto!.rewards,
+        valuationAmountColumn: profile.crypto!.valuationAmountColumn,
+        valuationCurrency: profile.crypto!.valuationCurrency,
+        feeLegKindLabels: profile.crypto!.feeLegKindLabels,
+        remarkPairedKindLabels: profile.crypto!.remarkPairedKindLabels,
+        maxLegValuationSpread: profile.crypto!.maxLegValuationSpread,
+        usdStableCodes: profile.crypto!.usdStableCodes,
+        signFixedKinds: profile.crypto!.signFixedKinds,
+        externalDepositKinds: profile.crypto!.externalDepositKinds,
+        externalWithdrawalKinds: profile.crypto!.externalWithdrawalKinds,
+        conditionalActionRedirects: profile.crypto!.conditionalActionRedirects,
+      ),
+    );
 
 void main() {
   final profile = BrokerProfile.binance();
@@ -543,28 +583,99 @@ void main() {
     });
   });
 
-  // ---------------------------------------------------------------------
-  // Token Swap (migration d'actif, neutralisée par alias d'identité).
+  // --------------------------------------------------------------------- Token
+  // Swap (migration d'actif) — SANS alias d'identité (fix drive auteur,
+  // CORRECTIF : Binance distingue déjà l'ancien/nouveau code, contrairement à
+  // Kraken — cf. doc `BrokerProfile.binance()`).
   // ---------------------------------------------------------------------
   group('Lot 4 Binance — Token Swap (migration)', () {
-    test('LUNA→LUNC (alias d\'identité réel du profil) : rien journalisé, net 0 après alias', () {
+    test(
+        'fix drive auteur (CORRECTIF) : achat LUNA PUIS Token '
+        'Swap hétérogène (LUNA→LUNC, magnitudes égales, codes distincts — '
+        'PLUS d\'alias) → le mouvement d\'achat déjà émis est RENOMMÉ, la '
+        'position devient LUNC, base de coût inchangée', () {
       final b = _BinanceLedgerBuilder();
-      b.leg(time: '2024-08-01 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+      b.leg(time: '2024-08-01 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-500');
+      b.leg(time: '2024-08-01 08:00:00', operation: 'Transaction Buy',
+          coin: 'LUNA', change: '100');
+      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
           coin: 'LUNA', change: '-100');
-      b.leg(time: '2024-08-01 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
           coin: 'LUNC', change: '100');
       final plan = _plan(b.toCsvBytes(), profile);
 
-      expect(plan.movements.any((m) => m.ledgerCode == 'LUNC'), isFalse);
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+      // Rien au journal POUR la ligne de migration elle-même (comme le cas
+      // neutralisé par alias) — seul le mouvement ANTÉRIEUR est renommé.
+      expect(plan.movements, hasLength(1));
+
+      final buy = _byLedgerCode(plan, 'LUNC', kind: 'buy');
+      expect(buy.transaction!.quantity, equals('100'));
+      expect(buy.transaction!.amount, equals('-500'));
       expect(plan.movements.any((m) => m.ledgerCode == 'LUNA'), isFalse);
-      expect(plan.movements.any((m) => m.rejectReason == 'cryptoMigrationNotBalanced'), isFalse);
+    });
+
+    test(
+        'fix drive auteur (CORRECTIF) : `Airdrop Assets` LUNA '
+        'POST-swap (nouveau LUNA Terra 2.0, ré-émis APRÈS le renommage '
+        'ci-dessus) reste une position LUNA SÉPARÉE — état final LUNC et '
+        'LUNA DISTINCTS, JAMAIS fusionnés', () {
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-01 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-500');
+      b.leg(time: '2024-08-01 08:00:00', operation: 'Transaction Buy',
+          coin: 'LUNA', change: '100');
+      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'LUNA', change: '-100');
+      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'LUNC', change: '100');
+      // Nouveau LUNA — SANS RAPPORT avec l'ancien, POSTÉRIEUR au swap : ne
+      // doit JAMAIS être concerné par le renommage rétroactif ci-dessus (qui
+      // ne touche que les mouvements DÉJÀ émis au moment du swap).
+      b.leg(time: '2024-09-05 08:00:00', operation: 'Airdrop Assets',
+          coin: 'LUNA', change: '12.5');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+
+      final codes =
+          plan.movements.map((m) => m.ledgerCode).toSet();
+      expect(codes, equals({'LUNC', 'LUNA'}));
+
+      final buy = _byLedgerCode(plan, 'LUNC', kind: 'buy');
+      expect(buy.transaction!.quantity, equals('100'));
+
+      final reward = plan.movements.singleWhere((m) => m.ledgerCode == 'LUNA');
+      expect(reward.transaction!.quantity, equals('12.5'));
+      expect(reward.transaction!.meta!['aggregatedRows'], equals(1));
+    });
+
+    test(
+        'UST→USTC (même mécanisme, magnitudes égales) → renommage, aucun '
+        'rejet', () {
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-03 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-50');
+      b.leg(time: '2024-08-03 08:00:00', operation: 'Transaction Buy',
+          coin: 'UST', change: '50');
+      b.leg(time: '2024-08-04 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'UST', change: '-50');
+      b.leg(time: '2024-08-04 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'USTC', change: '50');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+      expect(plan.movements.any((m) => m.ledgerCode == 'UST'), isFalse);
+      final buy = _byLedgerCode(plan, 'USTC', kind: 'buy');
+      expect(buy.transaction!.quantity, equals('50'));
     });
 
     test('Token Swap DÉSÉQUILIBRÉ (quantités différentes) → rejet motivé', () {
       final b = _BinanceLedgerBuilder();
-      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+      b.leg(time: '2024-08-05 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
           coin: 'UST', change: '-50');
-      b.leg(time: '2024-08-02 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+      b.leg(time: '2024-08-05 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
           coin: 'USTC', change: '40');
       final plan = _plan(b.toCsvBytes(), profile);
 
@@ -573,6 +684,127 @@ void main() {
         plan.movements.every((m) => m.rejectReason == 'cryptoMigrationNotBalanced'),
         isTrue,
       );
+    });
+
+    test(
+        'revue adversariale (CORRECTIF : SANS l\'opt-in '
+        '`migrationRenamesInPlace`, la MÊME forme structurelle (deux codes, '
+        'magnitudes égales) reste un rejet motivé cryptoMigrationNotBalanced '
+        '— jamais un renommage silencieux deviné sur la seule forme des '
+        'données', () {
+      final specWithoutOptIn = _withoutMigrationOptIn(profile);
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-06 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'AAA', change: '-10');
+      b.leg(time: '2024-08-06 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'BBB', change: '10');
+      final plan = _plan(b.toCsvBytes(), specWithoutOptIn);
+
+      expect(plan.movements, hasLength(2));
+      expect(
+        plan.movements.every((m) => m.rejectReason == 'cryptoMigrationNotBalanced'),
+        isTrue,
+      );
+    });
+
+    test(
+        'chaîne de swaps A→B→C : la position finit sous C, la clé de dédup '
+        'reste GELÉE sur celle attribuée à l\'émission d\'origine (jamais '
+        'recalculée à chaque maillon de la chaîne)', () {
+      // Référence : la MÊME émission SANS aucun swap, pour comparer la clé.
+      final baseline = _BinanceLedgerBuilder();
+      baseline.leg(time: '2024-08-10 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-500');
+      baseline.leg(time: '2024-08-10 08:00:00', operation: 'Transaction Buy',
+          coin: 'AAA', change: '100');
+      final baselineKey =
+          _byLedgerCode(_plan(baseline.toCsvBytes(), profile), 'AAA').importKey;
+
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-10 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-500');
+      b.leg(time: '2024-08-10 08:00:00', operation: 'Transaction Buy',
+          coin: 'AAA', change: '100');
+      b.leg(time: '2024-08-11 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'AAA', change: '-100');
+      b.leg(time: '2024-08-11 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'BBB', change: '100');
+      b.leg(time: '2024-08-12 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'BBB', change: '-100');
+      b.leg(time: '2024-08-12 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'CCC', change: '100');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+      expect(plan.movements, hasLength(1));
+      final m = plan.movements.single;
+      expect(m.ledgerCode, equals('CCC'));
+      expect(m.transaction!.quantity, equals('100'));
+      expect(m.transaction!.amount, equals('-500'));
+      expect(plan.movements.any((mv) => mv.ledgerCode == 'AAA' || mv.ledgerCode == 'BBB'),
+          isFalse);
+      // Clé GELÉE (M-gel, revue adversariale) : identique à ce qu'elle
+      // aurait été SANS aucun swap — jamais recalculée à chaque maillon.
+      expect(m.importKey, equals(baselineKey));
+    });
+
+    test(
+        'swap en TOUTE PREMIÈRE ligne (rien émis avant lui dans CET import '
+        'sous l\'ancien code) : ni plantage ni position créée, identique au '
+        'cas neutralisé par alias', () {
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-13 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'AAA', change: '-50');
+      b.leg(time: '2024-08-13 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'BBB', change: '50');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      expect(plan.movements, isEmpty);
+      expect(plan.unvaluedExchanges, isEmpty);
+    });
+
+    test(
+        'un feeInKind DÉJÀ EN ATTENTE sous l\'ancien code (frais tiers d\'un '
+        'trade antérieur) est renommé exactement comme les mouvements et '
+        'les échanges en attente', () {
+      final b = _BinanceLedgerBuilder();
+      b.leg(time: '2024-08-14 08:00:00', operation: 'Transaction Spend',
+          coin: 'EUR', change: '-500');
+      b.leg(time: '2024-08-14 08:00:00', operation: 'Transaction Buy',
+          coin: 'AAA', change: '10');
+      b.leg(time: '2024-08-14 08:00:00', operation: 'Transaction Fee',
+          coin: 'OLDX', change: '-0.01');
+      b.leg(time: '2024-08-15 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'OLDX', change: '-1');
+      b.leg(time: '2024-08-15 08:00:00', operation: 'Token Swap - Redenomination/Rebranding',
+          coin: 'NEWX', change: '1');
+      final plan = _plan(b.toCsvBytes(), profile);
+
+      expect(plan.movements.where((m) => m.isRejected), isEmpty);
+      final fee = plan.unvaluedExchanges.singleWhere((u) => u.kind == 'feeInKind');
+      expect(fee.codeReceived, equals('NEWX'));
+      expect(fee.codePaid, isNull);
+    });
+
+    test(
+        'quoteAliases du profil Binance : LUNA (nouveau, Terra 2.0) pointe '
+        'vers le ticker à id CoinMarketCap, jamais le bare `LUNA-USD` (fix '
+        'drive auteur', () {
+      final aliases = profile.crypto!.quoteAliases;
+      // `LUNA-USD`/`LUNA1-USD`/`LUNA2-USD` répondent TOUS 404 chez Yahoo — la note
+      // de conception interne (`LUNA1-USD`) est obsolète/erronée. Vérifié le
+      // 20/09/2026 via l'API chart Yahoo : `LUNA20314-USD` répond
+      // shortName/longName = « Terra USD », firstTradeDate = 2022-05-29
+      // (relancement Terra 2.0), prix de bon sens (~0,04 €) — c'est le NOUVEAU LUNA
+      // (post-swap, ré-émis par `Airdrop Assets`), seul actif encore ledgerCode
+      // `LUNA` après le renommage rétroactif de `_processMigrationGroup` (les
+      // jambes pré-swap deviennent `LUNC`, qui résout nativement sans alias).
+      expect(aliases['LUNA'], equals('LUNA20314-USD'));
+      // AUCUN alias LUNC/USTC : les deux résolvent nativement chez Yahoo
+      // (« Terra Classic USD » / « TerraClassicUSD USD »), vérifié le
+      // même jour — ne doit pas régresser vers un alias inutile.
+      expect(aliases.containsKey('LUNC'), isFalse);
+      expect(aliases.containsKey('USTC'), isFalse);
     });
   });
 
