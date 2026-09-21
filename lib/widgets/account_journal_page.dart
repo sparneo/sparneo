@@ -893,7 +893,19 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
     final qtyPrice = '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';
     final nature = _txNatureLabel(l10n, tx);
     final String subtitle;
-    if (tx.meta?['corporateAction'] is String) {
+    if (tx.meta?['corporateAction'] == 'stakingReward' && tx.quantity != null) {
+      // Récompense de staking (import crypto, individuelle OU agrégat
+      // mensuel — `meta['aggregatedRows']`) : `unitPrice` n'est JAMAIS posé
+      // sur ces lignes (`CryptoLedgerNormalizer._emitRewardIndividual` /
+      // l'agrégation mensuelle, coût 0 par construction), donc la branche
+      // générique ci-dessous ne montrait jamais la quantité — seule la
+      // nature apparaissait. Décision auteur explicite (symétrique du
+      // correctif de la fiche position, commit 1eb77b1) : LA QUANTITÉ DE
+      // CRYPTO REÇUE seule, jamais d'équivalent EUR (le coût comptable de
+      // la ligne est 0). Pour un agrégat, `tx.quantity` porte déjà le total
+      // du mois (`_RewardBucket.netSum`) — rien à recalculer ici.
+      subtitle = '$nature · ${tx.quantity}';
+    } else if (tx.meta?['corporateAction'] is String) {
       final meaningfulNumbers = hasQtyPrice &&
           (double.tryParse(tx.quantity!) ?? 0) != 0 &&
           (double.tryParse(tx.unitPrice!) ?? 0) != 0;

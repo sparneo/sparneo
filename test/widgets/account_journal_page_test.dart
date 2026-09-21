@@ -668,9 +668,10 @@ void main() {
 
   group('AccountJournalPage — libellé crypto (chantier B16, lot 1)', () {
     testWidgets(
-      'une récompense de staking affiche « Récompense de staking », pas le '
-      'libellé générique « Ajustement » ni « qté × prix » (coût nul, '
-      'unitPrice absent — patron conception interne)',
+      'une récompense de staking affiche « Récompense de staking · <qté> », '
+      'pas le libellé générique « Ajustement » ni « qté × prix » (coût nul, '
+      'unitPrice absent), et JAMAIS d\'équivalent EUR (décision auteur '
+      'explicite, symétrique de position_detail_page, commit 1eb77b1)',
       (tester) async {
         final tx = AssetTransaction(
           id: 'tx-reward',
@@ -686,11 +687,69 @@ void main() {
         await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
         await tester.pumpAndSettle();
 
-        expect(find.text('Récompense de staking'), findsOneWidget);
+        expect(find.text('Récompense de staking · 12.4'), findsOneWidget);
         expect(find.text('Ajustement'), findsNothing);
-        // Sous-titre : la nature l'emporte quand qté × prix n'informe pas
-        // (unitPrice absent ici) — pas de « × » affiché.
+        // Sous-titre : quantité brute (pas de troncature) — pas de « × »
+        // (pas de prix, ce n'est pas un « qté × prix ») ni de « € » (pas
+        // d'équivalent EUR sur une récompense).
         expect(find.textContaining('×'), findsNothing);
+        expect(find.textContaining('€'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'un agrégat mensuel de récompenses (meta[\'aggregatedRows\']) affiche '
+      'la quantité DU MOUVEMENT (déjà le total du mois) — rien à recalculer',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-reward-agg',
+          accountId: _accountId,
+          symbol: 'SOL-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '3.087654321',
+          currency: 'EUR',
+          date: DateTime(2024, 5, 1),
+          meta: const {
+            'corporateAction': 'stakingReward',
+            'aggregation': 'monthly',
+            'replaceable': true,
+            'aggregatedMonth': '2024-05',
+            'aggregatedRows': 27,
+            'aggregatedFrom': '2024-05-01',
+            'aggregatedTo': '2024-05-31',
+          },
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Récompense de staking · 3.087654321'),
+          findsOneWidget,
+        );
+        expect(find.textContaining('€'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'un ajustement NU (sans meta[\'corporateAction\']), même avec une '
+      'quantité, garde son rendu inchangé — pas de fuite du rendu récompense',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-plain-adjustment',
+          accountId: _accountId,
+          symbol: 'AAPL',
+          kind: TransactionKind.adjustment,
+          quantity: '5',
+          currency: 'EUR',
+          date: DateTime(2024, 6, 1),
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(find.text('Ajustement'), findsOneWidget);
+        expect(find.textContaining('Récompense'), findsNothing);
       },
     );
 
