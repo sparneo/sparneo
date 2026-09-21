@@ -753,6 +753,67 @@ void main() {
       },
     );
 
+    // -------------------------------------------------------------------
+    // Écart d'import ENREGISTRÉ (toggle « Enregistrer l'écart », résidu de
+    // transferts internes qui ne nettent pas à zéro — résidus Earn Binance,
+    // FlareDrop Kraken, doc §5.1.5) : même symptôme que la récompense
+    // ci-dessus (`unitPrice` jamais posé, coût 0), suite validée par
+    // l'auteur.
+    // -------------------------------------------------------------------
+
+    testWidgets(
+      'un écart d\'import enregistré (meta[\'internalTransferResidual\']) '
+      'affiche « Écart d\'import enregistré · <qté> », pas « Ajustement » '
+      'nu, jamais d\'équivalent EUR',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-residual',
+          accountId: _accountId,
+          symbol: 'MATIC-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '0.168',
+          currency: 'EUR',
+          date: DateTime(2024, 7, 1),
+          meta: const {'internalTransferResidual': true, 'replaceable': true},
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Écart d\'import enregistré · 0.168'),
+          findsOneWidget,
+        );
+        expect(find.text('Ajustement'), findsNothing);
+        expect(find.textContaining('€'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'un écart d\'import enregistré NÉGATIF (un écart peut retirer) '
+      'garde son signe, quantité brute',
+      (tester) async {
+        final tx = AssetTransaction(
+          id: 'tx-residual-negative',
+          accountId: _accountId,
+          symbol: 'FTM-EUR',
+          kind: TransactionKind.adjustment,
+          quantity: '-8.41',
+          currency: 'EUR',
+          date: DateTime(2024, 7, 2),
+          meta: const {'internalTransferResidual': true, 'replaceable': true},
+        );
+        final ledger = _FakeLedgerService([tx]);
+        await tester.pumpWidget(_host(txs: [tx], ledger: ledger));
+        await tester.pumpAndSettle();
+
+        expect(
+          find.text('Écart d\'import enregistré · -8.41'),
+          findsOneWidget,
+        );
+      },
+    );
+
     // ------------------------------------------------------------------- Demande
     // auteur, drive B16 (« voir la quantité de crypto retirée et l'équivalent en
     // cash ») : tuile d'un transferOut EN NATURE.

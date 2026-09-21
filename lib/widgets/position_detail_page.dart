@@ -168,10 +168,22 @@ String? positionInKindDepositEurApprox(
 ///     TOUJOURS la branche 3 (`quantity && unitPrice`). Testée avant cette
 ///     branche 3 par prudence (documente l'invariant plutôt que d'en
 ///     dépendre implicitement).
-///  3. `quantity` ET `unitPrice` renseignés : « qty × prix devise » brut.
-///  4. Retrait crypto EN NATURE (`transferOut`) : quantité + équivalent EUR
+///  3. ÉCART D'IMPORT ENREGISTRÉ (`adjustment`,
+///     `meta['internalTransferResidual'] == true`) : libellé dédié
+///     (`recordedImportDiscrepancy`, « Écart d'import enregistré ») + LA
+///     QUANTITÉ SIGNÉE de l'écart — jamais d'équivalent EUR (même décision
+///     auteur que la récompense de staking ci-dessus). Posé par le toggle
+///     « Enregistrer l'écart » de l'import crypto (résidu de transferts
+///     internes qui ne nettent pas à zéro — résidus Earn Binance, FlareDrop
+///     Kraken, doc §5.1.5, `AccountController.confirmStatementImport`) :
+///     `unitPrice` n'y est jamais posé non plus (coût 0), même symptôme que
+///     la récompense — avant ce correctif, ces lignes retombaient aussi
+///     silencieusement dans la branche 6 (« Ajustement » nu, quantité
+///     perdue). Testée avant la branche 4 pour la même raison de prudence.
+///  4. `quantity` ET `unitPrice` renseignés : « qty × prix devise » brut.
+///  5. Retrait crypto EN NATURE (`transferOut`) : quantité + équivalent EUR
 ///     si `meta['valueEur']` est connue (demande auteur, drive B16.
-///  5. Repli : libellé du kind seul ([positionKindLabel]) — c'est ici,
+///  6. Repli : libellé du kind seul ([positionKindLabel]) — c'est ici,
 ///     inchangée, que retombe un VRAI ajustement (sans marqueur `meta`).
 String positionTransactionSubtitle(AppLocalizations l10n, AssetTransaction tx) {
   final inKindEurApprox = tx.kind == TransactionKind.adjustment &&
@@ -186,6 +198,11 @@ String positionTransactionSubtitle(AppLocalizations l10n, AssetTransaction tx) {
       tx.meta?['corporateAction'] == 'stakingReward' &&
       tx.quantity != null) {
     return '${l10n.transactionKindReward} · ${tx.quantity}';
+  }
+  if (tx.kind == TransactionKind.adjustment &&
+      tx.meta?['internalTransferResidual'] == true &&
+      tx.quantity != null) {
+    return '${l10n.recordedImportDiscrepancy} · ${tx.quantity}';
   }
   if (tx.quantity != null && tx.unitPrice != null) {
     return '${tx.quantity} × ${tx.unitPrice} ${tx.currency}';

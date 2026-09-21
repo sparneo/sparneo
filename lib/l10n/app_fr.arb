@@ -294,6 +294,7 @@
   "corporateActionCashRegularization": "Régularisation en espèces",
   "corporateActionFractionalRedemption": "Rachat de rompus",
   "corporateActionStakingReward": "Récompense de staking",
+  "recordedImportDiscrepancy": "Écart d'import enregistré",
   "transactionKindInterest": "Intérêts",
   "transactionKindCharge": "Frais",
   "transactionKindTransferOut": "Transfert de titres (sortie)",

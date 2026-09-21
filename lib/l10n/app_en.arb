@@ -1703,6 +1703,11 @@
     "description": "Journal line label for an imported crypto staking/earn reward (monthly-aggregated or individual) — same underlying effect as a free share attribution (zero-cost adjustment) but labelled distinctly so the two economic realities are never conflated (B16 lot 1)."
   },
 
+  "recordedImportDiscrepancy": "Recorded import discrepancy",
+  "@recordedImportDiscrepancy": {
+    "description": "Label shown on BOTH the position detail screen and the account journal, alongside the quantity, for a zero-cost adjustment created by the 'Record the discrepancy' toggle at crypto import (meta['internalTransferResidual'] == true) — a base asset whose internal transfers didn't net to zero (Binance Earn residuals, Kraken FlareDrop). Never a EUR equivalent (author decision, symmetric with the staking reward labels)."
+  },
+
   "transactionKindInterest": "Interest",
   "@transactionKindInterest": {
     "description": "Transaction kind: interest earned on cash (cash movement)"

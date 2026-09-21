@@ -1454,6 +1454,48 @@ void main() {
       expect(residualEntries.single.quantity, equals('7.5'));
     });
 
+    test(
+        'résidu de transfert interne NÉGATIF (retraits internes > dépôts '
+        'internes, ex. Kraken FlareDrop repris en staking) → adjustment au '
+        'signe PRÉSERVÉ (suite, affichage journal/position)',
+        () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-hhh5';
+      await seedAccount(db, accountId);
+      await seedLedgerCodePosition(db, accountId, 'HHH', 'HHH-EUR');
+
+      final b = _LedgerBuilder();
+      // Deux jambes `internalTransfer` (même tally que `earn/autoallocation`
+      // — `CryptoLedgerAction.internalTransfer`, `broker_profile.dart`) dont
+      // la somme nette est négative : le résidu n'est pas TOUJOURS un solde
+      // Earn oublié (positif), il peut aussi retirer.
+      b.leg(refid: 'RH5A', time: '2024-06-01 08:00:00', type: 'transfer',
+          subtype: 'spottostaking', asset: 'HHH', wallet: 'spot/main',
+          amount: '3', subclass: 'crypto');
+      b.leg(refid: 'RH5B', time: '2024-06-02 08:00:00', type: 'transfer',
+          subtype: 'stakingtospot', asset: 'HHH', wallet: 'earn/flexible',
+          amount: '-10.5', subclass: 'crypto');
+
+      final ctrl = await makeCtrl(db, accountId);
+      final preview = await ctrl.previewStatementImport(b.toCsvBytes(), profile, accountId: accountId);
+      expect(preview.unbalancedInternalTransfers, hasLength(1));
+      expect(preview.unbalancedInternalTransfers.single.residual, equals('-7.5'));
+
+      final err = await ctrl.confirmStatementImport(
+        preview,
+        accountId: accountId,
+        journalizeUnbalancedInternalTransfers: true,
+      );
+      expect(err, isNull);
+      final journal = await TransactionStorage(database: db).getByAccount(accountId);
+      final residualEntries =
+          journal.where((t) => t.meta?['internalTransferResidual'] == true).toList();
+      expect(residualEntries, hasLength(1));
+      expect(residualEntries.single.quantity, equals('-7.5'));
+      expect(residualEntries.single.unitPrice, isNull);
+    });
+
     test('cascade de résolution ledgerCode→ticker : 5 étages, mémoïsation, panne réseau non assimilée à une invalidité', () async {
       final db = await openTestDatabase();
       addTearDown(db.close);

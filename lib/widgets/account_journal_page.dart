@@ -344,7 +344,9 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   }
 
   /// Libellé d'une ligne : la NATURE de l'opération sur titre quand l'import
-  /// l'a conservée (`meta['corporateAction']`), sinon le kind seul.
+  /// l'a conservée (`meta['corporateAction']`, ou `meta[
+  /// 'internalTransferResidual']` — marqueur DISTINCT, pas une valeur de
+  /// `corporateAction`, cf. ci-dessous), sinon le kind seul.
   ///
   /// Motif (retour auteur, « pourquoi je vois des ajustements ? ») : `adjustment`
   /// recouvre une attribution GRATUITE, un CHANGEMENT DE PLACE et une
@@ -356,6 +358,16 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
   /// calcul n'en dépend, et un nom d'enum inconnu (backup d'une version future)
   /// est ignoré plutôt que de faire échouer l'affichage.
   String _txNatureLabel(AppLocalizations l10n, AssetTransaction tx) {
+    // Écart enregistré via le toggle « Enregistrer l'écart » de l'import
+    // crypto (résidu de transferts internes qui ne nettent pas à zéro —
+    // résidus Earn Binance, FlareDrop Kraken, doc §5.1.5,
+    // `AccountController.confirmStatementImport`). Marqueur booléen DÉDIÉ
+    // (`internalTransferResidual`), pas une valeur de `corporateAction`
+    // (le moteur crypto ne pose jamais cette clé sur ce mouvement) : testé
+    // à part, avant le switch ci-dessous.
+    if (tx.meta?['internalTransferResidual'] == true) {
+      return l10n.recordedImportDiscrepancy;
+    }
     final raw = tx.meta?['corporateAction'];
     if (raw is String) {
       switch (raw) {
@@ -904,6 +916,18 @@ class _AccountJournalPageState extends State<AccountJournalPage> {
       // CRYPTO REÇUE seule, jamais d'équivalent EUR (le coût comptable de
       // la ligne est 0). Pour un agrégat, `tx.quantity` porte déjà le total
       // du mois (`_RewardBucket.netSum`) — rien à recalculer ici.
+      subtitle = '$nature · ${tx.quantity}';
+    } else if (tx.meta?['internalTransferResidual'] == true &&
+        tx.quantity != null) {
+      // Écart d'import ENREGISTRÉ (toggle « Enregistrer l'écart », résidu de
+      // transferts internes qui ne nettent pas à zéro — résidus Earn
+      // Binance, FlareDrop Kraken, doc §5.1.5,
+      // `AccountController.confirmStatementImport`) : même symptôme que la
+      // récompense ci-dessus, `unitPrice` n'y est jamais posé (coût 0), donc
+      // la branche générique ne montrait jamais la quantité. Quantité
+      // SIGNÉE telle quelle (`tx.quantity`, `UnbalancedInternalTransfer.
+      // residual` — un écart peut retirer), jamais d'équivalent EUR (même
+      // décision auteur que la récompense).
       subtitle = '$nature · ${tx.quantity}';
     } else if (tx.meta?['corporateAction'] is String) {
       final meaningfulNumbers = hasQtyPrice &&

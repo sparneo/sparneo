@@ -109,6 +109,78 @@ void main() {
     );
   });
 
+  group('positionTransactionSubtitle — écart d\'import enregistré', () {
+    testWidgets(
+      'adjustment marqué internalTransferResidual → '
+      '« Écart d\'import enregistré · <quantité> » (FR)',
+      (tester) async {
+        final tx = _tx(
+          quantity: '7.5',
+          meta: const {'internalTransferResidual': true, 'replaceable': true},
+        );
+        await tester.pumpWidget(_subtitleHost(tx));
+
+        expect(
+          find.text('Écart d\'import enregistré · 7.5'),
+          findsOneWidget,
+        );
+        // Jamais d'équivalent EUR — même décision auteur que la récompense.
+        expect(find.textContaining('€'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'adjustment marqué internalTransferResidual → '
+      '« Recorded import discrepancy · <quantity> » (EN)',
+      (tester) async {
+        final tx = _tx(
+          quantity: '0.168',
+          meta: const {'internalTransferResidual': true},
+        );
+        await tester.pumpWidget(_subtitleHost(tx, locale: const Locale('en')));
+
+        expect(
+          find.text('Recorded import discrepancy · 0.168'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'quantité SIGNÉE négative préservée telle quelle (un écart peut '
+      'retirer)',
+      (tester) async {
+        final tx = _tx(
+          quantity: '-0.036427675',
+          meta: const {'internalTransferResidual': true},
+        );
+        await tester.pumpWidget(_subtitleHost(tx));
+
+        expect(
+          find.text('Écart d\'import enregistré · -0.036427675'),
+          findsOneWidget,
+        );
+      },
+    );
+
+    testWidgets(
+      'stakingReward prime sur internalTransferResidual si (hypothétiquement) '
+      'les deux marqueurs coexistaient',
+      (tester) async {
+        final tx = _tx(
+          quantity: '1',
+          meta: const {
+            'corporateAction': 'stakingReward',
+            'internalTransferResidual': true,
+          },
+        );
+        await tester.pumpWidget(_subtitleHost(tx));
+
+        expect(find.text('Récompense · 1'), findsOneWidget);
+      },
+    );
+  });
+
   group('positionTransactionSubtitle — non-régression', () {
     testWidgets(
       'adjustment nu (sans meta) → « Ajustement », rendu inchangé',
