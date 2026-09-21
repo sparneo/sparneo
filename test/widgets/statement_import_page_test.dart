@@ -239,6 +239,7 @@ Widget _host(
   Set<String>? debugInitialSearchFailedKeys,
   Map<String, String>? debugInitialResolvedVenues,
   Set<String>? debugInitialLowConfidenceVenueKeys,
+  bool debugInitialValuationColumnMissing = false,
   AccountController? controller,
 }) {
   return MaterialApp(
@@ -253,6 +254,7 @@ Widget _host(
       debugInitialSearchFailedKeys: debugInitialSearchFailedKeys,
       debugInitialResolvedVenues: debugInitialResolvedVenues,
       debugInitialLowConfidenceVenueKeys: debugInitialLowConfidenceVenueKeys,
+      debugInitialValuationColumnMissing: debugInitialValuationColumnMissing,
     ),
   );
 }
@@ -524,6 +526,37 @@ UnvaluedExchange _unvaluedAmbiguousGroupFixture() => UnvaluedExchange(
       sourceLines: const [40],
       importKey: 'ref:account-1:REFAMBIG',
       manualReason: 'ambiguousGroup',
+    );
+
+/// Frais réglé dans un actif TIERS (Binance, chantier B16 lot 4, conception
+/// interne) resté en arbitrage MANUEL — `kind == 'feeInKind'`, consommation à une
+/// seule jambe ([codePaid]/[quantityPaid] `null`, comme un dépôt en nature, mais
+/// [_unvaluedExchangeTile] l'affiche « frais de… », jamais « reçu »). Sert la
+/// séparation « Frais à valoriser » / « Échanges à valoriser » (retour auteur du
+/// drive Binance : un relevé réel mêlait davantage de frais que de vrais échanges
+/// sous le même titre).
+UnvaluedExchange _unvaluedFeeFixture({int index = 0}) => UnvaluedExchange(
+      kind: 'feeInKind',
+      date: DateTime(2024, 6, 1),
+      codeReceived: 'BNB',
+      quantityReceived: '0.001',
+      sourceLines: [50 + index],
+      importKey: 'ref:account-1:REFFEE$index',
+    );
+
+/// Échange MINIMAL (sans motif ni suggestion — seule la ligne source
+/// identifie chaque entrée) réservé aux tests de plafond d'affichage/
+/// « Afficher plus » : `sourceLines: [index + 1]` rend chaque tuile
+/// distinguable par son seul numéro de ligne.
+UnvaluedExchange _bulkUnvaluedExchange(int index) => UnvaluedExchange(
+      kind: 'exchange',
+      date: DateTime(2024, 6, 1),
+      codePaid: 'ETH',
+      quantityPaid: '1',
+      codeReceived: 'ADA',
+      quantityReceived: '10',
+      sourceLines: [index + 1],
+      importKey: 'ref:account-1:BULK$index',
     );
 
 /// Bilan de cohérence d'un actif dont les transferts internes ne nettent pas à
@@ -3345,6 +3378,272 @@ void main() {
       // masqué — SEULE la ligne du mouvement BTC (« Ligne 1 », désormais
       // visible via « À créer » déplié) porte encore ce préfixe.
       expect(find.textContaining('Ligne 100'), findsNothing);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Passe UX validée par l'auteur sur l'aperçu d'import crypto, issue du
+  // drive Binance réel (backlog consigné) : frais séparés des vrais échanges,
+  // libellé honnête sur un relevé muet, plafond d'affichage explicite.
+  // ---------------------------------------------------------------------------
+
+  group(
+      'StatementImportPage — aperçu import crypto : frais séparés, relevé '
+      'muet, « Afficher plus » (retouches drive Binance)', () {
+    testWidgets(
+        'les frais réglés dans un actif tiers forment un groupe DÉDIÉ, avec '
+        'sa propre explication — distinct des vrais échanges entre '
+        'crypto-monnaies (retour auteur : un relevé Binance réel mêlait 101 '
+        'frais à 79 échanges sous un même titre qui les qualifiait tous à '
+        'tort d\'« échanges entre crypto-monnaies »)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [
+          _unvaluedExchangeFixture(), // 1 vrai échange (motif spread)
+          _unvaluedFeeFixture(index: 0),
+          _unvaluedFeeFixture(index: 1),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Comptes distincts : les 2 frais ne sont plus mêlés à l'unique
+      // échange dans le même total.
+      expect(find.text('Échanges à valoriser (1)'), findsOneWidget);
+      expect(find.text('Frais à valoriser (2)'), findsOneWidget);
+
+      // Chaque section garde sa PROPRE explication — celle des frais ne
+      // prétend plus qu'il s'agit d'« échanges entre crypto-monnaies ».
+      expect(
+        find.text(
+          'Ces échanges entre crypto-monnaies n\'ont pas pu être valorisés '
+          'automatiquement. Saisissez un montant en euros pour chacun '
+          'd\'eux : ils seront importés dès que ce montant est renseigné.',
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text(
+          'Ces frais ont été payés dans une autre crypto-monnaie ; '
+          'saisissez leur valeur en euros. Ils seront importés dès que ce '
+          'montant est renseigné.',
+        ),
+        findsOneWidget,
+      );
+
+      // Le vrai échange reste dans « Échanges à valoriser »…
+      expect(find.text('Ligne(s) 10, 11 : 0.5 ETH → 120 ADA'), findsOneWidget);
+      // … les 2 frais, eux, sont rendus par le groupe dédié avec leur
+      // libellé propre (« frais de… », jamais « reçu »).
+      expect(find.text('Ligne(s) 50 : frais de 0.001 BNB'), findsOneWidget);
+      expect(find.text('Ligne(s) 51 : frais de 0.001 BNB'), findsOneWidget);
+    });
+
+    testWidgets(
+        'aucun frais dans l\'aperçu ⇒ AUCUN groupe « Frais à valoriser » '
+        '(non-régression du parcours Kraken/Coinbase, qui n\'en produisent '
+        'jamais)', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedExchangeFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('Frais à valoriser'), findsNothing);
+    });
+
+    testWidgets(
+        'motif « illisible » sur un profil À colonne de valorisation '
+        '(Kraken/Coinbase, comportement historique) : le libellé reste '
+        'factuel — une valeur existait mais était illisible', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedUnreadableFixture()],
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Valeur du relevé illisible.'), findsOneWidget);
+      expect(
+        find.text('Ce relevé n\'indique pas de valeur pour cette opération.'),
+        findsNothing,
+      );
+    });
+
+    testWidgets(
+        'motif « illisible » sur un profil dont le format ne porte AUCUNE '
+        'colonne de valorisation (Binance) : le libellé dit vrai — rien '
+        'n\'était illisible, il n\'y avait simplement rien à lire', (tester) async {
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: [_unvaluedUnreadableFixture()],
+      );
+
+      await tester.pumpWidget(
+        _host(preview, debugInitialValuationColumnMissing: true),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Ce relevé n\'indique pas de valeur pour cette opération.'),
+        findsOneWidget,
+      );
+      expect(find.text('Valeur du relevé illisible.'), findsNothing);
+    });
+
+    testWidgets(
+        '« Afficher plus » : un groupe tronqué à 50 affiche le compte total '
+        'dès le départ puis un bouton qui étend l\'affichage par tranches '
+        'de 50 plutôt que de tronquer en silence (retour auteur : sur un '
+        'relevé Binance réel, les échanges à valoriser n\'en laissaient que '
+        '50 visibles ET saisissables)', (tester) async {
+      final items = [for (var i = 0; i < 120; i++) _bulkUnvaluedExchange(i)];
+      final preview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        unvaluedExchanges: items,
+      );
+
+      await tester.pumpWidget(_host(preview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Le titre du groupe annonce le total réel (120), pas seulement ce qui
+      // est affiché.
+      expect(find.text('Échanges à valoriser (120)'), findsOneWidget);
+
+      // Défaut : 50 affichées — la ligne 60 (au-delà du plafond) n'est même
+      // pas dans l'arbre de widgets, jamais construite tant qu'elle n'est
+      // pas demandée (coût de build proportionnel à ce qui est affiché).
+      await tester.ensureVisible(find.text('50 sur 120 affichées'));
+      expect(find.text('50 sur 120 affichées'), findsOneWidget);
+      expect(find.text('Ligne(s) 1 : 1 ETH → 10 ADA'), findsOneWidget);
+      expect(find.text('Ligne(s) 50 : 1 ETH → 10 ADA'), findsOneWidget);
+      expect(find.text('Ligne(s) 60 : 1 ETH → 10 ADA'), findsNothing);
+
+      // Un clic étend par une tranche de 50 (50 → 100, pas 50 → 120) : la
+      // ligne 60 devient atteignable, la 100 aussi, la 110 reste hors
+      // d'atteinte.
+      await tester.ensureVisible(
+        find.widgetWithText(TextButton, 'Afficher les 50 suivantes'),
+      );
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Afficher les 50 suivantes'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('100 sur 120 affichées'), findsOneWidget);
+      expect(find.text('Ligne(s) 60 : 1 ETH → 10 ADA'), findsOneWidget);
+      expect(find.text('Ligne(s) 100 : 1 ETH → 10 ADA'), findsOneWidget);
+      expect(find.text('Ligne(s) 110 : 1 ETH → 10 ADA'), findsNothing);
+
+      // Second clic : seul le reste (20) est proposé — jamais une tranche
+      // de 50 qui dépasserait le total — et le bouton disparaît une fois
+      // tout affiché (rien de plus à montrer).
+      await tester.ensureVisible(
+        find.widgetWithText(TextButton, 'Afficher les 20 suivantes'),
+      );
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Afficher les 20 suivantes'),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Ligne(s) 120 : 1 ETH → 10 ADA'), findsOneWidget);
+      expect(find.textContaining('affichées'), findsNothing);
+      expect(find.textContaining('Afficher les'), findsNothing);
+    });
+
+    testWidgets(
+        'le pliage de « Frais à valoriser » (section DÉPLIÉE par défaut) '
+        'survit à une reconstruction de l\'aperçu, même mécanisme que les '
+        'sections historiques (« Repasser en saisie manuelle »)',
+        (tester) async {
+      final controller = _FakeRevertValuationController(
+        result: ImportPreview(
+          toCreate: [_cryptoBuyMovement()],
+          unvaluedExchanges: [
+            _unvaluedFeeFixture(index: 0),
+            _unvaluedFeeFixture(index: 1),
+          ],
+        ),
+      );
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoBuyMovement(),
+          ..._cryptoExchangePairValuedMarketHistory(
+            'ref:acc:EX1',
+            DateTime(2024, 3, 5),
+          ),
+        ],
+        unvaluedExchanges: [
+          _unvaluedFeeFixture(index: 0),
+          _unvaluedFeeFixture(index: 1),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // « Frais à valoriser » est DÉPLIÉ par défaut.
+      expect(find.text('Frais à valoriser (2)'), findsOneWidget);
+      expect(find.text('Ligne(s) 50 : frais de 0.001 BNB'), findsOneWidget);
+
+      // L'utilisateur replie le groupe.
+      await tester.tap(find.text('Frais à valoriser (2)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Ligne(s) 50 : frais de 0.001 BNB'), findsNothing);
+
+      // « À créer » (DÉPLIÉ par défaut) affiche AUSSI la jambe `sell` de
+      // l'échange valorisé, donc SON PROPRE bouton « Repasser en saisie
+      // manuelle » — même piège que le test historique équivalent sur « À
+      // créer » : on le replie d'abord pour ne laisser qu'UN SEUL bouton
+      // (celui de « Échanges valorisés », vue filtrée du même mouvement).
+      await tester.ensureVisible(find.text('À créer (3)'));
+      await tester.tap(find.text('À créer (3)'));
+      await tester.pumpAndSettle();
+
+      // Reconstruction (même mécanisme que le test historique équivalent sur
+      // « À créer ») : on déplie « Échanges valorisés » (groupe séparé, non
+      // touché jusqu'ici) pour atteindre son bouton de repli.
+      await tester.ensureVisible(find.text('Échanges valorisés (1)'));
+      await tester.tap(find.text('Échanges valorisés (1)'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(
+        find.widgetWithText(TextButton, 'Repasser en saisie manuelle'),
+      );
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Repasser en saisie manuelle'),
+      );
+      await tester.pumpAndSettle();
+
+      // Le groupe « Frais à valoriser » (même clé stable, même contenu ici)
+      // reste REPLIÉ après la reconstruction.
+      expect(find.text('Frais à valoriser (2)'), findsOneWidget);
+      expect(
+        find.text('Ligne(s) 50 : frais de 0.001 BNB'),
+        findsNothing,
+        reason: 'la section reconstruite doit rester repliée',
+      );
+
+      // Contrôle positif : redéplier prouve que le contenu était bien là.
+      await tester.ensureVisible(find.text('Frais à valoriser (2)'));
+      await tester.tap(find.text('Frais à valoriser (2)'));
+      await tester.pumpAndSettle();
+      expect(find.text('Ligne(s) 50 : frais de 0.001 BNB'), findsOneWidget);
     });
   });
 }

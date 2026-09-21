@@ -119,6 +119,19 @@ class StatementImportPage extends StatefulWidget {
   @visibleForTesting
   final Set<String>? debugInitialLowConfidenceVenueKeys;
 
+  /// Réservé aux TESTS WIDGET : simule un profil dont le format de relevé NE
+  /// PORTE AUCUNE colonne de valorisation (`CryptoLedgerSpec.
+  /// valuationAmountColumn == null`, cas Binance) — fait varier le libellé du
+  /// motif `unreadable` affiché sur un [UnvaluedExchange] (cf.
+  /// [_StatementImportPageState._unvaluedReasonLabel]) SANS déclencher de vrai
+  /// import ni instancier de [BrokerProfile] (le point d'entrée
+  /// [debugInitialPreview] n'en construit aucun). `false` par défaut (repli
+  /// sur le libellé historique, correct pour un profil à colonne comme
+  /// Kraken/Coinbase). Toujours `false` en production. N'a d'effet qu'avec
+  /// [debugInitialPreview].
+  @visibleForTesting
+  final bool debugInitialValuationColumnMissing;
+
   const StatementImportPage({
     super.key,
     required this.controller,
@@ -128,6 +141,7 @@ class StatementImportPage extends StatefulWidget {
     this.debugInitialSearchFailedKeys,
     this.debugInitialResolvedVenues,
     this.debugInitialLowConfidenceVenueKeys,
+    this.debugInitialValuationColumnMissing = false,
   });
 
   @override
@@ -138,9 +152,36 @@ class _StatementImportPageState extends State<StatementImportPage> {
   _ImportStep _step = _ImportStep.pickFile;
 
   /// Plafond d'affichage par groupe à l'étape d'aperçu : un relevé de plusieurs
-  /// centaines de lignes ne construit pas tout d'un coup (le reste est annoncé
-  /// par une ligne « … et N autre(s) », jamais masqué en silence).
+  /// centaines de lignes ne construit pas tout d'un coup — au-delà, un bouton «
+  /// Afficher les N suivantes » ÉTEND l'affichage par tranches de cette taille (cf.
+  /// [_groupDisplayCount]/[_cappedGroupTiles]) plutôt que d'annoncer le reste sans
+  /// jamais le rendre accessible (retour auteur : sur un relevé Binance réel, les
+  /// échanges à valoriser n'en laissaient que 50 saisissables).
   static const int _groupDisplayCap = 50;
+
+  /// Nombre d'éléments actuellement affichés par groupe tronqué de l'aperçu,
+  /// clé = identifiant SÉMANTIQUE de groupe (même patron que
+  /// [_sectionExpanded]/[_sectionKey], ex. `'unvaluedExchanges'`,
+  /// `'toCreate'`) — absente tant que l'utilisateur n'a pas cliqué
+  /// « Afficher plus » sur ce groupe (repli implicite sur [_groupDisplayCap],
+  /// cf. [_displayCount]). Réinitialisée à CHAQUE nouvel aperçu
+  /// ([_loadNewPreview]), comme [_sectionExpanded] : un nouvel import
+  /// redémarre à 50 affichées sur chaque groupe, jamais l'extension du
+  /// précédent.
+  final Map<String, int> _groupDisplayCount = {};
+
+  /// `true` si le profil ayant produit l'aperçu COURANT ne porte AUCUNE colonne de
+  /// valorisation (`CryptoLedgerSpec.valuationAmountColumn == null`, cas Binance,
+  /// conception interne) — fait varier le libellé du motif `unreadable` d'un
+  /// [UnvaluedExchange] (cf. [_unvaluedReasonLabel]) : « valeur illisible » est FAUX
+  /// sur un format qui ne porte jamais de valeur (rien n'était illisible, il n'y
+  /// avait rien à lire). Posée par [_runPreviewWithProfile] à partir du
+  /// [BrokerProfile] réellement utilisé (jamais déduite de [_profileChoice] seul,
+  /// qui ne distingue pas un futur profil crypto qui gagnerait une colonne) —
+  /// `false` par défaut (repli sur le libellé historique, correct pour un profil à
+  /// colonne comme Kraken/Coinbase, et sans incidence sur un profil titres qui ne
+  /// produit jamais d'[UnvaluedExchange]).
+  bool _previewHasNoValuationColumn = false;
 
   // ---- Étape 1 : fichier + choix du profil courtier ----
   Uint8List? _fileBytes;
@@ -363,6 +404,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (debugPreview != null) {
       _preview = debugPreview;
       _step = _ImportStep.resolveAssets;
+      _previewHasNoValuationColumn = widget.debugInitialValuationColumnMissing;
       for (final asset in debugPreview.newAssets) {
         if (asset.proposedSymbol == null) {
           final key = asset.isin ?? asset.label;
@@ -813,6 +855,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     _preview = preview;
     _step = _ImportStep.preview;
     _sectionExpanded.clear();
+    _groupDisplayCount.clear();
     _previewGeneration++;
     for (final asset in preview.newAssets) {
       if (asset.proposedSymbol == null) {
@@ -826,12 +869,21 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// (nouveau fichier importé), SANS passer par la sélection de fichier
   /// (file_picker/file_selector n'ont pas d'implémentation dans
   /// l'environnement de test widget, cf. doc de [debugInitialPreview]).
-  /// Vérifie que l'état de dépli des sections repart neuf sur un nouvel
-  /// import, jamais celui du précédent (cf. [_loadNewPreview]). Toujours
-  /// inatteignable en production (aucun appel dans ce fichier hors test).
+  /// Vérifie que l'état de dépli des sections ET le compteur d'affichage par
+  /// groupe repartent neufs sur un nouvel import, jamais ceux du précédent
+  /// (cf. [_loadNewPreview]). [valuationColumnMissing] reproduit
+  /// [StatementImportPage.debugInitialValuationColumnMissing] pour ce nouvel
+  /// aperçu (même repli `false`). Toujours inatteignable en production (aucun
+  /// appel dans ce fichier hors test).
   @visibleForTesting
-  void debugLoadNewPreview(ImportPreview preview) {
-    setState(() => _loadNewPreview(preview));
+  void debugLoadNewPreview(
+    ImportPreview preview, {
+    bool valuationColumnMissing = false,
+  }) {
+    setState(() {
+      _previewHasNoValuationColumn = valuationColumnMissing;
+      _loadNewPreview(preview);
+    });
   }
 
   /// Calcule la prévisualisation pour [profile] et avance à l'étape 3 en cas
@@ -857,6 +909,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
       if (!mounted) return;
       setState(() {
         _loadingPreview = false;
+        _previewHasNoValuationColumn = profile.crypto?.valuationAmountColumn == null;
         _loadNewPreview(preview);
       });
     } catch (e) {
@@ -2178,7 +2231,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
                   _onSectionExpansionChanged('duplicates', v),
               tilePadding: EdgeInsets.zero,
               title: Text(l10n.importGroupDuplicates(preview.duplicates.length)),
-              children: _cappedMovementTiles(l10n, preview.duplicates),
+              children: _cappedMovementTiles(l10n, 'duplicates', preview.duplicates),
             ),
           if (rejectGroups.isNotEmpty) ...[
             const SizedBox(height: 8),
@@ -2232,7 +2285,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
           onExpansionChanged: (v) => _onSectionExpansionChanged('toCreate', v),
           tilePadding: EdgeInsets.zero,
           title: Text(l10n.importGroupToCreate(preview.toCreate.length)),
-          children: _cappedMovementTiles(l10n, preview.toCreate),
+          children: _cappedMovementTiles(l10n, 'toCreate', preview.toCreate),
         ),
 
         // Doublons probables : en TÊTE des groupes, juste sous le delta —
@@ -2259,7 +2312,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 _onSectionExpansionChanged('duplicates', v),
             tilePadding: EdgeInsets.zero,
             title: Text(l10n.importGroupDuplicates(preview.duplicates.length)),
-            children: _cappedMovementTiles(l10n, preview.duplicates),
+            children: _cappedMovementTiles(l10n, 'duplicates', preview.duplicates),
           ),
 
         // Rejets techniques (repliés) tout en bas : bruit de diagnostic.
@@ -2332,7 +2385,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 style: TextStyle(color: theme.colorScheme.onErrorContainer),
               ),
             ),
-            ..._cappedMovementTiles(l10n, ostRejects),
+            ..._cappedMovementTiles(l10n, 'ostReject', ostRejects),
           ],
         ),
       ),
@@ -2355,7 +2408,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _onSectionExpansionChanged('techReject', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupRejects(techRejects.length)),
-        children: _cappedMovementTiles(l10n, techRejects),
+        children: _cappedMovementTiles(l10n, 'techReject', techRejects),
       ),
     ];
   }
@@ -2436,11 +2489,18 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// Appliquer » dédié au groupe (démonté, retour auteur du drive : les montants
   /// renseignés ici ne sont envoyés au contrôleur qu'au clic sur « Confirmer
   /// l'import », cf. [_prepareUnvaluedExchangesBeforeConfirm].
+  ///
+  /// EXCLUT les frais réglés dans un actif tiers (`kind == 'feeInKind'`, retour
+  /// auteur du drive Binance : un relevé réel mêlait davantage de frais que de
+  /// vrais échanges sous ce même titre, avec une explication qui les qualifiait
+  /// tous d'« échanges entre crypto-monnaies » — faux pour un frais) — cf.
+  /// [_unvaluedFeesGroup], groupe DÉDIÉ juste en dessous.
   List<Widget> _unvaluedExchangesGroup(
     AppLocalizations l10n,
     ImportPreview preview,
   ) {
-    final items = preview.unvaluedExchanges;
+    final items =
+        preview.unvaluedExchanges.where((u) => u.kind != 'feeInKind').toList();
     if (items.isEmpty) return const [];
     return [
       ExpansionTile(
@@ -2458,10 +2518,53 @@ class _StatementImportPageState extends State<StatementImportPage> {
               style: Theme.of(context).textTheme.bodySmall,
             ),
           ),
-          for (final u in items.take(_groupDisplayCap))
-            _unvaluedExchangeTile(l10n, u),
-          if (items.length > _groupDisplayCap)
-            _moreRow(l10n, items.length - _groupDisplayCap),
+          ..._cappedGroupTiles(
+            l10n,
+            'unvaluedExchanges',
+            items,
+            (u) => _unvaluedExchangeTile(l10n, u),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  /// « Frais à valoriser (N) » — DÉPLIÉ, même mécanique de saisie/étage 2/
+  /// pastille que [_unvaluedExchangesGroup] (rendue par la MÊME
+  /// [_unvaluedExchangeTile], qui affiche déjà ces entrées avec le libellé «
+  /// frais de… », jamais « reçu ») : frais réglés dans un actif TIERS (`kind ==
+  /// 'feeInKind'`, Binance, conception interne) restés en arbitrage manuel —
+  /// groupe DÉDIÉ (retour auteur du drive, cf. doc de [_unvaluedExchangesGroup])
+  /// plutôt que noyé sous une explication qui mentait sur leur nature.
+  List<Widget> _unvaluedFeesGroup(
+    AppLocalizations l10n,
+    ImportPreview preview,
+  ) {
+    final items =
+        preview.unvaluedExchanges.where((u) => u.kind == 'feeInKind').toList();
+    if (items.isEmpty) return const [];
+    return [
+      ExpansionTile(
+        key: _sectionKey('unvaluedFees'),
+        initiallyExpanded: _expanded('unvaluedFees', true),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('unvaluedFees', v),
+        tilePadding: EdgeInsets.zero,
+        title: Text(l10n.importGroupUnvaluedFees(items.length)),
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Text(
+              l10n.importUnvaluedFeesExplain,
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ),
+          ..._cappedGroupTiles(
+            l10n,
+            'unvaluedFees',
+            items,
+            (u) => _unvaluedExchangeTile(l10n, u),
+          ),
         ],
       ),
     ];
@@ -2477,7 +2580,19 @@ class _StatementImportPageState extends State<StatementImportPage> {
   String? _unvaluedReasonLabel(AppLocalizations l10n, UnvaluedExchange u) {
     switch (u.manualReason) {
       case 'unreadable':
-        return l10n.importUnvaluedReasonUnreadable;
+        // Le motif `unreadable` recouvre deux réalités TRÈS différentes côté
+        // relevé (même moteur, même valeur de `manualReason` — pas de motif
+        // dédié, cf. doc de [_previewHasNoValuationColumn]) : sur un format à
+        // colonne de valorisation (Kraken/Coinbase), une jambe était
+        // effectivement présente mais illisible (littéral `-`…) — le libellé
+        // historique est exact. Sur un format MUET (Binance, aucune colonne
+        // de valorisation), rien n'était illisible : il n'y avait simplement
+        // rien à lire — retour auteur, « le motif qui ment sur un relevé
+        // muet ». Bascule sur le profil réellement utilisé pour CET aperçu,
+        // jamais un nouveau motif d'enum côté moteur.
+        return _previewHasNoValuationColumn
+            ? l10n.importUnvaluedReasonUnreadableNoColumn
+            : l10n.importUnvaluedReasonUnreadable;
       case 'spread':
         return l10n.importUnvaluedReasonSpread(
           _spreadPercentLabel(u.valuationSpreadPct),
@@ -2819,6 +2934,13 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// « Mouvements internes (N) » — DÉPLIÉ SEULEMENT s'il y a un résidu (liste
   /// vide ⇒ groupe absent). Bascule « Enregistrer l'écart » (défaut OFF)
   /// reliée à [_journalizeUnbalancedInternalTransfers].
+  ///
+  /// Ton AVERTISSEMENT NEUTRE (`tertiaryContainer`), PAS le rouge d'alerte de
+  /// [ImportPreview.rejects] (retour auteur : « j'ai toujours du mal avec les
+  /// mouvements internes, pourquoi les afficher comme une alerte ? » — un
+  /// écart n'est pas une erreur, c'est une question en attente de décision) —
+  /// même teinte que le bandeau « FX indisponible », déjà informatif plutôt
+  /// qu'alarmant sur ce même écran, cf. [_cryptoFxUnavailableBanner].
   List<Widget> _unbalancedInternalTransfersGroup(
     AppLocalizations l10n,
     ImportPreview preview,
@@ -2829,7 +2951,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return [
       Card(
         margin: const EdgeInsets.symmetric(vertical: 8),
-        color: theme.colorScheme.errorContainer,
+        color: theme.colorScheme.tertiaryContainer,
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -2838,26 +2960,28 @@ class _StatementImportPageState extends State<StatementImportPage> {
               Text(
                 l10n.importGroupUnbalancedInternalTransfers(items.length),
                 style: theme.textTheme.titleSmall
-                    ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                    ?.copyWith(color: theme.colorScheme.onTertiaryContainer),
               ),
               const SizedBox(height: 4),
               Text(
                 l10n.importUnbalancedInternalTransfersExplain,
                 style: theme.textTheme.bodySmall
-                    ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                    ?.copyWith(color: theme.colorScheme.onTertiaryContainer),
               ),
-              for (final u in items.take(_groupDisplayCap))
-                Padding(
+              ..._cappedGroupTiles(
+                l10n,
+                'unbalancedInternalTransfers',
+                items,
+                (u) => Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Text(
                     l10n.importUnbalancedInternalTransferLine(
                         u.asset, u.residual, u.rowCount),
-                    style:
-                        TextStyle(color: theme.colorScheme.onErrorContainer),
+                    style: TextStyle(
+                        color: theme.colorScheme.onTertiaryContainer),
                   ),
                 ),
-              if (items.length > _groupDisplayCap)
-                _moreRow(l10n, items.length - _groupDisplayCap),
+              ),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 value: _journalizeUnbalancedInternalTransfers,
@@ -2866,14 +2990,14 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 title: Text(
                   l10n.importUnbalancedInternalTransfersToggleLabel,
                   style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                      ?.copyWith(color: theme.colorScheme.onTertiaryContainer),
                 ),
                 subtitle: Text(
                   _journalizeUnbalancedInternalTransfers
                       ? l10n.importUnbalancedInternalTransfersToggleOn
                       : l10n.importUnbalancedInternalTransfersToggleOff,
                   style: theme.textTheme.bodySmall
-                      ?.copyWith(color: theme.colorScheme.onErrorContainer),
+                      ?.copyWith(color: theme.colorScheme.onTertiaryContainer),
                 ),
               ),
             ],
@@ -2924,8 +3048,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
                 style: theme.textTheme.bodySmall
                     ?.copyWith(color: theme.colorScheme.onErrorContainer),
               ),
-              for (final r in items.take(_groupDisplayCap))
-                Padding(
+              ..._cappedGroupTiles(
+                l10n,
+                'chainRuptures',
+                items,
+                (r) => Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Text(
                     l10n.importChainRuptureLine(
@@ -2934,8 +3061,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
                         TextStyle(color: theme.colorScheme.onErrorContainer),
                   ),
                 ),
-              if (items.length > _groupDisplayCap)
-                _moreRow(l10n, items.length - _groupDisplayCap),
+              ),
             ],
           ),
         ),
@@ -2947,6 +3073,11 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// jamais bloquant ni corrective (conception interne) : le moteur soustrait
   /// déjà les échanges non valorisés du calcul, ce groupe ne re-signale donc
   /// jamais ceux-là.
+  ///
+  /// Ton AVERTISSEMENT NEUTRE (`tertiaryContainer`, même teinte que
+  /// [_unbalancedInternalTransfersGroup]/[_cryptoFxUnavailableBanner]),
+  /// jamais le rouge d'alerte — retour auteur, cf. doc de
+  /// [_unbalancedInternalTransfersGroup] : un écart n'est pas une erreur.
   List<Widget> _quantityGapsGroup(
     AppLocalizations l10n,
     ImportPreview preview,
@@ -2957,7 +3088,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return [
       Card(
         margin: const EdgeInsets.symmetric(vertical: 8),
-        color: theme.colorScheme.secondaryContainer,
+        color: theme.colorScheme.tertiaryContainer,
         child: Padding(
           padding: const EdgeInsets.all(12),
           child: Column(
@@ -2966,21 +3097,23 @@ class _StatementImportPageState extends State<StatementImportPage> {
               Text(
                 l10n.importGroupQuantityGaps(items.length),
                 style: theme.textTheme.titleSmall
-                    ?.copyWith(color: theme.colorScheme.onSecondaryContainer),
+                    ?.copyWith(color: theme.colorScheme.onTertiaryContainer),
               ),
               const SizedBox(height: 4),
-              for (final g in items.take(_groupDisplayCap))
-                Padding(
+              ..._cappedGroupTiles(
+                l10n,
+                'quantityGaps',
+                items,
+                (g) => Padding(
                   padding: const EdgeInsets.symmetric(vertical: 2),
                   child: Text(
                     l10n.importQuantityGapLine(
                         g.asset, g.reportedTotal, g.projectedTotal),
                     style: TextStyle(
-                        color: theme.colorScheme.onSecondaryContainer),
+                        color: theme.colorScheme.onTertiaryContainer),
                   ),
                 ),
-              if (items.length > _groupDisplayCap)
-                _moreRow(l10n, items.length - _groupDisplayCap),
+              ),
             ],
           ),
         ),
@@ -3013,12 +3146,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _onSectionExpansionChanged('aggregatedRewards', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupAggregatedRewards(items.length)),
-        children: [
-          for (final m in items.take(_groupDisplayCap))
-            _aggregatedRewardTile(l10n, m),
-          if (items.length > _groupDisplayCap)
-            _moreRow(l10n, items.length - _groupDisplayCap),
-        ],
+        children: _cappedGroupTiles(
+          l10n,
+          'aggregatedRewards',
+          items,
+          (m) => _aggregatedRewardTile(l10n, m),
+        ),
       ),
     ];
   }
@@ -3053,12 +3186,12 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _onSectionExpansionChanged('replacements', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupReplacements(items.length)),
-        children: [
-          for (final r in items.take(_groupDisplayCap))
-            _replacementTile(l10n, r),
-          if (items.length > _groupDisplayCap)
-            _moreRow(l10n, items.length - _groupDisplayCap),
-        ],
+        children: _cappedGroupTiles(
+          l10n,
+          'replacements',
+          items,
+          (r) => _replacementTile(l10n, r),
+        ),
       ),
     ];
   }
@@ -3128,17 +3261,22 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _onSectionExpansionChanged('valuedExchanges', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupValuedExchanges(_valuedExchangeCount(items))),
-        children: _cappedMovementTiles(l10n, items),
+        children: _cappedMovementTiles(l10n, 'valuedExchanges', items),
       ),
     ];
   }
 
-  /// Le bandeau FX + les sept groupes crypto, dans l'ordre d'importance du design
+  /// Le bandeau FX + les huit groupes crypto, dans l'ordre d'importance du design
   /// (conception interne) — listes vides sur tout profil titres, donc AUCUN
-  /// élément rendu (`_cryptoGroups` retourne alors `[]`).
+  /// élément rendu (`_cryptoGroups` retourne alors `[]`). « Frais à valoriser »
+  /// ([_unvaluedFeesGroup]) juste après « Échanges à valoriser » : même famille
+  /// (arbitrage manuel de valorisation crypto), séparés en groupes DISTINCTS
+  /// depuis le retour auteur du drive Binance (cf. doc de
+  /// [_unvaluedExchangesGroup]).
   List<Widget> _cryptoGroups(AppLocalizations l10n, ImportPreview preview) => [
         ..._cryptoFxUnavailableBanner(l10n, preview),
         ..._unvaluedExchangesGroup(l10n, preview),
+        ..._unvaluedFeesGroup(l10n, preview),
         ..._unbalancedInternalTransfersGroup(l10n, preview),
         ..._chainRupturesGroup(l10n, preview),
         ..._quantityGapsGroup(l10n, preview),
@@ -3394,28 +3532,86 @@ class _StatementImportPageState extends State<StatementImportPage> {
     return result;
   }
 
-  /// Tuiles de mouvement d'un groupe, plafonnées à [_groupDisplayCap] avec une
-  /// ligne « … et N autre(s) » (le reste n'est jamais masqué en silence).
+  /// Tuiles de mouvement d'un groupe, plafonnées et extensibles via
+  /// [_cappedGroupTiles] — [key] identifie le groupe pour le compteur
+  /// d'affichage ([_groupDisplayCount]), MÊME clé sémantique que le
+  /// `_sectionKey`/`_expanded` de l'`ExpansionTile`/`Card` qui l'englobe.
   List<Widget> _cappedMovementTiles(
     AppLocalizations l10n,
+    String key,
     List<ImportedMovement> movements,
+  ) =>
+      _cappedGroupTiles(l10n, key, movements, (m) => _movementTile(l10n, m));
+
+  /// Compteur d'affichage courant du groupe [key] (cf. [_groupDisplayCount]) :
+  /// la valeur mémorisée si l'utilisateur a déjà cliqué « Afficher plus » sur
+  /// ce groupe, sinon [_groupDisplayCap] (état initial — même patron que
+  /// [_expanded]).
+  int _displayCount(String key) => _groupDisplayCount[key] ?? _groupDisplayCap;
+
+  /// Tuiles d'un groupe d'aperçu potentiellement tronqué, construites
+  /// PARESSEUSEMENT : seuls les [items] dans la limite courante ([_displayCount])
+  /// sont construits via [tileBuilder] — jamais le reste du groupe, quelle que soit
+  /// sa taille (coût de build proportionnel à ce qui est affiché, jamais au total).
+  /// Au-delà, un bouton « Afficher les N suivantes » ([_showMoreRow]) étend
+  /// l'affichage par tranches de [_groupDisplayCap] plutôt que de tronquer en
+  /// silence — remplace l'ancienne ligne « … et N autre(s) », purement informative,
+  /// qui n'offrait aucun moyen d'atteindre le reste (retour auteur : sur un relevé
+  /// Binance réel, les échanges à valoriser n'en laissaient que 50 visibles ET
+  /// saisissables). [key] est la clé SÉMANTIQUE du groupe, même patron que
+  /// [_sectionKey]/[_sectionExpanded] — le compteur qui en découle est réinitialisé
+  /// à chaque nouvel aperçu ([_loadNewPreview]), jamais par une simple
+  /// reconstruction intra-génération.
+  List<Widget> _cappedGroupTiles<T>(
+    AppLocalizations l10n,
+    String key,
+    List<T> items,
+    Widget Function(T item) tileBuilder,
   ) {
+    final shown = _displayCount(key).clamp(0, items.length);
     final tiles = <Widget>[
-      for (final m in movements.take(_groupDisplayCap)) _movementTile(l10n, m),
+      for (var i = 0; i < shown; i++) tileBuilder(items[i]),
     ];
-    if (movements.length > _groupDisplayCap) {
-      tiles.add(_moreRow(l10n, movements.length - _groupDisplayCap));
+    if (items.length > shown) {
+      tiles.add(_showMoreRow(l10n, key, total: items.length, shown: shown));
     }
     return tiles;
   }
 
-  Widget _moreRow(AppLocalizations l10n, int remaining) => ListTile(
-        dense: true,
-        title: Text(
-          l10n.importGroupMore(remaining),
-          style: Theme.of(context).textTheme.bodySmall,
-        ),
-      );
+  /// Ligne « N sur M affichées » + bouton « Afficher les K suivantes »
+  /// (K = la prochaine tranche de [_groupDisplayCap], ou le reste du groupe
+  /// s'il est plus petit) — remplace l'ancienne `_moreRow` (démontée), qui ne
+  /// faisait qu'annoncer le reste sans jamais le rendre accessible.
+  Widget _showMoreRow(
+    AppLocalizations l10n,
+    String key, {
+    required int total,
+    required int shown,
+  }) {
+    final remaining = total - shown;
+    final nextBatch = remaining < _groupDisplayCap ? remaining : _groupDisplayCap;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            l10n.importGroupShownCount(shown, total),
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton(
+              onPressed: () => setState(
+                () => _groupDisplayCount[key] = shown + nextBatch,
+              ),
+              child: Text(l10n.importShowMoreButton(nextBatch)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   /// Ligne source (1-based) de la jambe espèces absorbée par [m], ou `null` si
   /// ce mouvement n'est pas le produit d'un repli (§14.8).
@@ -3462,7 +3658,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
                   color: theme.colorScheme.onErrorContainer,
                 ),
               ),
-              ..._cappedMovementTiles(l10n, probable),
+              ..._cappedMovementTiles(l10n, 'probableDuplicates', probable),
               SwitchListTile(
                 contentPadding: EdgeInsets.zero,
                 value: _importProbableDuplicates,
@@ -3527,7 +3723,7 @@ class _StatementImportPageState extends State<StatementImportPage> {
             _onSectionExpansionChanged('mergedLegs', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupMergedLegs(merged.length)),
-        children: _cappedMovementTiles(l10n, merged),
+        children: _cappedMovementTiles(l10n, 'mergedLegs', merged),
       ),
     ];
   }
@@ -3579,15 +3775,17 @@ class _StatementImportPageState extends State<StatementImportPage> {
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
           child: Text(l10n.importNewAssetsHint, style: theme.textTheme.bodySmall),
         ),
-        for (final a in open.take(_groupDisplayCap))
-          ListTile(
+        ..._cappedGroupTiles(
+          l10n,
+          'newAssets',
+          open,
+          (a) => ListTile(
             dense: true,
             title: Text(a.label),
             subtitle: _newAssetSubtitle(l10n, a),
             trailing: Text(a.proposedSymbol ?? l10n.importNewAssetPending),
           ),
-        if (open.length > _groupDisplayCap)
-          _moreRow(l10n, open.length - _groupDisplayCap),
+        ),
       ],
     );
   }

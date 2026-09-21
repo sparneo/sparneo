@@ -2301,9 +2301,17 @@
   "@importNewAssetsHint": {
     "description": "Explanatory line shown under the new-assets group title on the preview step"
   },
-  "importGroupMore": "… and {count} more",
-  "@importGroupMore": {
-    "description": "Trailing row shown when a preview group is truncated to a display cap",
+  "importGroupShownCount": "{shown} of {total} shown",
+  "@importGroupShownCount": {
+    "description": "Caption shown under a truncated preview group, above the 'show more' button (replaces the former purely-informational '… and N more' row, which announced the truncation but gave no way to reach the rest — author feedback on a real Binance statement: only 50 of 182 exchanges to value were visible, let alone editable)",
+    "placeholders": {
+      "shown": { "type": "int" },
+      "total": { "type": "int" }
+    }
+  },
+  "importShowMoreButton": "Show {count} more",
+  "@importShowMoreButton": {
+    "description": "Button extending a truncated preview group by one more batch (up to the display cap, or the remainder if smaller) instead of truncating silently — tapping it never rebuilds tiles already shown, only the next batch",
     "placeholders": {
       "count": { "type": "int" }
     }
@@ -2761,6 +2769,17 @@
   "@importUnvaluedExchangesExplain": {
     "description": "Explanatory text under the 'exchanges to value' group title (B16 lot 2: manual valuation is now available, unlike lot 1 where this group was purely informational)"
   },
+  "importGroupUnvaluedFees": "Fees to value ({count})",
+  "@importGroupUnvaluedFees": {
+    "description": "Section title for third-asset fees (UnvaluedExchange.kind == 'feeInKind', B16 lot 4, Binance §5.4.4-bis) awaiting manual valuation — split out from 'exchanges to value' (author drive feedback: a real Binance statement mixed 101 fees into a group of 182 titled 'crypto-to-crypto exchanges', a wording that was simply false for them). Same editing mechanic/stage-2 badge as importGroupUnvaluedExchanges, only the grouping and explanatory text differ.",
+    "placeholders": {
+      "count": { "type": "int" }
+    }
+  },
+  "importUnvaluedFeesExplain": "These fees were paid in another crypto-currency; enter their value in euros. They will be imported as soon as that amount is filled in.",
+  "@importUnvaluedFeesExplain": {
+    "description": "Explanatory text under the 'fees to value' group title — deliberately distinct from importUnvaluedExchangesExplain, which wrongly called every entry in the old merged group a 'crypto-to-crypto exchange'"
+  },
   "importUnvaluedExchangeLine": "Row(s) {lines}: {paidQuantity} {paidCode} → {receivedQuantity} {receivedCode}",
   "@importUnvaluedExchangeLine": {
     "description": "One line per unvalued crypto exchange: source row(s), the sold side and the received side (never called 'legs' on screen)",
@@ -2792,7 +2811,11 @@
   },
   "importUnvaluedReasonUnreadable": "The statement's value is unreadable.",
   "@importUnvaluedReasonUnreadable": {
-    "description": "Manual-valuation reason (B16 lot 2, doc 20 §5.1.7d): neither leg of the exchange had a readable USD amount on the statement"
+    "description": "Manual-valuation reason (B16 lot 2, doc 20 §5.1.7d): neither leg of the exchange had a readable USD amount on the statement — shown only for a profile whose format DOES carry a valuation column (Kraken/Coinbase, CryptoLedgerSpec.valuationAmountColumn != null), where this wording is factually accurate. See importUnvaluedReasonUnreadableNoColumn for the mute-format wording."
+  },
+  "importUnvaluedReasonUnreadableNoColumn": "This statement does not report a value for this operation.",
+  "@importUnvaluedReasonUnreadableNoColumn": {
+    "description": "Manual-valuation reason (same underlying UnvaluedExchange.manualReason == 'unreadable' as importUnvaluedReasonUnreadable, no new engine reason — display-only distinction) shown instead when the current import profile's format carries NO valuation column at all (Binance, CryptoLedgerSpec.valuationAmountColumn == null): 'unreadable' would be factually false there — nothing was illegible, there was simply nothing to read. Chosen from the profile actually used for the current preview, not from a new engine field."
   },
   "importUnvaluedReasonSpread": "The statement gives two different values for this exchange (a {percent}% gap) — enter the correct amount.",
   "@importUnvaluedReasonSpread": {
