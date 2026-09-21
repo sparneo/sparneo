@@ -765,8 +765,16 @@ class BrokerProfile {
         //    alias) : « Terra Classic USD » (~0,00005 USD) et
         //    « TerraClassicUSD USD » (~0,005 USD) respectivement — aucun
         //    alias nécessaire pour ces deux identités.
+        //  - `HFT-USD` (bare) résout mais vers un HOMONYME SANS RAPPORT :
+        //    « Hodl Finance » (coté 2026, prix ~4e-7 USD). Le HFT Binance est
+        //    Hashflow — `HFT22461-USD` (id CoinMarketCap suffixé, même
+        //    schéma que ci-dessus) : `shortName`/`longName` = « Hashflow
+        //    USD », `firstTradeDate` = 2022-11-07 — vérifié le 21/09/2026 via
+        //    l'API chart Yahoo (piège homonymie N12, même famille que le
+        //    triple STRK/POL/SGB côté Kraken).
         quoteAliases: const {
           'LUNA': 'LUNA20314-USD',
+          'HFT': 'HFT22461-USD',
         },
         signFixedKinds: const {'Deposit': true, 'Withdraw': false},
         externalDepositKinds: const {'Deposit'},

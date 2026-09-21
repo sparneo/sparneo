@@ -2384,12 +2384,21 @@ class AccountController extends ChangeNotifier {
   /// [CryptoValuationManualReason.unreadable] (aucune valorisation étage 1
   /// exploitable — Binance systématique faute de colonne, ou valeur illisible
   /// Kraken) : cherche la CLÔTURE JOURNALIÈRE de la JAMBE PAYÉE au jour UTC exact
-  /// de l'opération (repli sur la jambe REÇUE si la payée n'est pas cotable — même
-  /// hiérarchie que l'étage 1, §5.1.7b — et systématiquement la jambe reçue pour
-  /// un `depositInKind`, forme dégénérée sans jambe payée), via
-  /// [MarketDataService.getHistoricalRange] (§5.1.7d, extension recommandée —
-  /// [MarketDataService.getHistoricalData] dégrade en hebdomadaire/mensuel au-delà
-  /// de quelques années, inutilisable ici).
+  /// de l'opération, avec repli sur la jambe REÇUE SI la payée n'est PAS cotable
+  /// OU N'A PAS de cours exploitable à ce jour exact (ticker résolu mais pas de
+  /// barre sur la période demandée — panne ou historique trop court, ex. ticker
+  /// coté depuis une date postérieure à l'opération ; même hiérarchie que l'étage
+  /// 1, §5.1.7b) — et systématiquement la jambe reçue pour un `depositInKind`,
+  /// forme dégénérée sans jambe payée), via [MarketDataService.getHistoricalRange]
+  /// (§5.1.7d, extension recommandée — [MarketDataService.getHistoricalData]
+  /// dégrade en hebdomadaire/mensuel au-delà de quelques années, inutilisable
+  /// ici). Quand la payée EST cotable, la reçue est résolue EN PLUS (dès cette
+  /// étape, coût réseau quasi nul — tickers dédupliqués via [tickerCache]) pour
+  /// que ce repli soit disponible aussi à la VALORISATION, pas seulement à la
+  /// résolution du ticker (fix drive auteur : une jambe payée dont le ticker
+  /// existe mais dont l'historique ne couvre pas la date de l'opération restait,
+  /// avant ce correctif, sans repli et retombait en arbitrage manuel alors que la
+  /// jambe reçue était cotable ce jour-là).
   ///
   /// Les AUTRES motifs (`spread`/`foreignFiat`/`ambiguousGroup`) — filtrés dès
   /// l'entrée de cette méthode — ne passent JAMAIS par cet étage : ils portent
@@ -2454,12 +2463,16 @@ class AccountController extends ChangeNotifier {
     ];
     if (candidates.isEmpty) return const {};
 
-    // ---- Résolution de la jambe à coter (payée d'abord, repli reçue) ----
+    // ---- Résolution de la jambe à coter (payée d'abord, repli reçue) —
+    // quand la payée EST cotable, la reçue est résolue AUSSI (repli
+    // disponible à la VALORISATION, cf. doc de tête ci-dessus). ----
     final quotable = <_MarketHistoryCandidate>[];
     for (final m in candidates) {
       final u = m.source;
       String? leg;
       _CryptoTickerResolution? resolved;
+      String? fallbackLeg;
+      String? fallbackSymbol;
 
       if (u.codePaid != null && u.quantityPaid != null) {
         final r = await _resolveCryptoTicker(
@@ -2486,21 +2499,50 @@ class AccountController extends ChangeNotifier {
           leg = 'received';
           resolved = r;
         }
+      } else if (leg == 'paid') {
+        // La payée est cotable — résout la reçue AUSSI comme repli de
+        // VALORISATION (pas seulement de résolution de ticker) : si la
+        // payée n'a finalement pas de barre le jour exact (historique trop
+        // court, panne ponctuelle…), la valorisation retente la reçue au
+        // lieu de retomber directement à l'étage 3.
+        final r2 = await _resolveCryptoTicker(
+          u.codeReceived,
+          quoteAliases: quoteAliases,
+          positionByLedgerCode: positionByLedgerCode,
+          accountCurrency: accountCurrency,
+          cache: tickerCache,
+        );
+        if (r2.quotable) {
+          fallbackLeg = 'received';
+          fallbackSymbol = r2.symbol;
+        }
       }
       if (resolved == null || leg == null) {
         continue; // ni l'une ni l'autre jambe cotable — reste à l'étage 3.
       }
       quotable.add(
-        _MarketHistoryCandidate(manual: m, leg: leg, symbol: resolved.symbol),
+        _MarketHistoryCandidate(
+          manual: m,
+          leg: leg,
+          symbol: resolved.symbol,
+          fallbackLeg: fallbackLeg,
+          fallbackSymbol: fallbackSymbol,
+        ),
       );
     }
     if (quotable.isEmpty) return const {};
 
     // ---- Barres journalières, UNE requête par SYMBOLE (fenêtre englobant
-    // toutes ses opérations), concurrence bornée. ----
+    // toutes ses opérations), concurrence bornée — symbole PRINCIPAL et
+    // symbole de REPLI (s'il existe) enregistrés ici, tickers dédupliqués
+    // par la table `bySymbol` elle-même. ----
     final bySymbol = <String, List<_MarketHistoryCandidate>>{};
     for (final c in quotable) {
       bySymbol.putIfAbsent(c.symbol, () => []).add(c);
+      final fb = c.fallbackSymbol;
+      if (fb != null) {
+        bySymbol.putIfAbsent(fb, () => []).add(c);
+      }
     }
 
     // I-1 (revue adversariale, LOT 4) : `closesBySymbol`/`ratesByCurrency`
@@ -2565,11 +2607,18 @@ class AccountController extends ChangeNotifier {
       // devises). ----
       final datesByCurrency = <String, List<DateTime>>{};
       for (final c in quotable) {
-        if (!closesBySymbol.containsKey(c.symbol)) continue;
-        final currency =
-            (_quoteCurrencySuffix(c.symbol) ?? accountCurrency).toUpperCase();
-        if (currency == 'EUR') continue;
-        datesByCurrency.putIfAbsent(currency, () => []).add(c.manual.source.date);
+        for (final symbol in [
+          c.symbol,
+          if (c.fallbackSymbol != null) c.fallbackSymbol!,
+        ]) {
+          if (!closesBySymbol.containsKey(symbol)) continue;
+          final currency =
+              (_quoteCurrencySuffix(symbol) ?? accountCurrency).toUpperCase();
+          if (currency == 'EUR') continue;
+          datesByCurrency
+              .putIfAbsent(currency, () => [])
+              .add(c.manual.source.date);
+        }
       }
 
       await mapBounded<MapEntry<String, List<DateTime>>, void>(
@@ -2606,26 +2655,33 @@ class AccountController extends ChangeNotifier {
       // exactement comme un échec ordinaire (B4, jamais bloquant).
     }
 
-    // ---- Valorisation finale ----
-    final valuations = <String, CryptoValuation>{};
-    for (final c in quotable) {
-      final closes = closesBySymbol[c.symbol];
-      if (closes == null) continue;
+    // ---- Valorisation finale — jambe PRINCIPALE d'abord, repli sur la
+    // jambe de REPLI si la principale n'a finalement pas de barre le jour
+    // exact (cf. doc de tête : ticker résolu mais historique trop court,
+    // panne ponctuelle…) — N4 respecté : au plus UNE valeur écrite par
+    // échange (le premier essai qui aboutit, jamais les deux). ----
+    CryptoValuation? valuateLeg(
+      _MarketHistoryCandidate c,
+      String symbol,
+      String leg,
+    ) {
+      final closes = closesBySymbol[symbol];
+      if (closes == null) return null;
       final u = c.manual.source;
       final day = DateTime.utc(u.date.year, u.date.month, u.date.day);
       final close = closes[day];
-      if (close == null) continue; // pas de barre CE jour exact — étage 3.
+      if (close == null) return null; // pas de barre CE jour exact.
 
-      final quantityRaw = c.leg == 'paid' ? u.quantityPaid : u.quantityReceived;
+      final quantityRaw = leg == 'paid' ? u.quantityPaid : u.quantityReceived;
       final quantity =
           quantityRaw == null ? null : Decimal.tryParse(quantityRaw)?.abs();
-      if (quantity == null) continue; // défensif — jamais atteint en pratique.
+      if (quantity == null) return null; // défensif — jamais atteint en pratique.
 
       final closeDecimal = Decimal.tryParse(close.toString());
-      if (closeDecimal == null) continue; // défensif (donnée Yahoo dégénérée).
+      if (closeDecimal == null) return null; // défensif (donnée Yahoo dégénérée).
 
       final quoteCurrency =
-          (_quoteCurrencySuffix(c.symbol) ?? accountCurrency).toUpperCase();
+          (_quoteCurrencySuffix(symbol) ?? accountCurrency).toUpperCase();
 
       Decimal amountEur;
       double? fxRate;
@@ -2637,23 +2693,35 @@ class AccountController extends ChangeNotifier {
         final rates = ratesByCurrency[quoteCurrency];
         final entry =
             rates == null ? null : _lastFxRateOnOrBefore(rates, u.date);
-        if (entry == null) continue; // FX indisponible — étage 3.
+        if (entry == null) return null; // FX indisponible.
         fxRate = entry.value;
         fxDate = entry.key;
         amountEur =
             closeDecimal * quantity * Decimal.parse(entry.value.toString());
       }
 
-      valuations[u.importKey] = CryptoValuation(
+      return CryptoValuation(
         amountEur: amountEur,
         fxRate: fxRate,
         fxDate: fxDate,
         source: 'marketHistory',
-        quoteSymbol: c.symbol,
+        quoteSymbol: symbol,
         quoteDate: day,
         quoteInterval: '1d',
-        quoteLeg: c.leg,
+        quoteLeg: leg,
       );
+    }
+
+    final valuations = <String, CryptoValuation>{};
+    for (final c in quotable) {
+      final fbSymbol = c.fallbackSymbol;
+      final fbLeg = c.fallbackLeg;
+      final valuation = valuateLeg(c, c.symbol, c.leg) ??
+          (fbSymbol != null && fbLeg != null
+              ? valuateLeg(c, fbSymbol, fbLeg)
+              : null);
+      if (valuation == null) continue; // ni l'une ni l'autre — étage 3.
+      valuations[c.manual.source.importKey] = valuation;
     }
 
     return valuations;
@@ -3685,14 +3753,26 @@ class _CryptoTickerResolution {
 class _MarketHistoryCandidate {
   final CryptoValuationManual manual;
 
-  /// `'paid'` ou `'received'` — quelle jambe de [manual] a servi.
+  /// `'paid'` ou `'received'` — quelle jambe PRINCIPALE tenter en premier à
+  /// la valorisation.
   final String leg;
 
   final String symbol;
+
+  /// Jambe de REPLI (`'received'` uniquement — jamais posée quand [leg] vaut
+  /// déjà `'received'`, il n'y a alors rien d'autre à tenter) et son ticker,
+  /// résolus tous deux quand la jambe PRINCIPALE ([leg]) est cotable : sert
+  /// UNIQUEMENT si la principale n'a pas de barre exploitable au jour exact
+  /// de l'opération. `null` si la principale est déjà la reçue, ou si la
+  /// reçue n'est elle-même pas cotable.
+  final String? fallbackLeg;
+  final String? fallbackSymbol;
 
   const _MarketHistoryCandidate({
     required this.manual,
     required this.leg,
     required this.symbol,
+    this.fallbackLeg,
+    this.fallbackSymbol,
   });
 }

@@ -805,6 +805,12 @@ void main() {
       // même jour — ne doit pas régresser vers un alias inutile.
       expect(aliases.containsKey('LUNC'), isFalse);
       expect(aliases.containsKey('USTC'), isFalse);
+      // HFT (fix drive auteur, même famille que le triple homonymie STRK/POL/SGB
+      // côté Kraken) : le bare `HFT-USD` répond mais résout vers un homonyme sans
+      // rapport (« Hodl Finance », coté 2026, prix ~4e-7 USD). `HFT22461-USD` répond
+      // shortName/longName = « Hashflow USD », firstTradeDate = 2022-11-07 — c'est
+      // le HFT Binance (Hashflow), vérifié le 21/09/2026 via l'API chart Yahoo.
+      expect(aliases['HFT'], equals('HFT22461-USD'));
     });
   });
 

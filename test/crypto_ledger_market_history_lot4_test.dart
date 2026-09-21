@@ -339,10 +339,16 @@ void main() {
       );
 
       expect(preview.unvaluedExchanges, isEmpty);
-      // Jambe payée (BBB) résolue en premier — CCC (jambe reçue) jamais
-      // interrogée, la résolution s'arrête dès que BBB est cotable.
+      // Jambe payée (BBB) résolue en premier — le TICKER de CCC (jambe
+      // reçue) n'est jamais interrogé en réseau : il est déjà connu via sa
+      // position EXISTANTE (résolution à coût nul), la résolution réseau
+      // s'arrête bien dès que BBB est cotable.
       expect(fakeMarket.symbolExistsCallLog, equals(['BBB-EUR', 'BBB-USD']));
-      expect(fakeMarket.rangeCallLog, equals(['BBB-USD']));
+      // Fix cascade (drive auteur : la BARRE de la jambe reçue (CCC-EUR) est
+      // désormais interrogée EN PLUS de celle de la payée, enregistrée dès la
+      // construction du candidat comme repli de VALORISATION — même si, ici, elle
+      // reste inutilisée (BBB-USD suffit).
+      expect(fakeMarket.rangeCallLog, equals(['BBB-USD', 'CCC-EUR']));
 
       final sell = preview.toCreate.firstWhere((m) => m.ledgerCode == 'BBB');
       final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'CCC');
@@ -803,6 +809,165 @@ void main() {
       // 3 × 200,0 = 600 EUR — barre du jour D+1, jamais celle de la veille.
       expect(Decimal.parse(dayD1.transaction!.meta!['valueEur'] as String),
           equals(Decimal.parse('600')));
+    });
+
+    // ----------------------------------------------------------------- Fix drive
+    // auteur : cascade PAYÉE→REÇUE à la VALORISATION (pas seulement à la résolution
+    // du ticker) — voir la doc de tête de `_resolveMarketHistoryValuations`. Avant
+    // ce correctif, une jambe payée dont le ticker se résolvait mais dont
+    // l'historique ne couvrait pas la date de l'opération (ex. ticker coté après
+    // l'opération) retombait directement en arbitrage manuel SANS jamais tenter la
+    // jambe reçue.
+    // -----------------------------------------------------------------
+
+    test(
+        '① cascade : jambe PAYÉE avec ticker EXISTANT mais SANS barre le '
+        'jour exact → repli sur la jambe REÇUE à la VALORISATION, '
+        '`quoteLeg`:`received`', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-cascade-fallback';
+      await seedAccount(db, accountId);
+      // Jambe reçue (MMM) : position existante — c'est la BARRE de la
+      // payée qui manque, jamais son ticker (MMM n'a donc aucun coût réseau
+      // propre, la preuve porte sur le repli de VALORISATION, pas de
+      // résolution).
+      await seedLedgerCodePosition(db, accountId, 'MMM', 'MMM-EUR');
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RP1', time: '2024-01-01 08:00:00', type: 'deposit',
+          asset: 'EUR', amount: '1000', subclass: 'fiat');
+      b.leg(refid: 'RP2', time: '2024-09-30 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'LLL', amount: '-1', subclass: 'crypto');
+      b.leg(refid: 'RP2', time: '2024-09-30 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'MMM', amount: '20', subclass: 'crypto');
+
+      final fakeMarket = _FakeMarketDataServiceLot4(
+        symbolAnswers: {'LLL-EUR': true}, // le ticker EXISTE...
+        rangeAnswers: {
+          // ...mais AUCUNE barre à ce jour exact (absent de la table =
+          // `null`, cf. doc du fake) — ex. historique trop court.
+          'MMM-EUR': _oneBar('MMM-EUR', DateTime.utc(2024, 9, 30), 3.0),
+        },
+      );
+      final ctrl = await makeCtrl(db, accountId, marketService: fakeMarket);
+
+      final preview = await ctrl.previewStatementImport(
+        b.toCsvBytes(),
+        profile,
+        accountId: accountId,
+      );
+
+      expect(preview.unvaluedExchanges, isEmpty);
+      // LLL cotable dès `LLL-EUR` — MMM résolu via sa position, ZÉRO appel
+      // réseau propre pour elle (seul son TICKER est gratuit, sa barre est
+      // bien interrogée ci-dessous).
+      expect(fakeMarket.symbolExistsCallLog, equals(['LLL-EUR']));
+      // Les DEUX symboles sont interrogés pour leur barre : LLL-EUR
+      // (principale, tentée en premier) ET MMM-EUR (repli, enregistré dès
+      // la construction du candidat).
+      expect(fakeMarket.rangeCallLog, equals(['LLL-EUR', 'MMM-EUR']));
+
+      final sell = preview.toCreate.firstWhere((m) => m.ledgerCode == 'LLL');
+      final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'MMM');
+      // 20 × 3,0 = 60 EUR — cours de la jambe REÇUE (MMM), la payée (LLL)
+      // n'avait pas de barre exploitable.
+      expect(sell.transaction!.amount, equals('60'));
+      expect(buy.transaction!.amount, equals('-60'));
+      for (final m in [sell, buy]) {
+        final meta = m.transaction!.meta!;
+        expect(meta['valuationSource'], equals('marketHistory'));
+        expect(meta['quoteSymbol'], equals('MMM-EUR'));
+        expect(meta['quoteLeg'], equals('received'));
+      }
+    });
+
+    test(
+        '② cascade : PAYÉE et REÇUE toutes deux cotables mais SANS AUCUNE '
+        'barre disponible → retombe en arbitrage manuel motif `unreadable` '
+        'INCHANGÉ (cascade épuisée)', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-cascade-both-fail';
+      await seedAccount(db, accountId);
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RQ1', time: '2024-01-01 08:00:00', type: 'deposit',
+          asset: 'EUR', amount: '1000', subclass: 'fiat');
+      b.leg(refid: 'RQ2', time: '2024-10-15 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'NNN', amount: '-1', subclass: 'crypto');
+      b.leg(refid: 'RQ2', time: '2024-10-15 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'OOO', amount: '10', subclass: 'crypto');
+
+      final fakeMarket = _FakeMarketDataServiceLot4(
+        symbolAnswers: {'NNN-EUR': true, 'OOO-EUR': true},
+        // AUCUNE entrée dans `rangeAnswers` : les deux tickers existent
+        // mais ni l'un ni l'autre n'a de barre exploitable — B4, jamais
+        // bloquant, retombe simplement à l'étage 3.
+      );
+      final ctrl = await makeCtrl(db, accountId, marketService: fakeMarket);
+
+      final preview = await ctrl.previewStatementImport(
+        b.toCsvBytes(),
+        profile,
+        accountId: accountId,
+      );
+
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'NNN'), isFalse);
+      expect(preview.toCreate.any((m) => m.ledgerCode == 'OOO'), isFalse);
+      expect(preview.unvaluedExchanges, hasLength(1));
+      expect(
+          preview.unvaluedExchanges.single.manualReason, equals('unreadable'));
+      // Les DEUX symboles ont bien été interrogés (cascade épuisée), aucune
+      // barre écrite.
+      expect(fakeMarket.rangeCallLog, equals(['NNN-EUR', 'OOO-EUR']));
+    });
+
+    test(
+        '③ non-régression : jambe PAYÉE cotable ET avec barre exploitable → '
+        'valorisée par la PAYÉE comme avant, le repli (résolu EN PLUS) '
+        'reste inutilisé quand la payée suffit', () async {
+      final db = await openTestDatabase();
+      addTearDown(db.close);
+      const accountId = 'acc-cascade-non-regression';
+      await seedAccount(db, accountId);
+      await seedLedgerCodePosition(db, accountId, 'QQQ', 'QQQ-EUR');
+
+      final b = _LedgerBuilder();
+      b.leg(refid: 'RR1', time: '2024-01-01 08:00:00', type: 'deposit',
+          asset: 'EUR', amount: '1000', subclass: 'fiat');
+      b.leg(refid: 'RR2', time: '2024-11-20 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'PPP', amount: '-2', subclass: 'crypto');
+      b.leg(refid: 'RR2', time: '2024-11-20 10:00:00', type: 'trade',
+          subtype: 'tradespot', asset: 'QQQ', amount: '8', subclass: 'crypto');
+
+      final fakeMarket = _FakeMarketDataServiceLot4(
+        symbolAnswers: {'PPP-EUR': true},
+        rangeAnswers: {
+          'PPP-EUR': _oneBar('PPP-EUR', DateTime.utc(2024, 11, 20), 25.0),
+          // QQQ-EUR volontairement ABSENT : la payée (PPP) suffit déjà, la
+          // barre de repli — bien qu'interrogée — reste inutilisée.
+        },
+      );
+      final ctrl = await makeCtrl(db, accountId, marketService: fakeMarket);
+
+      final preview = await ctrl.previewStatementImport(
+        b.toCsvBytes(),
+        profile,
+        accountId: accountId,
+      );
+
+      expect(preview.unvaluedExchanges, isEmpty);
+      final sell = preview.toCreate.firstWhere((m) => m.ledgerCode == 'PPP');
+      final buy = preview.toCreate.firstWhere((m) => m.ledgerCode == 'QQQ');
+      // 2 × 25,0 = 50 EUR — cours de la PAYÉE (PPP), comportement INCHANGÉ.
+      expect(sell.transaction!.amount, equals('50'));
+      expect(buy.transaction!.amount, equals('-50'));
+      for (final m in [sell, buy]) {
+        final meta = m.transaction!.meta!;
+        expect(meta['quoteSymbol'], equals('PPP-EUR'));
+        expect(meta['quoteLeg'], equals('paid'));
+      }
     });
   });
 }
