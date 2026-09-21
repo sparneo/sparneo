@@ -3173,4 +3173,178 @@ void main() {
       expect(find.text('Approché'), findsOneWidget);
     });
   });
+
+  group(
+      'StatementImportPage — l\'aperçu retient ce que l\'utilisateur a '
+      'replié (défaut constaté au drive : « Confirmer » et le revert de '
+      'valorisation étage 2 rouvraient tout)', () {
+    testWidgets(
+        'un groupe DÉPLIÉ par défaut, replié par l\'utilisateur, reste '
+        'replié après une reconstruction de l\'aperçu (« Repasser en saisie '
+        'manuelle », même mécanisme de reconstruction que le contrôle de '
+        'saisie de « Confirmer »)', (tester) async {
+      final controller = _FakeRevertValuationController(
+        result: ImportPreview(toCreate: [_cryptoBuyMovement()]),
+      );
+      final preview = ImportPreview(
+        toCreate: [
+          // Mouvement ORDINAIRE, visible UNIQUEMENT dans « À créer » (jamais
+          // dans « Échanges valorisés », qui ne filtre que les mouvements
+          // porteurs de `meta['valuationSource']`) — marqueur sans ambiguïté
+          // de l'état déplié/replié de CE groupe précis.
+          _cryptoBuyMovement(),
+          ..._cryptoExchangePairValuedMarketHistory(
+            'ref:acc:EX1',
+            DateTime(2024, 3, 5),
+          ),
+        ],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // « À créer » est DÉPLIÉ par défaut : le mouvement BTC est visible.
+      expect(find.text('À créer (3)'), findsOneWidget);
+      expect(find.textContaining('BTC (BTC-EUR)'), findsOneWidget);
+
+      // L'utilisateur replie le groupe.
+      await tester.tap(find.text('À créer (3)'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('BTC (BTC-EUR)'), findsNothing);
+
+      // Le seul chemin pour déclencher la reconstruction est désormais le
+      // bouton « Repasser en saisie manuelle » d'une tuile de mouvement — or
+      // « À créer » (qui la porte aussi) est maintenant replié : on déplie
+      // « Échanges valorisés » (groupe SÉPARÉ, non touché jusqu'ici) pour y
+      // accéder, sans altérer l'état qu'on vient de fixer sur « À créer ».
+      await tester.ensureVisible(find.text('Échanges valorisés (1)'));
+      await tester.tap(find.text('Échanges valorisés (1)'));
+      await tester.pumpAndSettle();
+
+      // Reconstruction de l'aperçu : le contrôleur renvoie un NOUVEL
+      // `ImportPreview` (le mouvement BTC seul, l'échange valorisé a
+      // disparu) — même mécanisme que le contrôle de saisie de « Confirmer »
+      // ([_prepareUnvaluedExchangesBeforeConfirm]) ou
+      // [_applyManualCryptoValuations] : `setState(() => _preview = updated)`
+      // reconstruit toute la colonne de l'aperçu.
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Repasser en saisie manuelle'),
+      );
+      await tester.pumpAndSettle();
+
+      // Le groupe « À créer » (même clé stable, contenu différent : 1 seul
+      // mouvement désormais) reste REPLIÉ — le défaut constaté au drive
+      // aurait rouvert la section.
+      expect(find.text('À créer (1)'), findsOneWidget);
+      expect(
+        find.textContaining('BTC (BTC-EUR)'),
+        findsNothing,
+        reason: 'la section reconstruite doit rester repliée',
+      );
+
+      // Contrôle positif : redéplier prouve que le mouvement était bien là,
+      // seulement masqué par l'état replié mémorisé (pas un effet de bord de
+      // la reconstruction elle-même).
+      await tester.tap(find.text('À créer (1)'));
+      await tester.pumpAndSettle();
+      expect(find.textContaining('BTC (BTC-EUR)'), findsOneWidget);
+    });
+
+    testWidgets(
+        'un groupe REPLIÉ par défaut, déplié par l\'utilisateur, reste '
+        'déplié après la même reconstruction', (tester) async {
+      final controller = _FakeRevertValuationController(
+        result: ImportPreview(
+          toCreate: [_cryptoBuyMovement()],
+          duplicates: [_plainMovement(0)],
+        ),
+      );
+      final preview = ImportPreview(
+        toCreate: [
+          _cryptoBuyMovement(),
+          ..._cryptoExchangePairValuedMarketHistory(
+            'ref:acc:EX1',
+            DateTime(2024, 3, 5),
+          ),
+        ],
+        duplicates: [_plainMovement(0)],
+      );
+
+      await tester.pumpWidget(_host(preview, controller: controller));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // « Doublons ignorés » est REPLIÉ par défaut.
+      await tester.ensureVisible(find.text('Doublons ignorés (1)'));
+      expect(find.text('Doublons ignorés (1)'), findsOneWidget);
+      await tester.tap(find.text('Doublons ignorés (1)'));
+      await tester.pumpAndSettle();
+
+      // Déplié : le mouvement du groupe doublons (« Ligne 100 »,
+      // `_plainMovement(0)`, sourceRowIndex 100) est désormais visible. Marqueur
+      // DISTINCT de « Ligne 1 » (BTC, dans « À créer », toujours déplié par
+      // défaut et donc pas discriminant à lui seul).
+      expect(find.textContaining('Ligne 100'), findsOneWidget);
+
+      await tester.tap(
+        find.widgetWithText(TextButton, 'Repasser en saisie manuelle'),
+      );
+      await tester.pumpAndSettle();
+
+      // Après reconstruction, « Doublons ignorés » reste DÉPLIÉ.
+      await tester.ensureVisible(find.text('Doublons ignorés (1)'));
+      expect(find.textContaining('Ligne 100'), findsOneWidget);
+    });
+
+    testWidgets(
+        'un nouvel aperçu (nouveau fichier importé) repart d\'un état de '
+        'dépli NEUF, jamais celui replié/déplié du précédent aperçu',
+        (tester) async {
+      final firstPreview = ImportPreview(
+        toCreate: [_cryptoBuyMovement()],
+        duplicates: [_plainMovement(0)],
+      );
+
+      await tester.pumpWidget(_host(firstPreview));
+      await tester.pumpAndSettle();
+      await tester.tap(find.byIcon(Icons.arrow_back));
+      await tester.pumpAndSettle();
+
+      // Replie « À créer » (déplié par défaut) et déplie « Doublons ignorés »
+      // (replié par défaut) — les DEUX s'écartent de leur défaut.
+      await tester.tap(find.text('À créer (1)'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Doublons ignorés (1)'));
+      await tester.tap(find.text('Doublons ignorés (1)'));
+      await tester.pumpAndSettle();
+
+      expect(find.textContaining('BTC (BTC-EUR)'), findsNothing);
+      expect(find.textContaining('Ligne 1'), findsWidgets);
+
+      // Nouvel aperçu chargé DANS LA MÊME instance de page (même mécanisme
+      // que [_runPreviewWithProfile] sur un vrai nouveau fichier — hors
+      // d'atteinte ici, file_picker/file_selector n'ont pas d'implémentation
+      // dans l'environnement de test widget, cf. doc de tête de fichier) :
+      // réutilise les MÊMES clés de section (`toCreate`/`duplicates`) avec
+      // les MÊMES cardinalités, pour isoler la question de l'état de dépli
+      // de celle du contenu affiché.
+      final state = tester.state(find.byType(StatementImportPage));
+      (state as dynamic).debugLoadNewPreview(firstPreview);
+      await tester.pumpAndSettle();
+
+      // État de dépli NEUF : « À créer » de nouveau DÉPLIÉ (défaut), «
+      // Doublons ignorés » de nouveau REPLIÉ (défaut) — rien de l'aperçu
+      // précédent n'a survécu.
+      expect(find.text('À créer (1)'), findsOneWidget);
+      expect(find.textContaining('BTC (BTC-EUR)'), findsOneWidget);
+      expect(find.text('Doublons ignorés (1)'), findsOneWidget);
+      // Le doublon (« Ligne 100 », `_plainMovement(0)`) est de nouveau
+      // masqué — SEULE la ligne du mouvement BTC (« Ligne 1 », désormais
+      // visible via « À créer » déplié) porte encore ce préfixe.
+      expect(find.textContaining('Ligne 100'), findsNothing);
+    });
+  });
 }

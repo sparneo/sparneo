@@ -234,6 +234,56 @@ class _StatementImportPageState extends State<StatementImportPage> {
   /// coexister, chacune reste actionnable indépendamment).
   final Set<String> _revertingValuationKeys = {};
 
+  /// État de dépli des sections `ExpansionTile` de l'aperçu (étape 3), clé =
+  /// identifiant SÉMANTIQUE stable de section (ex. `'toCreate'`,
+  /// `'duplicates'` — jamais un index de liste, qui peut glisser quand le
+  /// contenu change) — alimente `initiallyExpanded` et mis à jour via
+  /// `onExpansionChanged` (cf. [_expanded]/[_onSectionExpansionChanged]).
+  /// Sans ce verrou, chaque reconstruction de l'aperçu (contrôle de saisie de
+  /// « Confirmer », revert de valorisation étage 2...) fait repartir toutes
+  /// les tuiles dans leur état INITIAL plutôt que celui choisi par
+  /// l'utilisateur (retour auteur du drive). Réinitialisée à CHAQUE nouveau
+  /// fichier prévisualisé ([_runPreviewWithProfile]) : un nouvel import
+  /// démarre avec un état neuf, jamais celui du précédent.
+  final Map<String, bool> _sectionExpanded = {};
+
+  /// Compteur de « génération » d'aperçu — incrémenté SEULEMENT par
+  /// [_loadNewPreview] (un vrai NOUVEL aperçu, jamais une reconstruction du
+  /// même via [_applyManualCryptoValuations]/[_revertCryptoValuationToManual],
+  /// qui appellent `setState` directement sans passer par lui). Composé dans
+  /// la `Key` de chaque `ExpansionTile` de l'aperçu (cf. [_sectionKey]) : la
+  /// clé SÉMANTIQUE seule (ex. `'toCreate'`) suffit à faire survivre le choix
+  /// de l'utilisateur aux reconstructions INTRA-génération (le but de tout ce
+  /// mécanisme), mais `ExpansionTile` gère son dépli dans son PROPRE État
+  /// interne, qu'une clé stable préserve au travers des reconstructions —
+  /// donc aussi, sans ce compteur, au travers d'un nouvel aperçu. Le faire
+  /// varier à cette seule occasion force `Flutter` à considérer chaque tuile
+  /// comme un widget NEUF (ancien État détruit) qui relit alors
+  /// `initiallyExpanded` depuis [_sectionExpanded] fraîchement vidée.
+  int _previewGeneration = 0;
+
+  /// État courant de la section [key] : la valeur mémorisée par
+  /// l'utilisateur si elle existe (cf. [_sectionExpanded]), sinon
+  /// [defaultValue] (état initial propre à cette tuile — premier affichage
+  /// inchangé).
+  bool _expanded(String key, bool defaultValue) =>
+      _sectionExpanded[key] ?? defaultValue;
+
+  /// `onExpansionChanged` commun des `ExpansionTile` de l'aperçu : mémorise
+  /// le choix. Pas de `setState` ici — `ExpansionTile` anime déjà son propre
+  /// dépli et `initiallyExpanded` n'est lu qu'à la création de l'état de la
+  /// tuile, un `setState` ne changerait rien à l'affichage courant ; seule la
+  /// mémoire pour la PROCHAINE reconstruction nous intéresse.
+  void _onSectionExpansionChanged(String key, bool expanded) {
+    _sectionExpanded[key] = expanded;
+  }
+
+  /// `Key` stable d'une section de l'aperçu pour la génération COURANTE (cf.
+  /// [_previewGeneration]) — à passer en `key:` de chaque `ExpansionTile`
+  /// concernée, TOUJOURS accompagnée de `initiallyExpanded: _expanded(key,
+  /// …)` et `onExpansionChanged: (v) => _onSectionExpansionChanged(key, v)`.
+  Key _sectionKey(String key) => ValueKey('import-section-$key-$_previewGeneration');
+
   // ---- Étape 4 : résolution des nouveaux actifs (clé = isin ?? label) ----
   final Map<String, TextEditingController> _newAssetSymbolControllers = {};
 
@@ -750,6 +800,40 @@ class _StatementImportPageState extends State<StatementImportPage> {
     await _runPreviewWithProfile(_buildProfile());
   }
 
+  /// Adopte [preview] comme aperçu COURANT et avance à l'étape « aperçu » —
+  /// factorise l'effet commun à [_runPreviewWithProfile] (succès réseau) et
+  /// [debugLoadNewPreview] (réservé aux TESTS WIDGET). Un NOUVEL aperçu, PAS
+  /// une reconstruction du même ([_applyManualCryptoValuations],
+  /// [_revertCryptoValuationToManual] appellent `setState` directement, sans
+  /// passer par ici) : réinitialise donc l'état de dépli des sections
+  /// ([_sectionExpanded]) — un nouvel import démarre avec un état neuf,
+  /// jamais celui du précédent (cf. doc du champ). Doit être appelé DANS un
+  /// `setState`.
+  void _loadNewPreview(ImportPreview preview) {
+    _preview = preview;
+    _step = _ImportStep.preview;
+    _sectionExpanded.clear();
+    _previewGeneration++;
+    for (final asset in preview.newAssets) {
+      if (asset.proposedSymbol == null) {
+        final key = asset.isin ?? asset.label;
+        _newAssetSymbolControllers.putIfAbsent(key, () => TextEditingController());
+      }
+    }
+  }
+
+  /// Réservé aux TESTS WIDGET : simule le chargement d'un NOUVEL aperçu
+  /// (nouveau fichier importé), SANS passer par la sélection de fichier
+  /// (file_picker/file_selector n'ont pas d'implémentation dans
+  /// l'environnement de test widget, cf. doc de [debugInitialPreview]).
+  /// Vérifie que l'état de dépli des sections repart neuf sur un nouvel
+  /// import, jamais celui du précédent (cf. [_loadNewPreview]). Toujours
+  /// inatteignable en production (aucun appel dans ce fichier hors test).
+  @visibleForTesting
+  void debugLoadNewPreview(ImportPreview preview) {
+    setState(() => _loadNewPreview(preview));
+  }
+
   /// Calcule la prévisualisation pour [profile] et avance à l'étape 3 en cas
   /// de succès — factorisé entre le parcours générique ([_runPreview], profil
   /// construit depuis le mapping manuel de l'étape 2) et Bourse Direct
@@ -772,18 +856,8 @@ class _StatementImportPageState extends State<StatementImportPage> {
       );
       if (!mounted) return;
       setState(() {
-        _preview = preview;
         _loadingPreview = false;
-        _step = _ImportStep.preview;
-        for (final asset in preview.newAssets) {
-          if (asset.proposedSymbol == null) {
-            final key = asset.isin ?? asset.label;
-            _newAssetSymbolControllers.putIfAbsent(
-              key,
-              () => TextEditingController(),
-            );
-          }
-        }
+        _loadNewPreview(preview);
       });
     } catch (e) {
       if (!mounted) return;
@@ -2098,6 +2172,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
           // nombre était annoncé, et même pas quand des rejets coexistaient.
           if (preview.duplicates.isNotEmpty)
             ExpansionTile(
+              key: _sectionKey('duplicates'),
+              initiallyExpanded: _expanded('duplicates', false),
+              onExpansionChanged: (v) =>
+                  _onSectionExpansionChanged('duplicates', v),
               tilePadding: EdgeInsets.zero,
               title: Text(l10n.importGroupDuplicates(preview.duplicates.length)),
               children: _cappedMovementTiles(l10n, preview.duplicates),
@@ -2149,7 +2227,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
         ..._cryptoGroups(l10n, preview),
 
         ExpansionTile(
-          initiallyExpanded: true,
+          key: _sectionKey('toCreate'),
+          initiallyExpanded: _expanded('toCreate', true),
+          onExpansionChanged: (v) => _onSectionExpansionChanged('toCreate', v),
           tilePadding: EdgeInsets.zero,
           title: Text(l10n.importGroupToCreate(preview.toCreate.length)),
           children: _cappedMovementTiles(l10n, preview.toCreate),
@@ -2173,6 +2253,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
 
         if (preview.duplicates.isNotEmpty)
           ExpansionTile(
+            key: _sectionKey('duplicates'),
+            initiallyExpanded: _expanded('duplicates', false),
+            onExpansionChanged: (v) =>
+                _onSectionExpansionChanged('duplicates', v),
             tilePadding: EdgeInsets.zero,
             title: Text(l10n.importGroupDuplicates(preview.duplicates.length)),
             children: _cappedMovementTiles(l10n, preview.duplicates),
@@ -2222,7 +2306,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
         margin: const EdgeInsets.symmetric(vertical: 8),
         color: theme.colorScheme.errorContainer,
         child: ExpansionTile(
-          initiallyExpanded: true,
+          key: _sectionKey('ostReject'),
+          initiallyExpanded: _expanded('ostReject', true),
+          onExpansionChanged: (v) =>
+              _onSectionExpansionChanged('ostReject', v),
           shape: const Border(),
           collapsedShape: const Border(),
           leading: Icon(
@@ -2262,6 +2349,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (techRejects.isEmpty) return const [];
     return [
       ExpansionTile(
+        key: _sectionKey('techReject'),
+        initiallyExpanded: _expanded('techReject', false),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('techReject', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupRejects(techRejects.length)),
         children: _cappedMovementTiles(l10n, techRejects),
@@ -2353,7 +2444,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (items.isEmpty) return const [];
     return [
       ExpansionTile(
-        initiallyExpanded: true,
+        key: _sectionKey('unvaluedExchanges'),
+        initiallyExpanded: _expanded('unvaluedExchanges', true),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('unvaluedExchanges', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupUnvaluedExchanges(items.length)),
         children: [
@@ -2913,6 +3007,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (items.isEmpty) return const [];
     return [
       ExpansionTile(
+        key: _sectionKey('aggregatedRewards'),
+        initiallyExpanded: _expanded('aggregatedRewards', false),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('aggregatedRewards', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupAggregatedRewards(items.length)),
         children: [
@@ -2949,6 +3047,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (items.isEmpty) return const [];
     return [
       ExpansionTile(
+        key: _sectionKey('replacements'),
+        initiallyExpanded: _expanded('replacements', false),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('replacements', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupReplacements(items.length)),
         children: [
@@ -3020,6 +3122,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (items.isEmpty) return const [];
     return [
       ExpansionTile(
+        key: _sectionKey('valuedExchanges'),
+        initiallyExpanded: _expanded('valuedExchanges', false),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('valuedExchanges', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupValuedExchanges(_valuedExchangeCount(items))),
         children: _cappedMovementTiles(l10n, items),
@@ -3415,7 +3521,10 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (merged.isEmpty) return const [];
     return [
       ExpansionTile(
-        initiallyExpanded: true,
+        key: _sectionKey('mergedLegs'),
+        initiallyExpanded: _expanded('mergedLegs', true),
+        onExpansionChanged: (v) =>
+            _onSectionExpansionChanged('mergedLegs', v),
         tilePadding: EdgeInsets.zero,
         title: Text(l10n.importGroupMergedLegs(merged.length)),
         children: _cappedMovementTiles(l10n, merged),
@@ -3460,7 +3569,9 @@ class _StatementImportPageState extends State<StatementImportPage> {
     if (open.isEmpty) return const SizedBox.shrink();
     final theme = Theme.of(context);
     return ExpansionTile(
-      initiallyExpanded: true,
+      key: _sectionKey('newAssets'),
+      initiallyExpanded: _expanded('newAssets', true),
+      onExpansionChanged: (v) => _onSectionExpansionChanged('newAssets', v),
       tilePadding: EdgeInsets.zero,
       title: Text(l10n.importGroupNewAssets(open.length)),
       children: [
